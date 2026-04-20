@@ -11,7 +11,7 @@ BOOTDIR ?= /boot
 TARGET := $(BUILD_DIR)/lyr.elf
 INSTALL_TARGET := $(DESTDIR)$(BOOTDIR)/lyr.elf
 
-CPPFLAGS := -Iinclude -D__KERNEL__
+CPPFLAGS := -Iinclude -D__KERNEL__ -D__X86_64__
 
 ARCH_CFLAGS := \
 	-m64 \

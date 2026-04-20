@@ -2,6 +2,7 @@
 #include <cpu/instr.h>
 #include <dev/uart.h>
 #include <util/kprintf.h>
+#include <cpu/gdt.h>
 
 void lyr_entry(struct aurix_parameters *params)
 {
@@ -20,6 +21,10 @@ void lyr_entry(struct aurix_parameters *params)
 			fb_ptr[y * (framebuffer.pitch / 4) + x] = (nY << 8) | nX;
 		}
 	}
+
+	kprintf("early: init GDT\n");
+	gdt_init();
+	kprintf("early: GDT init done\n");
 
 	nointloop();
 }
