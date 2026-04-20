@@ -1,7 +1,10 @@
 CC ?= gcc
 LD ?= ld
 
-BUILD_DIR ?= build
+ifndef BUILD_DIR
+BUILD_DIR := build
+endif
+
 DESTDIR ?=
 BOOTDIR ?= /boot
 
@@ -45,11 +48,7 @@ LDFLAGS := \
 	-z text \
 	-m elf_x86_64
 
-SRC := $(shell find . \
-	-type f \
-	-name '*.c' \
-	-not -path './$(BUILD_DIR)/*')
-
+SRC := $(shell find . -type f -name '*.c' -not -path './$(BUILD_DIR)/*')
 OBJ := $(patsubst ./%.c,$(BUILD_DIR)/%.o,$(SRC))
 DEP := $(OBJ:.o=.d)
 
