@@ -1,7 +1,15 @@
 #include <boot/axboot.h>
+#include <cpu/instr.h>
+#include <dev/uart.h>
+#include <util/kprintf.h>
 
 void lyr_entry(struct aurix_parameters *params)
 {
+	if (uart_init() != 0) {
+		nointloop();
+	}
+
+	kprintf("Hello, World!\n");
 	struct aurix_framebuffer framebuffer = params->framebuffer;
 
 	volatile uint32_t *fb_ptr = (uint32_t *)framebuffer.addr;
@@ -13,7 +21,5 @@ void lyr_entry(struct aurix_parameters *params)
 		}
 	}
 
-	__asm__ volatile("cli");
-	for (;;)
-		__asm__ volatile("hlt");
+	nointloop();
 }

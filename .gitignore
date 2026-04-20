@@ -1,4 +1,5 @@
 axboot.h
+nanoprintf.h
 build
 axboot
 lyr.iso

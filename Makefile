@@ -29,11 +29,15 @@ $(KERNEL)/include/boot/axboot.h:
 	@mkdir -p $(dir $@)
 	@$(ROOT)/utils/fetch.sh -t file -o $@ https://raw.githubusercontent.com/piraterna/axboot/main/include/proto/aurix.h
 
+$(KERNEL)/include/lib/nanoprintf.h:
+	@mkdir -p $(dir $@)
+	@$(ROOT)/utils/fetch.sh -t file -o $@ https://raw.githubusercontent.com/charlesnicholson/nanoprintf/refs/heads/main/nanoprintf.h
+
 $(OVMF):
 	@mkdir -p $(dir $@)
 	@$(ROOT)/utils/fetch.sh -t git -o $@ https://github.com/piraterna/ovmf-bins
 
-sources: $(BOOT) $(KERNEL)/include/boot/axboot.h $(OVMF)
+sources: $(BOOT) $(KERNEL)/include/boot/axboot.h $(OVMF) $(KERNEL)/include/lib/nanoprintf.h
 
 $(ISO_FILE): $(UEFI_IMG) $(TARGET) $(BUILD)/boot/uefi/BOOTX64.EFI
 	@echo "[*] Creating ISO image"
