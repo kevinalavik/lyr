@@ -3,9 +3,40 @@
 
 #include <util/kprintf.h>
 
-#define ok(fmt, ...) kprintf("\e[0;32m[  OK  ]\e[0m " fmt "\n", ##__VA_ARGS__)
-#define warn(fmt, ...) kprintf("\e[0;33m[ WARN ]\e[0m " fmt "\n", ##__VA_ARGS__)
-#define error(fmt, ...) \
-	kprintf("\e[0;31m[ FAIL ]\e[0m " fmt "\n", ##__VA_ARGS__)
+#ifndef LOG_USE_COLOR
+#define LOG_USE_COLOR 1
+#endif
 
-#endif // _LYR_DEBUG_LOG_H
+#define LOG_INFO "info"
+#define LOG_WARN "warn"
+#define LOG_ERR "err "
+
+#if LOG_USE_COLOR
+#define LOG_CLR_RESET "\e[0m"
+#define LOG_CLR_INFO ""
+#define LOG_CLR_WARN "\e[0;33m"
+#define LOG_CLR_ERR "\e[0;31m"
+#else
+#define LOG_CLR_RESET ""
+#define LOG_CLR_INFO ""
+#define LOG_CLR_WARN ""
+#define LOG_CLR_ERR ""
+#endif
+
+#define __log(level, color, subsys, fmt, ...) \
+	kprintf(color level " @ %s: " fmt LOG_CLR_RESET "\n", subsys, ##__VA_ARGS__)
+
+#define log_info(subsys, fmt, ...) \
+	__log(LOG_INFO, LOG_CLR_INFO, subsys, fmt, ##__VA_ARGS__)
+
+#define log_warn(subsys, fmt, ...) \
+	__log(LOG_WARN, LOG_CLR_WARN, subsys, fmt, ##__VA_ARGS__)
+
+#define log_err(subsys, fmt, ...) \
+	__log(LOG_ERR, LOG_CLR_ERR, subsys, fmt, ##__VA_ARGS__)
+
+#define log_init(subsys) log_info(subsys, "initialized")
+
+#define log_ok(subsys) log_info(subsys, "ok")
+
+#endif

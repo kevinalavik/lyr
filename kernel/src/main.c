@@ -7,6 +7,8 @@
 #include <lib/lyrterm.h>
 #include <debug/log.h>
 #include <debug/assert.h>
+#include <cpu/idt.h>
+#include <debug/panic.h>
 
 __attribute__((used, section(".limine_requests"))) static volatile uint64_t
 	limine_base_revision[] = LIMINE_BASE_REVISION(6);
@@ -25,7 +27,15 @@ __attribute__((used,
 __attribute__((used, section(".limine_requests_end"))) static volatile uint64_t
 	limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
-/* lyr entry */
+const char *banner[] = { " _             ___  ____  ",
+						 "| |_   _ _ __ / _ \\/ ___| ",
+						 "| | | | | '__| | | \\___ \\ ",
+						 "| | |_| | |  | |_| |___) |",
+						 "|_|\\__, |_|   \\___/|____/ ",
+						 "   |___/                  ",
+						 NULL };
+
+/*	lyr entry */
 void lyr_entry(void)
 {
 	if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false) {
@@ -44,12 +54,17 @@ void lyr_entry(void)
 
 	lyrterm_init(framebuffer->address, framebuffer->width, framebuffer->height,
 				 framebuffer->pitch / 4);
-	ok("lyrterm OK");
+
+	for (int i = 0; banner[i] != NULL; i++) {
+		kprintf("%s\n", banner[i]);
+	}
+	kprintf("\n");
 
 	gdt_init();
-	ok("gdt OK");
+	log_info("entry", "GDT ok");
+	idt_init();
+	log_info("entry", "IDT ok");
 
-	assert(NULL != NULL);
-
+	*((uint64_t *)0xdeadbeef) = 0x12345678; // test page fault
 	nointloop();
 }

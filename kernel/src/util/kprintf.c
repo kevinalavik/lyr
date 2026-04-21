@@ -24,3 +24,8 @@ int kprintf(const char *format, ...)
 	lyrterm_putstr(buf);
 	return len;
 }
+
+int vsnprintf(char *str, size_t size, const char *format, va_list ap)
+{
+	return npf_vsnprintf(str, size, format, ap);
+}
