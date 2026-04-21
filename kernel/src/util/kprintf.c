@@ -1,5 +1,6 @@
 #include <util/kprintf.h>
 #include <dev/uart.h>
+#include <lib/lyrterm.h>
 
 #define NANOPRINTF_IMPLEMENTATION
 #define NANOPRINTF_USE_FIELD_WIDTH_FORMAT_SPECIFIERS 1
@@ -20,5 +21,6 @@ int kprintf(const char *format, ...)
 	va_end(args);
 
 	uart_wbuf(buf, len);
+	lyrterm_putstr(buf);
 	return len;
 }
