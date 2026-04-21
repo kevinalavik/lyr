@@ -25,8 +25,8 @@ static uint32_t default_bg = 0x001e1e1e;
 static uint32_t current_fg;
 static uint32_t current_bg;
 
-#define CURSOR_COLOR 0x00000000
-#define CURSOR_HEIGHT 2
+#define CURSOR_COLOR current_fg
+#define CURSOR_HEIGHT _LYRTERM_FONT_HEIGHT
 
 #define ANSI_MAX_PARAMS 8
 
