@@ -65,6 +65,8 @@ void lyr_entry(void)
 	idt_init();
 	log_info("entry", "IDT ok");
 
-	*((uint64_t *)0xdeadbeef) = 0x12345678; // test page fault
+	kprintf("------------------------------\n");
+	log_info("entry", "lyr kernel initialized successfully");
+
 	nointloop();
 }
