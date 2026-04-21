@@ -6,6 +6,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define _LYRTERM_LINE_PADDING_Y 2
+#define _LYRTERM_LINE_HEIGHT (_LYRTERM_FONT_HEIGHT + _LYRTERM_LINE_PADDING_Y)
+
+#define _LYRTERM_LINE_PADDING_X 0
+#define _LYRTERM_LINE_WIDTH (_LYRTERM_FONT_WIDTH + _LYRTERM_LINE_PADDING_X)
+
+#define _LYRTERM_MARGIN_X 10
+#define _LYRTERM_MARGIN_Y 10
+
 static volatile uint32_t *fb;
 static uint32_t fb_width;
 static uint32_t fb_height;
@@ -63,6 +72,14 @@ static void putpixel(uint32_t x, uint32_t y, uint32_t color)
 		fb[y * fb_pitch + x] = color;
 }
 
+static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+					  uint32_t color)
+{
+	for (uint32_t row = y; row < y + h; row++)
+		for (uint32_t col = x; col < x + w; col++)
+			putpixel(col, row, color);
+}
+
 static void drawch(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg)
 {
 	if ((unsigned char)c < 32 || (unsigned char)c > 126)
@@ -72,6 +89,7 @@ static void drawch(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg)
 
 	for (uint32_t row = 0; row < _LYRTERM_FONT_HEIGHT; row++) {
 		uint8_t bits = _lyrterm_font[glyph_row_base][row];
+
 		for (uint32_t col = 0; col < _LYRTERM_FONT_WIDTH; col++) {
 			uint32_t color = (bits & (1 << (7 - col))) ? fg : bg;
 			putpixel(x + col, y + row, color);
@@ -79,29 +97,46 @@ static void drawch(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg)
 	}
 }
 
-static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
-					  uint32_t color)
+static inline uint32_t term_x0(void)
 {
-	for (uint32_t row = y; row < y + h; row++)
-		for (uint32_t col = x; col < x + w; col++)
-			putpixel(col, row, color);
+	return _LYRTERM_MARGIN_X;
+}
+static inline uint32_t term_y0(void)
+{
+	return _LYRTERM_MARGIN_Y;
+}
+
+static inline uint32_t term_width(void)
+{
+	return fb_width - (_LYRTERM_MARGIN_X * 2);
+}
+
+static inline uint32_t term_height(void)
+{
+	return fb_height - (_LYRTERM_MARGIN_Y * 2);
 }
 
 static void scroll_up(void)
 {
-	const uint32_t copy_rows = fb_height - _LYRTERM_FONT_HEIGHT;
+	uint32_t x0 = term_x0();
+	uint32_t y0 = term_y0();
+	uint32_t w = term_width();
+	uint32_t h = term_height();
 
-	for (uint32_t y = 0; y < copy_rows; y++)
-		memcpy((void *)&fb[y * fb_pitch],
-			   (void *)&fb[(y + _LYRTERM_FONT_HEIGHT) * fb_pitch],
-			   fb_width * sizeof(uint32_t));
+	uint32_t copy_h = h - _LYRTERM_LINE_HEIGHT;
 
-	fill_rect(0, copy_rows, fb_width, _LYRTERM_FONT_HEIGHT, default_bg);
+	for (uint32_t y = 0; y < copy_h; y++) {
+		memcpy((void *)&fb[(y0 + y) * fb_pitch + x0],
+			   (void *)&fb[(y0 + y + _LYRTERM_LINE_HEIGHT) * fb_pitch + x0],
+			   w * sizeof(uint32_t));
+	}
+
+	fill_rect(x0, y0 + copy_h, w, _LYRTERM_LINE_HEIGHT, default_bg);
 }
 
 static void cursor_draw(void)
 {
-	fill_rect(cursor_x, cursor_y + _LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT,
+	fill_rect(cursor_x, cursor_y + (_LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT),
 			  _LYRTERM_FONT_WIDTH, CURSOR_HEIGHT, CURSOR_COLOR);
 }
 
@@ -113,12 +148,12 @@ static void cursor_erase(void)
 
 static void newline(void)
 {
-	cursor_x = 0;
-	cursor_y += _LYRTERM_FONT_HEIGHT;
+	cursor_x = term_x0();
+	cursor_y += _LYRTERM_LINE_HEIGHT;
 
-	if (cursor_y + _LYRTERM_FONT_HEIGHT > fb_height) {
+	if (cursor_y + _LYRTERM_LINE_HEIGHT > term_y0() + term_height()) {
 		scroll_up();
-		cursor_y = (rows - 1) * _LYRTERM_FONT_HEIGHT;
+		cursor_y = term_y0() + (rows - 1) * _LYRTERM_LINE_HEIGHT;
 	}
 }
 
@@ -126,8 +161,9 @@ static void advance_cursor(void)
 {
 	cursor_x += _LYRTERM_FONT_WIDTH;
 
-	if (cursor_x + _LYRTERM_FONT_WIDTH > fb_width)
+	if (cursor_x + _LYRTERM_FONT_WIDTH > term_x0() + term_width()) {
 		newline();
+	}
 }
 
 static void ansi_handle_sgr(int *params, int nparams)
@@ -177,19 +213,20 @@ static void ansi_dispatch_csi(char final)
 void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,
 				  uint32_t height, uint32_t pitch)
 {
-	if (!framebuffer || !width || !height || !pitch) {
-		kprintf("lyrterm: invalid framebuffer parameters\n");
+	if (!framebuffer || !width || !height || !pitch)
 		return;
-	}
 
 	fb = framebuffer;
 	fb_width = width;
 	fb_height = height;
 	fb_pitch = pitch;
-	cursor_x = 0;
-	cursor_y = 0;
-	cols = width / _LYRTERM_FONT_WIDTH;
-	rows = height / _LYRTERM_FONT_HEIGHT;
+
+	cursor_x = term_x0();
+	cursor_y = term_y0();
+
+	cols = term_width() / _LYRTERM_LINE_WIDTH;
+	rows = term_height() / _LYRTERM_LINE_HEIGHT;
+
 	current_fg = default_fg;
 	current_bg = default_bg;
 
@@ -250,7 +287,7 @@ void lyrterm_putch(char c)
 		newline();
 		break;
 	case '\r':
-		cursor_x = 0;
+		cursor_x = term_x0();
 		break;
 	case '\t':
 		do {
