@@ -1,6 +1,4 @@
-axboot.h
-nanoprintf.h
-build
-axboot
-lyr.iso
-ovmf
+/limine
+/edk2-ovmf
+*.iso
+*.hdd
