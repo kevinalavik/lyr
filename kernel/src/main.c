@@ -53,7 +53,7 @@ void lyr_entry(void)
 		framebuffer_request.response->framebuffers[0];
 
 	/* use another theme, dark is the default */
-	lyrterm_apply_theme(&lyrterm_theme_nord);
+	lyrterm_apply_theme(&lyrterm_theme_dracula);
 	lyrterm_init(framebuffer->address, framebuffer->width, framebuffer->height,
 				 framebuffer->pitch / 4);
 
