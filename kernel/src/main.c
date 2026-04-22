@@ -62,6 +62,19 @@ void lyr_entry(void)
 	}
 	kprintf("\n");
 
+	const char *reset = "\x1b[0m";
+	const char *block = "  ";
+
+	for (int i = 40; i <= 47; i++) {
+		kprintf("\x1b[%dm%s%s", i, block, reset);
+	}
+	kprintf("\n");
+
+	for (int i = 100; i <= 107; i++) {
+		kprintf("\x1b[%dm%s%s", i, block, reset);
+	}
+	kprintf("\n\n");
+
 	gdt_init();
 	log_info("entry", "GDT ok");
 	idt_init();
