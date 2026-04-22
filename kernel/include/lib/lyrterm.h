@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <lib/lyrterm_theme.h>
 
+/* for line cursor, uncomment this line */
+// #define LYRTERM_LINE_CURSOR
+
 /* lyr kernel graphical terminal renderer */
 
 void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,

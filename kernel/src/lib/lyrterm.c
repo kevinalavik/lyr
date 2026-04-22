@@ -40,7 +40,11 @@ static uint32_t current_bg;
 #define ansi_colors_bright (active_theme->ansi_bright)
 
 #define CURSOR_COLOR current_fg
+#ifdef LYRTERM_LINE_CURSOR
+#define CURSOR_HEIGHT _LYRTERM_FONT_HEIGHT / 6
+#else
 #define CURSOR_HEIGHT _LYRTERM_FONT_HEIGHT
+#endif
 
 #define ANSI_MAX_PARAMS 8
 
