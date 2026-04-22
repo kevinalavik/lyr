@@ -80,8 +80,5 @@ void lyr_entry(void)
 	idt_init();
 	log_info("entry", "IDT ok");
 
-	kprintf("------------------------------\n");
-	log_info("entry", "lyr kernel ♥ initialized successfully");
-
 	nointloop();
 }

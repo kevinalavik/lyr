@@ -8,13 +8,14 @@
 #include <stdint.h>
 
 #define _LYRTERM_LINE_PADDING_Y 0
-#define _LYRTERM_LINE_HEIGHT (_LYRTERM_FONT_HEIGHT + _LYRTERM_LINE_PADDING_Y)
+#define _LYRTERM_LINE_HEIGHT \
+	(_LYRTERM_FONT_ASCENT + _LYRTERM_FONT_DESCENT + _LYRTERM_LINE_PADDING_Y)
 
 #define _LYRTERM_LINE_PADDING_X 0
 #define _LYRTERM_LINE_WIDTH (_LYRTERM_FONT_WIDTH + _LYRTERM_LINE_PADDING_X)
 
-#define _LYRTERM_MARGIN_X 10
-#define _LYRTERM_MARGIN_Y 10
+#define _LYRTERM_MARGIN_X 0
+#define _LYRTERM_MARGIN_Y 0
 
 static volatile uint32_t *fb;
 static uint32_t fb_width;
@@ -180,13 +181,17 @@ static void scroll_up(void)
 
 static void cursor_draw(void)
 {
-	fill_rect(cursor_x, cursor_y + (_LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT),
+	uint32_t top = cursor_y - _LYRTERM_FONT_ASCENT;
+
+	fill_rect(cursor_x, top + (_LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT),
 			  _LYRTERM_FONT_WIDTH, CURSOR_HEIGHT, CURSOR_COLOR);
 }
 
 static void cursor_erase(void)
 {
-	fill_rect(cursor_x, cursor_y + _LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT,
+	uint32_t top = cursor_y - _LYRTERM_FONT_ASCENT;
+
+	fill_rect(cursor_x, top + (_LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT),
 			  _LYRTERM_FONT_WIDTH, CURSOR_HEIGHT, current_bg);
 }
 
@@ -195,7 +200,7 @@ static void newline(void)
 	cursor_x = term_x0();
 	cursor_y += _LYRTERM_LINE_HEIGHT;
 
-	if (cursor_y + _LYRTERM_LINE_HEIGHT > term_y0() + term_height()) {
+	if (cursor_y + _LYRTERM_FONT_DESCENT > term_y0() + term_height()) {
 		scroll_up();
 		cursor_y = term_y0() + (rows - 1) * _LYRTERM_LINE_HEIGHT;
 	}
@@ -263,7 +268,7 @@ void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,
 	fb_pitch = pitch;
 
 	cursor_x = term_x0();
-	cursor_y = term_y0();
+	cursor_y = term_y0() + _LYRTERM_FONT_ASCENT;
 
 	cols = term_width() / _LYRTERM_LINE_WIDTH;
 	rows = term_height() / _LYRTERM_LINE_HEIGHT;
@@ -346,7 +351,8 @@ void lyrterm_putch(char raw)
 		} while ((cursor_x / _LYRTERM_FONT_WIDTH) % 8);
 		break;
 	default:
-		drawch(cursor_x, cursor_y, cp, current_fg, current_bg);
+		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, cp, current_fg,
+			   current_bg);
 		advance_cursor();
 		break;
 	}
@@ -382,7 +388,8 @@ void lyrterm_putcp(uint32_t codepoint)
 		} while ((cursor_x / _LYRTERM_FONT_WIDTH) % 8);
 		break;
 	default:
-		drawch(cursor_x, cursor_y, codepoint, current_fg, current_bg);
+		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, codepoint, current_fg,
+			   current_bg);
 		advance_cursor();
 		break;
 	}

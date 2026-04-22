@@ -134,21 +134,23 @@ def generate(font_path, output_path, font_size, codepoints, cell_width=None):
     max_bytes     = bytes_per_row * max_height
     glyph_count   = len(codepoints)
 
-    print(f"cell={max_width}x{max_height}  bytes_per_glyph={max_bytes}  "
-          f"(width from {'override' if cell_width else 'ASCII sample'})")
+    print(f"cell={max_width}x{max_height}  bytes_per_glyph={max_bytes}")
 
     from collections import Counter
     all_bitmaps = []
+
     for cp in codepoints:
         image = Image.new("L", (max_width, max_height), 0)
         draw  = ImageDraw.Draw(image)
+
         try:
-            bbox  = font.getbbox(chr(cp))
+            bbox = font.getbbox(chr(cp))
             x_off = -bbox[0]
-            y_off = ascent - bbox[3]   # baseline alignment (unchanged)
+            y_off = ascent - bbox[3]
             draw.text((x_off, y_off), chr(cp), fill=255, font=font)
         except Exception:
             pass
+
         bitmap = tuple((image_to_bitmap(image) + [0] * max_bytes)[:max_bytes])
         all_bitmaps.append((cp, bitmap))
 
@@ -160,75 +162,60 @@ def generate(font_path, output_path, font_size, codepoints, cell_width=None):
     glyph_bitmaps = [(cp, bmp) for cp, bmp in all_bitmaps if bmp != sentinel]
     glyph_count   = len(glyph_bitmaps)
 
-    print(f"cell={max_width}x{max_height}  "
-          f"total={len(all_bitmaps)}  "
-          f"dropped={dropped} sentinel glyphs  "
-          f"kept={glyph_count}")
+    print(f"total={len(all_bitmaps)} dropped={dropped} kept={glyph_count}")
 
     with open(h_path, "w", encoding="utf-8") as f:
         w = f.write
-        w(f"#ifndef {guard}\n")
-        w(f"#define {guard}\n\n")
-        w("#include <stdint.h>\n\n")
+        w(f"#ifndef {guard}\n#define {guard}\n\n#include <stdint.h>\n\n")
         w(f"#define _LYRTERM_FONT_GLYPH_COUNT {glyph_count}\n")
-        w(f"#define _LYRTERM_FONT_WIDTH        {max_width}\n")
-        w(f"#define _LYRTERM_FONT_HEIGHT       {max_height}\n")
-        w(f"#define _LYRTERM_FONT_MAX_BYTES    {max_bytes}\n\n")
-        w("/* Sentinel bitmap emitted for any codepoint not in the map.\n")
-        w(f" * {dropped} of {len(all_bitmaps)} glyphs were identical to this and omitted. */\n")
+        w(f"#define _LYRTERM_FONT_WIDTH {max_width}\n")
+        w(f"#define _LYRTERM_FONT_HEIGHT {max_height}\n")
+        w(f"#define _LYRTERM_FONT_ASCENT {ascent}\n")
+        w(f"#define _LYRTERM_FONT_DESCENT {descent}\n")
+        w(f"#define _LYRTERM_FONT_MAX_BYTES {max_bytes}\n\n")
         w(f"#define _LYRTERM_FONT_SENTINEL_BYTES {{ {sentinel_hex} }}\n\n")
-        w("typedef struct {\n")
-        w("    uint32_t codepoint;\n")
-        w("    uint16_t idx;\n")
-        w("} _lyrterm_glyph_entry_t;\n\n")
+
+        w("typedef struct { uint32_t codepoint; uint16_t idx; } _lyrterm_glyph_entry_t;\n\n")
         w(f"extern const _lyrterm_glyph_entry_t _lyrterm_glyph_map[{glyph_count}];\n")
         w(f"extern const uint8_t _lyrterm_font[{glyph_count}][{max_bytes}];\n")
         w(f"extern const uint8_t _lyrterm_font_sentinel[{max_bytes}];\n\n")
-        w("static inline int _lyrterm_find_glyph(uint32_t codepoint)\n")
-        w("{\n")
+
+        w("static inline int _lyrterm_find_glyph(uint32_t codepoint) {\n")
         w("    int lo = 0, hi = _LYRTERM_FONT_GLYPH_COUNT - 1;\n")
         w("    while (lo <= hi) {\n")
         w("        int mid = (lo + hi) / 2;\n")
         w("        uint32_t cp = _lyrterm_glyph_map[mid].codepoint;\n")
-        w("        if (cp == codepoint) return (int)_lyrterm_glyph_map[mid].idx;\n")
-        w("        if (cp < codepoint)  lo = mid + 1;\n")
-        w("        else                 hi = mid - 1;\n")
+        w("        if (cp == codepoint) return _lyrterm_glyph_map[mid].idx;\n")
+        w("        if (cp < codepoint) lo = mid + 1; else hi = mid - 1;\n")
         w("    }\n")
-        w("    return -1;\n")
-        w("}\n\n")
-        w(f"#endif\n")
+        w("    return -1;\n}\n\n#endif\n")
 
     with open(c_path, "w", encoding="utf-8") as f:
         w = f.write
         w(f'#include "{h_name}"\n\n')
         w(f"const uint8_t _lyrterm_font_sentinel[{max_bytes}] = {{ {sentinel_hex} }};\n\n")
+
         w(f"const _lyrterm_glyph_entry_t _lyrterm_glyph_map[{glyph_count}] = {{\n")
         for i, (cp, _) in enumerate(glyph_bitmaps):
-            comma = "," if i < glyph_count - 1 else ""
-            w(f"    {{ .codepoint = 0x{cp:06X}, .idx = {i} }}{comma}\n")
+            w(f"    {{0x{cp:06X}, {i}}},\n")
         w("};\n\n")
+
         w(f"const uint8_t _lyrterm_font[{glyph_count}][{max_bytes}] = {{\n")
-        for i, (cp, bitmap) in enumerate(glyph_bitmaps):
-            comma = "," if i < glyph_count - 1 else ""
-            w("    {")
-            w(", ".join(f"0x{b:02X}" for b in bitmap))
-            w(f"}}{comma}\n")
+        for _, bitmap in glyph_bitmaps:
+            w("    {" + ", ".join(f"0x{b:02X}" for b in bitmap) + "},\n")
         w("};\n")
 
     print(f"wrote {h_path} and {c_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate C bitmap font from a TTF/OTF (full Unicode)"
-    )
-    parser.add_argument("font",   help="Path to .ttf/.otf font file")
-    parser.add_argument("output", help="Output base path (e.g. include/lib/lyrterm_font)")
-    parser.add_argument("--size",  type=int, default=16)
-    parser.add_argument("--cell-width", type=int, default=None,
-                        help="Force cell width in pixels (default: derived from ASCII glyphs)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("font")
+    parser.add_argument("output")
+    parser.add_argument("--size", type=int, default=16)
+    parser.add_argument("--cell-width", type=int, default=None)
     parser.add_argument("--first", type=int, default=None)
-    parser.add_argument("--last",  type=int, default=None)
+    parser.add_argument("--last", type=int, default=None)
     args = parser.parse_args()
 
     if args.first is not None and args.last is not None:
@@ -236,15 +223,10 @@ def main():
             cp for cp in range(args.first, args.last + 1)
             if not (0xD800 <= cp <= 0xDFFF)
         ]
-        print(f"manual range U+{args.first:04X}-U+{args.last:04X} ({len(codepoints)} codepoints)")
     else:
-        print(f"enumerating codepoints in {args.font} ...")
         codepoints = get_all_codepoints(args.font)
-        print(f"found {len(codepoints)} codepoints")
 
-    generate(font_path=args.font, output_path=args.output,
-             font_size=args.size, codepoints=codepoints,
-             cell_width=args.cell_width)
+    generate(args.font, args.output, args.size, codepoints, args.cell_width)
 
 
 if __name__ == "__main__":
