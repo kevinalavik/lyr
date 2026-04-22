@@ -52,6 +52,8 @@ void lyr_entry(void)
 	struct limine_framebuffer *framebuffer =
 		framebuffer_request.response->framebuffers[0];
 
+	/* use light theme, dark is the default */
+	lyrterm_apply_theme(&lyrterm_theme_light);
 	lyrterm_init(framebuffer->address, framebuffer->width, framebuffer->height,
 				 framebuffer->pitch / 4);
 

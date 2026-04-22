@@ -2,7 +2,7 @@
 #include <lib/lyrterm_font.h>
 #include <lib/string.h>
 #include <util/kprintf.h>
-
+#include <lib/lyrterm_theme.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,11 +29,15 @@ static bool initialized = false;
 static uint32_t cols;
 static uint32_t rows;
 
-static uint32_t default_fg = 0x00f5e6c8;
-static uint32_t default_bg = 0x001e1e1e;
+static const lyrterm_theme_t *active_theme = &lyrterm_theme_dark;
 
+static uint32_t default_fg;
+static uint32_t default_bg;
 static uint32_t current_fg;
 static uint32_t current_bg;
+
+#define ansi_colors (active_theme->ansi_normal)
+#define ansi_colors_bright (active_theme->ansi_bright)
 
 #define CURSOR_COLOR current_fg
 #define CURSOR_HEIGHT _LYRTERM_FONT_HEIGHT
@@ -102,16 +106,6 @@ static uint32_t utf8_feed(uint8_t byte)
 	}
 	return 0;
 }
-
-static const uint32_t ansi_colors[8] = {
-	0x00000000, 0x00aa0000, 0x0000aa00, 0x00aa5500,
-	0x000000aa, 0x00aa00aa, 0x0000aaaa, 0x00aaaaaa,
-};
-
-static const uint32_t ansi_colors_bright[8] = {
-	0x00555555, 0x00ff5555, 0x0055ff55, 0x00ffff55,
-	0x005555ff, 0x00ff55ff, 0x0055ffff, 0x00ffffff,
-};
 
 static void putpixel(uint32_t x, uint32_t y, uint32_t color)
 {
@@ -270,8 +264,7 @@ void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,
 	cols = term_width() / _LYRTERM_LINE_WIDTH;
 	rows = term_height() / _LYRTERM_LINE_HEIGHT;
 
-	current_fg = default_fg;
-	current_bg = default_bg;
+	lyrterm_apply_theme(active_theme);
 
 	for (uint32_t y = 0; y < height; y++)
 		for (uint32_t x = 0; x < width; x++)
@@ -391,4 +384,15 @@ void lyrterm_putcp(uint32_t codepoint)
 	}
 
 	cursor_draw();
+}
+
+void lyrterm_apply_theme(const lyrterm_theme_t *theme)
+{
+	if (!theme)
+		return;
+	active_theme = theme;
+	default_fg = theme->fg;
+	default_bg = theme->bg;
+	current_fg = theme->fg;
+	current_bg = theme->bg;
 }

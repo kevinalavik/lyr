@@ -1,5 +1,5 @@
-#ifndef LYRTERM_FONT_H
-#define LYRTERM_FONT_H
+#ifndef _LYR_LIB_LYRTERM_FONT_H
+#define _LYR_LIB_LYRTERM_FONT_H
 
 #include <stdint.h>
 
@@ -41,4 +41,4 @@ static inline int _lyrterm_find_glyph(uint32_t codepoint)
 	return -1;
 }
 
-#endif
+#endif // _LYR_LIB_LYRTERM_FONT_H
