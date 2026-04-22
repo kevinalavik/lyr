@@ -107,6 +107,11 @@ void pfndb_init(struct limine_memmap_response *memmap)
 	for (uint64_t i = 0; i <= max_pfn; i++) {
 		mem_map[i].flags = PAGE_RESERVED;
 		mem_map[i].refcount = 0;
+
+		if (i < max_pfn)
+			mem_map[i].u1.next = &mem_map[i + 1];
+		else
+			mem_map[i].u1.next = NULL;
 	}
 
 	/* mark usable memory */
@@ -131,4 +136,56 @@ void pfndb_init(struct limine_memmap_response *memmap)
 page_t *pfndb_getdb(void)
 {
 	return mem_map;
+}
+
+uint64_t pfndb_getmax(void)
+{
+	return max_pfn;
+}
+
+uint64_t pfndb_pfnaddr(uint64_t pfn)
+{
+	if (pfn > max_pfn)
+		return 0;
+	return pfn * PAGE_SIZE;
+}
+
+page_t *pfndb_getptr(uint64_t pfn)
+{
+	if (pfn > max_pfn)
+		return NULL;
+
+	return &mem_map[pfn];
+}
+
+uint64_t pfndb_getpfn(page_t *page)
+{
+	if (!page || !mem_map)
+		return (uint64_t)-1;
+
+	if (page < mem_map || page > &mem_map[max_pfn])
+		return (uint64_t)-1;
+
+	return (uint64_t)(page - mem_map);
+}
+
+uint64_t pfndb_page_to_phys(page_t *page)
+{
+	if (!page || !mem_map)
+		return 0;
+
+	if (page < mem_map || page > &mem_map[max_pfn])
+		return 0;
+
+	return (uint64_t)(page - mem_map) * PAGE_SIZE;
+}
+
+page_t *pfndb_phys_to_page(uint64_t phys)
+{
+	uint64_t pfn = phys / PAGE_SIZE;
+
+	if (pfn > max_pfn)
+		return NULL;
+
+	return &mem_map[pfn];
 }

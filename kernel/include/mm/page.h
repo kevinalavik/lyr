@@ -8,10 +8,15 @@
 #define PAGE_FREE (1u << 0)
 #define PAGE_USED (1u << 1)
 #define PAGE_RESERVED (1u << 2)
-
 /* page metadata */
-typedef struct {
-	uint8_t flags;
+typedef struct page page_t;
+
+typedef struct page {
+	union {
+		page_t *next;
+	} u1;
+
+	uint64_t flags;
 	uint32_t refcount;
 } __attribute__((aligned(64))) page_t;
 

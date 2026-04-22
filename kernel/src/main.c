@@ -10,6 +10,7 @@
 #include <cpu/idt.h>
 #include <debug/panic.h>
 #include <mm/pfndb.h>
+#include <mm/pmm.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
@@ -105,6 +106,24 @@ void lyr_entry(void)
 	log_info("entry", "got hhdm offset -> %p", _lyr_hhdm_offset);
 	pfndb_init(memmap_request.response);
 	log_info("entry", "PFNDB ok");
+
+	pmm_init();
+	log_info("entry", "PMM ok");
+
+	void *a = palloc_single();
+	void *b = palloc_single();
+
+	log_info("test", "allocated single physical page @ %p", a);
+	log_info("test", "allocated single physical page @ %p", b);
+
+	pfree(a);
+	pfree(b);
+
+	void *c = palloc_single();
+
+	log_info("test",
+			 "freed prior allocs and allocated single physical page @ %p", c);
+	pfree(c);
 
 	nointloop();
 }
