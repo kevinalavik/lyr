@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define _LYRTERM_LINE_PADDING_Y 2
+#define _LYRTERM_LINE_PADDING_Y 0
 #define _LYRTERM_LINE_HEIGHT (_LYRTERM_FONT_HEIGHT + _LYRTERM_LINE_PADDING_Y)
 
 #define _LYRTERM_LINE_PADDING_X 0
