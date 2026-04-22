@@ -4,15 +4,22 @@
 #include <stdint.h>
 
 typedef struct {
-    const char *name;
-    uint32_t fg;
-    uint32_t bg;
-    uint32_t ansi_normal[8];
-    uint32_t ansi_bright[8];
+	const char *name;
+	uint32_t fg;
+	uint32_t bg;
+	uint32_t ansi_normal[8];
+	uint32_t ansi_bright[8];
 } lyrterm_theme_t;
 
 extern const lyrterm_theme_t lyrterm_theme_dark;
 extern const lyrterm_theme_t lyrterm_theme_light;
+extern const lyrterm_theme_t lyrterm_theme_solarized_dark;
+extern const lyrterm_theme_t lyrterm_theme_solarized_light;
+extern const lyrterm_theme_t lyrterm_theme_gruvbox_dark;
+extern const lyrterm_theme_t lyrterm_theme_gruvbox_light;
+extern const lyrterm_theme_t lyrterm_theme_dracula;
+extern const lyrterm_theme_t lyrterm_theme_neon;
+extern const lyrterm_theme_t lyrterm_theme_nord;
 
 void lyrterm_apply_theme(const lyrterm_theme_t *theme);
 
