@@ -66,7 +66,9 @@ void lyr_entry(void)
 	log_info("entry", "IDT ok");
 
 	kprintf("------------------------------\n");
-	log_info("entry", "lyr kernel initialized successfully");
+	log_info("entry", "lyr kernel ♥ initialized successfully");
+
+	*((uint64_t *)0xdeadbeef) = 69;
 
 	nointloop();
 }

@@ -24,7 +24,7 @@ static void dump_registers(const interrupt_frame_t *f)
 	log_err("panic", "CR0=%016lx  CR2=%016lx CR3=%016lx CR4=%016lx", f->cr0,
 			f->cr2, f->cr3, f->cr4);
 
-	log_err("panic", "ES=%016lx   DS =%016lx", f->es, f->ds);
+	log_err("panic", "ES =%016lx  DS =%016lx", f->es, f->ds);
 
 	log_err("panic", "VEC=%016lu  ERR=%016lx", f->vector, f->err);
 }

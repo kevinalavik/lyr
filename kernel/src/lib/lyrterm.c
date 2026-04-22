@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define _LYRTERM_LINE_PADDING_Y 2
 #define _LYRTERM_LINE_HEIGHT (_LYRTERM_FONT_HEIGHT + _LYRTERM_LINE_PADDING_Y)
@@ -56,6 +57,52 @@ static ansi_state_t ansi_state = ANSI_STATE_NORMAL;
 static int ansi_params[ANSI_MAX_PARAMS];
 static int ansi_nparams;
 
+typedef struct {
+	uint32_t codepoint;
+	uint8_t bytes_left;
+} utf8_state_t;
+
+static utf8_state_t utf8 = { 0, 0 };
+
+static uint32_t utf8_feed(uint8_t byte)
+{
+	if (utf8.bytes_left == 0) {
+		if (byte < 0x80) {
+			return (uint32_t)byte;
+		} else if ((byte & 0xE0) == 0xC0) {
+			utf8.codepoint = byte & 0x1F;
+			utf8.bytes_left = 1;
+		} else if ((byte & 0xF0) == 0xE0) {
+			utf8.codepoint = byte & 0x0F;
+			utf8.bytes_left = 2;
+		} else if ((byte & 0xF8) == 0xF0) {
+			utf8.codepoint = byte & 0x07;
+			utf8.bytes_left = 3;
+		} else {
+			return 0xFFFD;
+		}
+		return 0;
+	}
+
+	if ((byte & 0xC0) != 0x80) {
+		utf8.bytes_left = 0;
+		utf8.codepoint = 0;
+		return 0xFFFD;
+	}
+
+	utf8.codepoint = (utf8.codepoint << 6) | (byte & 0x3F);
+	utf8.bytes_left--;
+
+	if (utf8.bytes_left == 0) {
+		uint32_t cp = utf8.codepoint;
+		utf8.codepoint = 0;
+		if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+			return 0xFFFD;
+		return cp;
+	}
+	return 0;
+}
+
 static const uint32_t ansi_colors[8] = {
 	0x00000000, 0x00aa0000, 0x0000aa00, 0x00aa5500,
 	0x000000aa, 0x00aa00aa, 0x0000aaaa, 0x00aaaaaa,
@@ -80,18 +127,21 @@ static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 			putpixel(col, row, color);
 }
 
-static void drawch(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg)
+static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
+				   uint32_t bg)
 {
-	if ((unsigned char)c < 32 || (unsigned char)c > 126)
-		c = '?';
-
-	const uint8_t glyph_row_base = (uint8_t)c - 32;
+	int glyph_index = _lyrterm_find_glyph(codepoint);
+	const uint8_t *glyph = (glyph_index >= 0) ? _lyrterm_font[glyph_index] :
+												_lyrterm_font_sentinel;
+	const uint32_t bytes_per_row = (_LYRTERM_FONT_WIDTH + 7) / 8;
 
 	for (uint32_t row = 0; row < _LYRTERM_FONT_HEIGHT; row++) {
-		uint8_t bits = _lyrterm_font[glyph_row_base][row];
-
+		const uint8_t *row_data = &glyph[row * bytes_per_row];
 		for (uint32_t col = 0; col < _LYRTERM_FONT_WIDTH; col++) {
-			uint32_t color = (bits & (1 << (7 - col))) ? fg : bg;
+			uint32_t byte_index = col / 8;
+			uint32_t bit_index = 7 - (col % 8);
+			uint32_t color =
+				(row_data[byte_index] & (1 << bit_index)) ? fg : bg;
 			putpixel(x + col, y + row, color);
 		}
 	}
@@ -105,12 +155,10 @@ static inline uint32_t term_y0(void)
 {
 	return _LYRTERM_MARGIN_Y;
 }
-
 static inline uint32_t term_width(void)
 {
 	return fb_width - (_LYRTERM_MARGIN_X * 2);
 }
-
 static inline uint32_t term_height(void)
 {
 	return fb_height - (_LYRTERM_MARGIN_Y * 2);
@@ -122,14 +170,12 @@ static void scroll_up(void)
 	uint32_t y0 = term_y0();
 	uint32_t w = term_width();
 	uint32_t h = term_height();
-
 	uint32_t copy_h = h - _LYRTERM_LINE_HEIGHT;
 
-	for (uint32_t y = 0; y < copy_h; y++) {
+	for (uint32_t y = 0; y < copy_h; y++)
 		memcpy((void *)&fb[(y0 + y) * fb_pitch + x0],
 			   (void *)&fb[(y0 + y + _LYRTERM_LINE_HEIGHT) * fb_pitch + x0],
 			   w * sizeof(uint32_t));
-	}
 
 	fill_rect(x0, y0 + copy_h, w, _LYRTERM_LINE_HEIGHT, default_bg);
 }
@@ -160,10 +206,8 @@ static void newline(void)
 static void advance_cursor(void)
 {
 	cursor_x += _LYRTERM_FONT_WIDTH;
-
-	if (cursor_x + _LYRTERM_FONT_WIDTH > term_x0() + term_width()) {
+	if (cursor_x + _LYRTERM_FONT_WIDTH > term_x0() + term_width())
 		newline();
-	}
 }
 
 static void ansi_handle_sgr(int *params, int nparams)
@@ -176,7 +220,6 @@ static void ansi_handle_sgr(int *params, int nparams)
 
 	for (int i = 0; i < nparams; i++) {
 		int p = params[i];
-
 		if (p == 0) {
 			current_fg = default_fg;
 			current_bg = default_bg;
@@ -234,6 +277,9 @@ void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,
 		for (uint32_t x = 0; x < width; x++)
 			fb[y * pitch + x] = default_bg;
 
+	utf8.codepoint = 0;
+	utf8.bytes_left = 0;
+
 	initialized = true;
 	cursor_draw();
 }
@@ -246,13 +292,15 @@ void lyrterm_set_colors(uint32_t fg, uint32_t bg)
 	current_bg = bg;
 }
 
-void lyrterm_putch(char c)
+void lyrterm_putch(char raw)
 {
 	if (!initialized)
 		return;
 
+	uint8_t byte = (uint8_t)raw;
+
 	if (ansi_state == ANSI_STATE_ESC) {
-		ansi_state = (c == '[') ? ANSI_STATE_CSI : ANSI_STATE_NORMAL;
+		ansi_state = (raw == '[') ? ANSI_STATE_CSI : ANSI_STATE_NORMAL;
 		if (ansi_state == ANSI_STATE_CSI) {
 			ansi_nparams = 0;
 			ansi_params[0] = 0;
@@ -261,28 +309,34 @@ void lyrterm_putch(char c)
 	}
 
 	if (ansi_state == ANSI_STATE_CSI) {
-		if (c >= '0' && c <= '9') {
+		if (raw >= '0' && raw <= '9') {
 			ansi_params[ansi_nparams] =
-				ansi_params[ansi_nparams] * 10 + (c - '0');
-		} else if (c == ';') {
+				ansi_params[ansi_nparams] * 10 + (raw - '0');
+		} else if (raw == ';') {
 			if (ansi_nparams < ANSI_MAX_PARAMS - 1)
 				ansi_params[++ansi_nparams] = 0;
 		} else {
-			ansi_dispatch_csi(c);
+			ansi_dispatch_csi(raw);
 			ansi_nparams = 0;
 			ansi_state = ANSI_STATE_NORMAL;
 		}
 		return;
 	}
 
-	if (c == '\e') {
+	if (raw == '\e') {
 		ansi_state = ANSI_STATE_ESC;
+		utf8.codepoint = 0;
+		utf8.bytes_left = 0;
 		return;
 	}
 
+	uint32_t cp = utf8_feed(byte);
+	if (cp == 0)
+		return;
+
 	cursor_erase();
 
-	switch (c) {
+	switch (cp) {
 	case '\n':
 		newline();
 		break;
@@ -295,7 +349,7 @@ void lyrterm_putch(char c)
 		} while ((cursor_x / _LYRTERM_FONT_WIDTH) % 8);
 		break;
 	default:
-		drawch(cursor_x, cursor_y, c, current_fg, current_bg);
+		drawch(cursor_x, cursor_y, cp, current_fg, current_bg);
 		advance_cursor();
 		break;
 	}
@@ -307,7 +361,34 @@ void lyrterm_putstr(const char *str)
 {
 	if (!str)
 		return;
-
 	while (*str)
 		lyrterm_putch(*str++);
+}
+
+void lyrterm_putcp(uint32_t codepoint)
+{
+	if (!initialized)
+		return;
+
+	cursor_erase();
+
+	switch (codepoint) {
+	case '\n':
+		newline();
+		break;
+	case '\r':
+		cursor_x = term_x0();
+		break;
+	case '\t':
+		do {
+			advance_cursor();
+		} while ((cursor_x / _LYRTERM_FONT_WIDTH) % 8);
+		break;
+	default:
+		drawch(cursor_x, cursor_y, codepoint, current_fg, current_bg);
+		advance_cursor();
+		break;
+	}
+
+	cursor_draw();
 }
