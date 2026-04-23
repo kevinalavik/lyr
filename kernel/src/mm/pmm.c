@@ -30,15 +30,15 @@ static page_t *_pmm_pop(void)
 static void _pmm_push(page_t *page)
 {
 	assert(page);
-	assert(!(
-		page->flags &
-		PAGE_FREE)); // assert on double free, prob should panic instead to handle in userspace
+	assert(page->refcount == 0);
+	assert(!(page->flags & PAGE_FREE));
 
 	page->flags &= ~PAGE_USED;
 	page->flags |= PAGE_FREE;
 
 	page->u1.next = freelist;
 	freelist = page;
+
 	memset((void *)PHYS_TO_VIRT(pfndb_page_to_phys(page)), 0, PAGE_SIZE);
 }
 
@@ -66,6 +66,7 @@ void pmm_init(void)
 		if (!(page->flags & PAGE_FREE))
 			continue;
 
+		page->refcount = 0;
 		page->u1.next = freelist;
 		freelist = page;
 	}
@@ -77,6 +78,9 @@ void *palloc_single()
 	if (!p)
 		kpanic(NULL, "pmm: out of memory");
 
+	assert(p->refcount == 0);
+	p->refcount = 1;
+
 	return (void *)pfndb_page_to_phys(p);
 }
 
@@ -84,6 +88,18 @@ void pfree(void *a)
 {
 	if (!a)
 		kpanic(NULL, "pmm: attempted to free NULL address");
+
 	page_t *p = pfndb_phys_to_page((uint64_t)a);
-	_pmm_push(p);
+
+	assert(p->refcount > 0);
+
+	p->refcount--;
+
+	if (p->refcount == 0) {
+		_pmm_push(p);
+	} else {
+		log_warn("pmm",
+				 "attempted to free page with refcount > 1 (refcount=%u)",
+				 p->refcount);
+	}
 }

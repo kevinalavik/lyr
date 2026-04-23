@@ -144,6 +144,15 @@ void lyr_entry(void)
 			 VIRT_TO_PHYS(test));
 	*test = 'A';
 	log_info("test", "done, %p=%c", test, *test);
+
+	log_info("test", "checking PFN for %p", test);
+
+	page_t *page = pfndb_phys_to_page(VIRT_TO_PHYS(test));
+	uint64_t pfn = pfndb_getpfn(page);
+	log_info("test",
+			 "pfn=%llu,page->flags=%x, page->refcount=%llu, page->u1.next=%p",
+			 pfn, page->flags, page->refcount, page->u1.next);
+
 	pfree(VIRT_TO_PHYS(test));
 
 	nointloop();
