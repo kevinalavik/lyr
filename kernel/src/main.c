@@ -113,16 +113,25 @@ void lyr_entry(void)
 	void *a = palloc_single();
 	void *b = palloc_single();
 
+	uint64_t old_a = (uint64_t)a;
+	uint64_t old_b = (uint64_t)b;
+
 	log_info("test", "allocated single physical page @ %p", a);
 	log_info("test", "allocated single physical page @ %p", b);
 
 	pfree(a);
+	log_info("test", "freed single physical page (%p)", old_a);
 	pfree(b);
+	log_info("test", "freed single physical page (%p)", old_b);
+
+	log_info("test", "expecting %p in next alloc", old_b);
 
 	void *c = palloc_single();
 
 	log_info("test",
 			 "freed prior allocs and allocated single physical page @ %p", c);
+
+	assert((uint64_t)c == old_b);
 	pfree(c);
 
 	nointloop();

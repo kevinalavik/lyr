@@ -50,7 +50,7 @@ void pmm_init(void)
 
 	freelist = NULL;
 
-	for (uint64_t i = 0; i <= max_pfn; i++) {
+	for (uint64_t i = max_pfn; i != 0; i--) {
 		page_t *page = pfndb_getptr(i);
 
 		if (!(page->flags & PAGE_FREE))
