@@ -143,8 +143,8 @@ void lyr_entry(void)
 	log_info("test", "writing 'A' to %p (lower half: %p)", test,
 			 VIRT_TO_PHYS(test));
 	*test = 'A';
-	log_info("test", "done, %p=%c\n", test, *test);
-	pfree(test);
+	log_info("test", "done, %p=%c", test, *test);
+	pfree(VIRT_TO_PHYS(test));
 
 	nointloop();
 }
