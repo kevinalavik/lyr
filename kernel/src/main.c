@@ -11,6 +11,7 @@
 #include <debug/panic.h>
 #include <mm/pfndb.h>
 #include <mm/pmm.h>
+#include <mm/page.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
@@ -124,15 +125,18 @@ void lyr_entry(void)
 	pfree(b);
 	log_info("test", "freed single physical page (%p)", old_b);
 
-	log_info("test", "expecting %p in next alloc", old_b);
-
 	void *c = palloc_single();
+	log_info("test", "expecting %p in next alloc", old_b);
+	log_info("test", "allocated single physical page @ %p", c);
 
-	log_info("test",
-			 "freed prior allocs and allocated single physical page @ %p", c);
+	void *d = palloc_single();
+	log_info("test", "expecting %p in next alloc", old_a);
+	log_info("test", "allocated single physical page @ %p", d);
 
 	assert((uint64_t)c == old_b);
 	pfree(c);
+	assert((uint64_t)d == old_a);
+	pfree(d);
 
 	nointloop();
 }

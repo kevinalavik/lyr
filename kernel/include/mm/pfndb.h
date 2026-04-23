@@ -12,5 +12,6 @@ page_t *pfndb_getptr(uint64_t pfn);
 uint64_t pfndb_getpfn(page_t *page);
 page_t *pfndb_phys_to_page(uint64_t phys);
 uint64_t pfndb_page_to_phys(page_t *page);
+void pfndb_dump(void);
 
 #endif // _LYR_MM_PFNDB_H

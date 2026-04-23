@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-QEMUFLAGS := -m 2G -smp 4 -serial stdio
+QEMUFLAGS := -m 2G -smp 4 -serial stdio -enable-kvm -cpu host
 
 override IMAGE_NAME := lyr
 
