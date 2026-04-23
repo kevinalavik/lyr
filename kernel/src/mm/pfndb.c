@@ -129,8 +129,6 @@ void pfndb_init(struct limine_memmap_response *memmap)
 				(mem_map[pfn].flags & ~(PAGE_RESERVED | PAGE_USED)) | PAGE_FREE;
 		}
 	}
-
-	pfndb_dump();
 }
 
 page_t *pfndb_getdb(void)

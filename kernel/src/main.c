@@ -153,7 +153,9 @@ void lyr_entry(void)
 			 "pfn=%llu,page->flags=%x, page->refcount=%llu, page->u1.next=%p",
 			 pfn, page->flags, page->refcount, page->u1.next);
 
-	pfree(VIRT_TO_PHYS(test));
+	log_info("test", "freeing test page %p", test);
+	pfree((void *)VIRT_TO_PHYS(test));
+	log_info("test", "refcount after free: %llu", page->refcount);
 
 	nointloop();
 }
