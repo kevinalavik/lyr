@@ -138,5 +138,13 @@ void lyr_entry(void)
 	assert((uint64_t)d == old_a);
 	pfree(d);
 
+	/* test writing to page */
+	char *test = PHYS_TO_VIRT(palloc_single());
+	log_info("test", "writing 'A' to %p (lower half: %p)", test,
+			 VIRT_TO_PHYS(test));
+	*test = 'A';
+	log_info("test", "done, %p=%c\n", test, *test);
+	pfree(test);
+
 	nointloop();
 }

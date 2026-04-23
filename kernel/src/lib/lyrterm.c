@@ -121,9 +121,11 @@ static void putpixel(uint32_t x, uint32_t y, uint32_t color)
 static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 					  uint32_t color)
 {
-	for (uint32_t row = y; row < y + h; row++)
-		for (uint32_t col = x; col < x + w; col++)
-			putpixel(col, row, color);
+	for (uint32_t row = 0; row < h; row++) {
+		uint32_t *p = (uint32_t *)&fb[(y + row) * fb_pitch + x];
+		for (uint32_t col = 0; col < w; col++)
+			p[col] = color;
+	}
 }
 
 static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
@@ -169,14 +171,21 @@ static void scroll_up(void)
 	uint32_t y0 = term_y0();
 	uint32_t w = term_width();
 	uint32_t h = term_height();
-	uint32_t copy_h = h - _LYRTERM_LINE_HEIGHT;
 
-	for (uint32_t y = 0; y < copy_h; y++)
-		memcpy((void *)&fb[(y0 + y) * fb_pitch + x0],
-			   (void *)&fb[(y0 + y + _LYRTERM_LINE_HEIGHT) * fb_pitch + x0],
-			   w * sizeof(uint32_t));
+	uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
 
-	fill_rect(x0, y0 + copy_h, w, _LYRTERM_LINE_HEIGHT, default_bg);
+	uint32_t *dst_base = (uint32_t *)&fb[y0 * fb_pitch + x0];
+	uint32_t *src_base =
+		(uint32_t *)&fb[(y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch + x0];
+
+	for (uint32_t row = 0; row < rows_to_copy; row++) {
+		uint32_t *dst = dst_base + row * fb_pitch;
+		uint32_t *src = src_base + row * fb_pitch;
+
+		memmove(dst, src, w * sizeof(uint32_t));
+	}
+
+	fill_rect(x0, y0 + rows_to_copy, w, _LYRTERM_LINE_HEIGHT, default_bg);
 }
 
 static void cursor_draw(void)
