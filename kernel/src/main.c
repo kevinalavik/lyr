@@ -71,7 +71,7 @@ void lyr_entry(void)
 		framebuffer_request.response->framebuffers[0];
 
 	/* use another theme, dark is the default */
-	lyrterm_apply_theme(&lyrterm_theme_nord);
+	lyrterm_apply_theme(&lyrterm_theme_dark);
 	lyrterm_init(framebuffer->address, framebuffer->width, framebuffer->height,
 				 framebuffer->pitch / 4);
 
@@ -179,7 +179,11 @@ void lyr_entry(void)
 	log_info("test", "mapped %p -> %p and wrote '%c' to it", phys, virt, *ptr);
 
 	unmap_page(pt, virt);
-	*ptr = 'b';
+	for (;;) {
+		void *ptr = palloc_single();
+		log_info("entry", "allocated 1 page @ %p", ptr);
+		(void)ptr;
+	}
 
 	nointloop();
 }
