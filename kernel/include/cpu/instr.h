@@ -37,4 +37,11 @@ static inline uint8_t inb(uint16_t port)
 	return value;
 }
 
+static inline uint64_t read_cr3(void)
+{
+	uint64_t val;
+	asm volatile("mov %%cr3, %0" : "=r"(val));
+	return val;
+}
+
 #endif // _LYR_CPU_INSTR_H

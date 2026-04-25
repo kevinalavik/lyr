@@ -46,6 +46,7 @@ endif
 override CFLAGS += \
     -Wall \
     -Wextra \
+    -Werror \
     -std=gnu11 \
     -nostdinc \
     -ffreestanding \

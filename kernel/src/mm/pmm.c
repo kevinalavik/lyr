@@ -42,14 +42,6 @@ static void _pmm_push(page_t *page)
 	memset((void *)PHYS_TO_VIRT(pfndb_page_to_phys(page)), 0, PAGE_SIZE);
 }
 
-static void _pmm_push_init(page_t *page)
-{
-	assert(page->flags & PAGE_FREE);
-
-	page->u1.next = freelist;
-	freelist = page;
-}
-
 /* main lyr api */
 void pmm_init(void)
 {

@@ -76,5 +76,6 @@ __attribute__((noreturn)) void kpanic(interrupt_frame_t *frame, const char *fmt,
 	log_err("panic", "System halted.");
 	log_err("panic", "================================");
 
-	nointloop();
+	for (;;)
+		__asm__ volatile("hlt");
 }

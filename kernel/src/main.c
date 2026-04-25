@@ -12,6 +12,7 @@
 #include <mm/pfndb.h>
 #include <mm/pmm.h>
 #include <mm/page.h>
+#include <mm/paging.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
@@ -162,6 +163,22 @@ void lyr_entry(void)
 	/* we are done (for now), just print a nice message */
 	log_info("entry", "---------------------------------------------");
 	log_info("entry", "lyr kernel (c) 2026 Kevin Alavik");
+
+	/* test paging */
+	uint64_t cr3 = read_cr3();
+	ptable_t *pt = (ptable_t *)PHYS_TO_VIRT(cr3);
+
+	uint64_t virt = 0xdeadbeef;
+	uint64_t phys = (uint64_t)palloc_single();
+
+	map_page(pt, virt, phys, VMM_PRESENT | VMM_WRITABLE);
+	volatile char *ptr = (volatile char *)virt;
+	*ptr = 'a';
+	assert(*ptr == 'a');
+
+	log_info("test", "mapped %p -> %p and wrote '%c' to it", phys, virt, *ptr);
+
+	unmap_page(pt, virt);
 
 	nointloop();
 }
