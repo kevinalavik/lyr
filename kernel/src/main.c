@@ -179,11 +179,6 @@ void lyr_entry(void)
 	log_info("test", "mapped %p -> %p and wrote '%c' to it", phys, virt, *ptr);
 
 	unmap_page(pt, virt);
-	for (;;) {
-		void *ptr = palloc_single();
-		log_info("entry", "allocated 1 page @ %p", ptr);
-		(void)ptr;
-	}
 
 	nointloop();
 }
