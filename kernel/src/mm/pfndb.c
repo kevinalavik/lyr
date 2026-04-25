@@ -129,6 +129,10 @@ void pfndb_init(struct limine_memmap_response *memmap)
 				(mem_map[pfn].flags & ~(PAGE_RESERVED | PAGE_USED)) | PAGE_FREE;
 		}
 	}
+
+	/* force reserve first page: 0x0000 - 0x1000 (when booted on UEFI, for bios it might differ) */
+	mem_map[0].flags = PAGE_RESERVED;
+	mem_map[0].refcount = 0;
 }
 
 page_t *pfndb_getdb(void)

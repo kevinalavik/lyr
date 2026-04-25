@@ -108,6 +108,8 @@ void lyr_entry(void)
 	pfndb_init(memmap_request.response);
 	log_info("entry", "PFNDB ok");
 
+	pfndb_dump();
+
 	pmm_init();
 	log_info("entry", "PMM ok");
 
