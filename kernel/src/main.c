@@ -159,5 +159,9 @@ void lyr_entry(void)
 	pfree((void *)VIRT_TO_PHYS(test));
 	log_info("test", "refcount after free: %llu", page->refcount);
 
+	/* we are done (for now), just print a nice message */
+	log_info("entry", "---------------------------------------------");
+	log_info("entry", "lyr kernel (c) 2026 Kevin Alavik");
+
 	nointloop();
 }
