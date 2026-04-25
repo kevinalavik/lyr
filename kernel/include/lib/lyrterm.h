@@ -5,7 +5,7 @@
 #include <lib/lyrterm_theme.h>
 
 /* for line cursor, uncomment this line */
-// #define LYRTERM_LINE_CURSOR
+#define LYRTERM_LINE_CURSOR
 
 /* lyr kernel graphical terminal renderer */
 

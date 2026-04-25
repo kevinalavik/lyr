@@ -14,10 +14,10 @@
 #define _LYRTERM_LINE_PADDING_X 0
 #define _LYRTERM_LINE_WIDTH (_LYRTERM_FONT_WIDTH + _LYRTERM_LINE_PADDING_X)
 
-#define _LYRTERM_MARGIN_X 0
-#define _LYRTERM_MARGIN_Y 0
+#define _LYRTERM_MARGIN_X 10
+#define _LYRTERM_MARGIN_Y 10
 
-static volatile uint32_t *fb;
+static uint32_t *fb;
 static uint32_t fb_width;
 static uint32_t fb_height;
 static uint32_t fb_pitch;
@@ -112,19 +112,16 @@ static uint32_t utf8_feed(uint8_t byte)
 	return 0;
 }
 
-static void putpixel(uint32_t x, uint32_t y, uint32_t color)
-{
-	if (x < fb_width && y < fb_height)
-		fb[y * fb_pitch + x] = color;
-}
-
 static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 					  uint32_t color)
 {
 	for (uint32_t row = 0; row < h; row++) {
-		uint32_t *p = (uint32_t *)&fb[(y + row) * fb_pitch + x];
-		for (uint32_t col = 0; col < w; col++)
-			p[col] = color;
+		uint32_t *p = &fb[(y + row) * fb_pitch + x];
+		uint32_t n = w;
+		__asm__ volatile("rep stosl"
+						 : "+D"(p), "+c"(n)
+						 : "a"(color)
+						 : "memory");
 	}
 }
 
@@ -134,20 +131,25 @@ static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
 	int glyph_index = _lyrterm_find_glyph(codepoint);
 	const uint8_t *glyph = (glyph_index >= 0) ? _lyrterm_font[glyph_index] :
 												_lyrterm_font_sentinel;
+
 	const uint32_t bytes_per_row = (_LYRTERM_FONT_WIDTH + 7) / 8;
 
 	for (uint32_t row = 0; row < _LYRTERM_FONT_HEIGHT; row++) {
 		const uint8_t *row_data = &glyph[row * bytes_per_row];
-		for (uint32_t col = 0; col < _LYRTERM_FONT_WIDTH; col++) {
-			uint32_t byte_index = col / 8;
-			uint32_t bit_index = 7 - (col % 8);
-			uint32_t color =
-				(row_data[byte_index] & (1 << bit_index)) ? fg : bg;
-			putpixel(x + col, y + row, color);
+		uint32_t *dst = &fb[(y + row) * fb_pitch + x];
+		uint32_t col = 0;
+
+		for (uint32_t b = 0; b < bytes_per_row; b++) {
+			uint8_t byte = row_data[b];
+			uint32_t remaining = _LYRTERM_FONT_WIDTH - col;
+			uint32_t bits = remaining < 8 ? remaining : 8;
+			for (uint32_t bit = 0; bit < bits; bit++) {
+				dst[col++] = (byte & 0x80) ? fg : bg;
+				byte <<= 1;
+			}
 		}
 	}
 }
-
 static inline uint32_t term_x0(void)
 {
 	return _LYRTERM_MARGIN_X;
@@ -172,20 +174,23 @@ static void scroll_up(void)
 	uint32_t w = term_width();
 	uint32_t h = term_height();
 
-	uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
-
-	uint32_t *dst_base = (uint32_t *)&fb[y0 * fb_pitch + x0];
-	uint32_t *src_base =
-		(uint32_t *)&fb[(y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch + x0];
-
-	for (uint32_t row = 0; row < rows_to_copy; row++) {
-		uint32_t *dst = dst_base + row * fb_pitch;
-		uint32_t *src = src_base + row * fb_pitch;
-
-		memmove(dst, src, w * sizeof(uint32_t));
+	if (x0 == 0 && w == fb_width) {
+		uint32_t *dst = &fb[y0 * fb_pitch];
+		uint32_t *src = &fb[(y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch];
+		size_t count = (h - _LYRTERM_LINE_HEIGHT) * fb_pitch;
+		memcpy(dst, src, count * sizeof(uint32_t));
+	} else {
+		uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
+		for (uint32_t row = 0; row < rows_to_copy; row++) {
+			uint32_t *dst = &fb[(y0 + row) * fb_pitch + x0];
+			uint32_t *src =
+				&fb[(y0 + row + _LYRTERM_LINE_HEIGHT) * fb_pitch + x0];
+			memcpy(dst, src, w * sizeof(uint32_t));
+		}
 	}
 
-	fill_rect(x0, y0 + rows_to_copy, w, _LYRTERM_LINE_HEIGHT, default_bg);
+	fill_rect(x0, y0 + (h - _LYRTERM_LINE_HEIGHT), w, _LYRTERM_LINE_HEIGHT,
+			  default_bg);
 }
 
 static void cursor_draw(void)
@@ -211,7 +216,8 @@ static void newline(void)
 
 	if (cursor_y + _LYRTERM_FONT_DESCENT > term_y0() + term_height()) {
 		scroll_up();
-		cursor_y = term_y0() + (rows - 1) * _LYRTERM_LINE_HEIGHT;
+		cursor_y = term_y0() + (rows - 1) * _LYRTERM_LINE_HEIGHT +
+				   _LYRTERM_FONT_ASCENT;
 	}
 }
 
@@ -271,7 +277,7 @@ void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,
 	if (!framebuffer || !width || !height || !pitch)
 		return;
 
-	fb = framebuffer;
+	fb = (uint32_t *)framebuffer;
 	fb_width = width;
 	fb_height = height;
 	fb_pitch = pitch;
@@ -284,9 +290,7 @@ void lyrterm_init(volatile uint32_t *framebuffer, uint32_t width,
 
 	lyrterm_apply_theme(active_theme);
 
-	for (uint32_t y = 0; y < height; y++)
-		for (uint32_t x = 0; x < width; x++)
-			fb[y * pitch + x] = default_bg;
+	fill_rect(0, 0, fb_width, fb_height, default_bg);
 
 	utf8.codepoint = 0;
 	utf8.bytes_left = 0;

@@ -2,24 +2,22 @@
 
 void *memset(void *dest, int ch, size_t count)
 {
-	unsigned char *p = (unsigned char *)dest;
-	unsigned char v = (unsigned char)ch;
-
-	while (count--)
-		*p++ = v;
-
-	return dest;
+	void *ret = dest;
+	__asm__ volatile("rep stosb"
+					 : "+D"(dest), "+c"(count)
+					 : "a"((uint8_t)ch)
+					 : "memory");
+	return ret;
 }
 
 void *memcpy(void *dest, const void *src, size_t count)
 {
-	unsigned char *d = (unsigned char *)dest;
-	const unsigned char *s = (const unsigned char *)src;
-
-	while (count--)
-		*d++ = *s++;
-
-	return dest;
+	void *ret = dest;
+	__asm__ volatile("rep movsb"
+					 : "+D"(dest), "+S"(src), "+c"(count)
+					 :
+					 : "memory");
+	return ret;
 }
 
 void *memmove(void *dst, const void *src, size_t n)

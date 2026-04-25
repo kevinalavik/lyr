@@ -179,6 +179,7 @@ void lyr_entry(void)
 	log_info("test", "mapped %p -> %p and wrote '%c' to it", phys, virt, *ptr);
 
 	unmap_page(pt, virt);
+	*ptr = 'b';
 
 	nointloop();
 }
