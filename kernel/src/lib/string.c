@@ -80,3 +80,23 @@ size_t strlen(const char *str)
 		len++;
 	return len;
 }
+
+char *strcpy(char *dest, const char *src)
+{
+	char *ret = dest;
+
+	while ((*dest++ = *src++) != '\0')
+		;
+
+	return ret;
+}
+
+int strcmp(const char *a, const char *b)
+{
+	while (*a && (*a == *b)) {
+		a++;
+		b++;
+	}
+
+	return (unsigned char)*a - (unsigned char)*b;
+}

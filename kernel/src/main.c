@@ -14,6 +14,8 @@
 #include <mm/page.h>
 #include <mm/paging.h>
 #include <lib/string.h>
+#include <mm/heap.h>
+#include <mm/vmm.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
@@ -236,6 +238,128 @@ static void paging_test(void)
 	log_info("paging_test", "all tests passed");
 }
 
+static void heap_test(void)
+{
+	log_info("heap_test", "starting");
+
+	/* 1. basic alloc/free (small sizes) */
+	{
+		void *a = kmalloc(16);
+		void *b = kmalloc(32);
+		assert(a && b);
+
+		memset(a, 0xAA, 16);
+		memset(b, 0xBB, 32);
+
+		kfree(a);
+		kfree(b);
+
+		log_info("heap_test", "basic alloc/free ok");
+	}
+
+	/* 2. slab reuse */
+	{
+		void *a = kmalloc(64);
+		kfree(a);
+
+		void *b = kmalloc(64);
+		assert(b != NULL);
+
+		kfree(b);
+		log_info("heap_test", "slab reuse ok");
+	}
+
+	/* 3. fill slab completely */
+	{
+		size_t sz = 128;
+		void *objs[128];
+
+		for (int i = 0; i < 128; i++) {
+			objs[i] = kmalloc(sz);
+			assert(objs[i]);
+		}
+
+		for (int i = 0; i < 128; i++)
+			kfree(objs[i]);
+
+		log_info("heap_test", "slab fill/free ok");
+	}
+
+	/* 4. write/read correctness */
+	{
+		char *p = kmalloc(256);
+		assert(p);
+
+		for (int i = 0; i < 256; i++)
+			p[i] = (char)i;
+
+		for (int i = 0; i < 256; i++)
+			assert(p[i] == (char)i);
+
+		kfree(p);
+		log_info("heap_test", "write/read ok");
+	}
+
+	/* 5. large allocation */
+	{
+		size_t big = PAGE_SIZE * 3;
+		void *p = kmalloc(big);
+		assert(p);
+
+		memset(p, 0xCC, big);
+
+		for (size_t i = 0; i < big; i++)
+			assert(((uint8_t *)p)[i] == 0xCC);
+
+		kfree(p);
+		log_info("heap_test", "large alloc ok");
+	}
+
+	/* 6. krealloc grow */
+	{
+		char *p = kmalloc(64);
+		assert(p);
+
+		strcpy(p, "hello world");
+
+		p = krealloc(p, 512);
+		assert(p);
+		assert(strcmp(p, "hello world") == 0);
+
+		kfree(p);
+		log_info("heap_test", "realloc grow ok");
+	}
+
+	/* 7. krealloc shrink */
+	{
+		char *p = kmalloc(512);
+		assert(p);
+
+		strcpy(p, "shrink test");
+
+		p = krealloc(p, 32);
+		assert(p);
+		assert(strcmp(p, "shrink test") == 0);
+
+		kfree(p);
+		log_info("heap_test", "realloc shrink ok");
+	}
+
+	/* 8. kzalloc */
+	{
+		uint8_t *p = kzalloc(128);
+		assert(p);
+
+		for (int i = 0; i < 128; i++)
+			assert(p[i] == 0);
+
+		kfree(p);
+		log_info("heap_test", "kzalloc zeroing ok");
+	}
+
+	log_info("heap_test", "all tests passed");
+}
+
 void lyr_entry(void)
 {
 	if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false)
@@ -289,6 +413,11 @@ void lyr_entry(void)
 
 	pmm_test();
 	paging_test();
+
+	kheap_init();
+	log_info("entry", "heap ok");
+
+	heap_test();
 
 	nointloop();
 }

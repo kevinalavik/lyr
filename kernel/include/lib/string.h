@@ -10,4 +10,7 @@ void *memmove(void *dst, const void *src, size_t n);
 
 size_t strlen(const char *str);
 
+char *strcpy(char *dest, const char *src);
+int strcmp(const char *a, const char *b);
+
 #endif // _LYR_LIB_STRING_H
