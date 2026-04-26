@@ -168,29 +168,45 @@ static void *large_alloc(size_t size)
 {
 	uint64_t npages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 
-	void *hdr_virt = PHYS_TO_VIRT(palloc_single());
-	if (!hdr_virt)
+	uint64_t first_phys = (uint64_t)palloc_single();
+	if (!first_phys)
 		return NULL;
 
-	lhdr_t *hdr = (lhdr_t *)hdr_virt;
-	hdr->magic = LARGE_MAGIC;
-	hdr->npages = npages;
+	page_t *head = pfndb_phys_to_page(first_phys);
+	head->flags |= PAGE_LARGE_HEAD;
 
-	for (uint64_t i = 0; i < npages; i++) {
-		if (!palloc_single())
+	for (uint64_t i = 1; i < npages; i++) {
+		uint64_t phys = (uint64_t)palloc_single();
+		if (!phys)
 			return NULL;
+
+		page_t *p = pfndb_phys_to_page(phys);
+		p->flags |= PAGE_LARGE_BODY;
 	}
 
-	return (void *)((uintptr_t)hdr_virt + PAGE_SIZE);
+	return PHYS_TO_VIRT(first_phys);
 }
 
 static void large_free(void *ptr)
 {
-	lhdr_t *hdr = (lhdr_t *)((uintptr_t)ptr - PAGE_SIZE);
-	if (hdr->magic != LARGE_MAGIC)
+	uint64_t phys = VIRT_TO_PHYS(ptr);
+	page_t *head = pfndb_phys_to_page(phys);
+
+	if (!(head->flags & PAGE_LARGE_HEAD))
 		return;
-	hdr->magic = 0;
-	(void)hdr;
+
+	page_t *p = head;
+	while (p->flags & (PAGE_LARGE_HEAD | PAGE_LARGE_BODY)) {
+		page_t *next = p + 1;
+
+		p->flags &= ~(PAGE_LARGE_HEAD | PAGE_LARGE_BODY);
+		page_unref(p);
+
+		if (!(next->flags & PAGE_LARGE_BODY))
+			break;
+
+		p = next;
+	}
 }
 
 void kheap_init(void)

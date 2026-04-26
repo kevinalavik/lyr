@@ -17,6 +17,10 @@
 /* any "allocated" state */
 #define PAGE_ALLOCATED (PAGE_USED | PAGE_RESERVED)
 
+/* for large kernel allocs */
+#define PAGE_LARGE_HEAD (1u << 10)
+#define PAGE_LARGE_BODY (1u << 11)
+
 /* page metadata */
 typedef struct page page_t;
 
