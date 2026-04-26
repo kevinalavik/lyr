@@ -3,6 +3,7 @@
 override OUTPUT := lyr
 
 PREFIX := /usr/local
+VERSION := 1.0.0
 
 TOOLCHAIN :=
 TOOLCHAIN_PREFIX :=
@@ -70,6 +71,7 @@ override CPPFLAGS := \
     -I include \
     -I limine-protocol/include \
     -isystem freestnd-c-hdrs/include \
+    -DLYR_VERSION=\"$(VERSION)\" \
     $(CPPFLAGS) \
     -MMD \
     -MP
