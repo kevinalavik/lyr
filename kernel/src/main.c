@@ -16,9 +16,13 @@
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <mm/vmm.h>
+#include <debug/test.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
+uint64_t _lyr_kstack_top = 0;
+uint64_t _lyr_kvirt = 0;
+uint64_t _lyr_kphys = 0;
 
 /* kernel entry only */
 __attribute__((used, section(".limine_requests"))) static volatile uint64_t
@@ -41,6 +45,13 @@ __attribute__((
 	section(".limine_requests"))) static volatile struct limine_hhdm_request
 	hhdm_request = { .id = LIMINE_HHDM_REQUEST_ID, .revision = 0 };
 
+__attribute__((
+	used,
+	section(
+		".limine_requests"))) volatile struct limine_executable_address_request
+	kernel_address_request = { .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID,
+							   .response = 0 };
+
 __attribute__((used,
 			   section(".limine_requests_start"))) static volatile uint64_t
 	limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -56,312 +67,9 @@ static const char *banner[] = { " _             ___  ____  ",
 								"   |___/                  ",
 								NULL };
 
-/* -----------------------------------------------------------------------
- * Tests
- * --------------------------------------------------------------------- */
-
-static void pmm_test(void)
-{
-	/* 1. LIFO order */
-	{
-		page_t *a = palloc_page();
-		page_t *b = palloc_page();
-		uint64_t phys_a = pfndb_page_to_phys(a);
-		uint64_t phys_b = pfndb_page_to_phys(b);
-
-		page_unref(a);
-		page_unref(b);
-
-		page_t *c = palloc_page();
-		page_t *d = palloc_page();
-
-		assert(pfndb_page_to_phys(c) == phys_b);
-		assert(pfndb_page_to_phys(d) == phys_a);
-
-		page_unref(c);
-		page_unref(d);
-		log_info("pmm_test", "LIFO order ok (a=0x%llx b=0x%llx)", phys_a,
-				 phys_b);
-	}
-
-	/* 2. refcount */
-	{
-		page_t *p = palloc_page();
-		assert(p->refcount == 1);
-
-		page_ref(p);
-		assert(p->refcount == 2);
-		assert(page_is_used(p));
-
-		page_unref(p);
-		assert(p->refcount == 1);
-		assert(page_is_used(p));
-
-		page_unref(p);
-		assert(p->refcount == 0);
-		assert(page_is_free(p));
-		log_info("pmm_test", "refcount ok");
-	}
-
-	/* 3. sharecount + PAGE_SHARED flag */
-	{
-		page_t *p = palloc_page();
-		assert(p->u2.sharecount == 0);
-		assert(!page_is_shared(p));
-
-		page_share(p);
-		assert(p->u2.sharecount == 1);
-		assert(!page_is_shared(p));
-
-		page_share(p);
-		assert(p->u2.sharecount == 2);
-		assert(page_is_shared(p));
-
-		page_unshare(p);
-		assert(p->u2.sharecount == 1);
-		assert(!page_is_shared(p));
-
-		page_unshare(p);
-		assert(p->u2.sharecount == 0);
-
-		page_unref(p);
-		log_info("pmm_test", "sharecount ok");
-	}
-
-	/* 4. scrub on free */
-	{
-		page_t *p = palloc_page();
-		char *virt = PHYS_TO_VIRT(pfndb_page_to_phys(p));
-		memset(virt, 0xAB, PAGE_SIZE);
-		page_unref(p);
-
-		page_t *q = palloc_page();
-		assert(pfndb_page_to_phys(q) == pfndb_page_to_phys(p));
-
-		char *virt2 = PHYS_TO_VIRT(pfndb_page_to_phys(q));
-		for (int i = 0; i < (int)PAGE_SIZE; i++)
-			assert(virt2[i] == 0);
-
-		page_unref(q);
-		log_info("pmm_test", "scrub ok");
-	}
-
-	/* 5. HHDM write */
-	{
-		page_t *p = palloc_page();
-		char *virt = PHYS_TO_VIRT(pfndb_page_to_phys(p));
-		*virt = 'Z';
-		assert(*virt == 'Z');
-		assert(p->refcount == 1);
-		page_unref(p);
-		log_info("pmm_test", "HHDM write ok");
-	}
-
-	log_info("pmm_test", "all tests passed");
-}
-
-static void paging_test(void)
-{
-	uint64_t cr3 = read_cr3();
-	ptable_t *pt = (ptable_t *)cr3;
-
-	/* 1. basic map, write, read, unmap */
-	{
-		uint64_t virt = 0xdeadbeef000ULL;
-		page_t *page = palloc_page();
-		uint64_t phys = pfndb_page_to_phys(page);
-
-		map_page(pt, virt, page, VMM_FLAGS_KERNEL_RW);
-		assert(page->u2.sharecount == 1);
-		assert(page->refcount == 2); /* palloc gave 1, map_page added 1 */
-
-		volatile char *ptr = (volatile char *)virt;
-		*ptr = 'A';
-		assert(*ptr == 'A');
-		log_info("paging_test",
-				 "map+write ok: virt=0x%llx phys=0x%llx val='%c'", virt, phys,
-				 *ptr);
-
-		unmap_page(pt, virt);
-		assert(page->u2.sharecount == 0);
-		assert(page->refcount == 1);
-		log_info("paging_test", "unmap ok");
-
-		page_unref(page);
-	}
-
-	/* 2. get_phys */
-	{
-		uint64_t virt = 0xcafe0000ULL;
-		page_t *page = palloc_page();
-		uint64_t phys = pfndb_page_to_phys(page);
-
-		map_page(pt, virt, page, VMM_FLAGS_KERNEL_RW);
-		assert(get_phys(pt, virt) == phys);
-		assert(get_phys(pt, virt + 1) == phys + 1);
-		log_info("paging_test", "get_phys ok: 0x%llx -> 0x%llx", virt, phys);
-
-		unmap_page(pt, virt);
-		assert(get_phys(pt, virt) == 0);
-		page_unref(page);
-	}
-
-	/* 3. double-map same page into two virtual addresses */
-	{
-		uint64_t virt1 = 0xf000000000ULL;
-		uint64_t virt2 = 0xf000001000ULL;
-		page_t *page = palloc_page();
-
-		map_page(pt, virt1, page, VMM_FLAGS_KERNEL_RW);
-		map_page(pt, virt2, page, VMM_FLAGS_KERNEL_RW);
-		assert(page->u2.sharecount == 2);
-		assert(page_is_shared(page));
-
-		volatile char *p1 = (volatile char *)virt1;
-		volatile char *p2 = (volatile char *)virt2;
-		*p1 = 'X';
-		assert(*p2 == 'X'); /* same physical page, both should read 'X' */
-		log_info("paging_test", "shared mapping ok: virt1=0x%llx virt2=0x%llx",
-				 virt1, virt2);
-
-		unmap_page(pt, virt1);
-		assert(page->u2.sharecount == 1);
-		assert(!page_is_shared(page));
-
-		unmap_page(pt, virt2);
-		assert(page->u2.sharecount == 0);
-		assert(page->refcount == 1);
-
-		page_unref(page);
-	}
-
-	log_info("paging_test", "all tests passed");
-}
-
-static void heap_test(void)
-{
-	log_info("heap_test", "starting");
-
-	/* 1. basic alloc/free (small sizes) */
-	{
-		void *a = kmalloc(16);
-		void *b = kmalloc(32);
-		assert(a && b);
-
-		memset(a, 0xAA, 16);
-		memset(b, 0xBB, 32);
-
-		kfree(a);
-		kfree(b);
-
-		log_info("heap_test", "basic alloc/free ok");
-	}
-
-	/* 2. slab reuse */
-	{
-		void *a = kmalloc(64);
-		kfree(a);
-
-		void *b = kmalloc(64);
-		assert(b != NULL);
-
-		kfree(b);
-		log_info("heap_test", "slab reuse ok");
-	}
-
-	/* 3. fill slab completely */
-	{
-		size_t sz = 128;
-		void *objs[128];
-
-		for (int i = 0; i < 128; i++) {
-			objs[i] = kmalloc(sz);
-			assert(objs[i]);
-		}
-
-		for (int i = 0; i < 128; i++)
-			kfree(objs[i]);
-
-		log_info("heap_test", "slab fill/free ok");
-	}
-
-	/* 4. write/read correctness */
-	{
-		char *p = kmalloc(256);
-		assert(p);
-
-		for (int i = 0; i < 256; i++)
-			p[i] = (char)i;
-
-		for (int i = 0; i < 256; i++)
-			assert(p[i] == (char)i);
-
-		kfree(p);
-		log_info("heap_test", "write/read ok");
-	}
-
-	/* 5. large allocation */
-	{
-		size_t big = PAGE_SIZE * 3;
-		void *p = kmalloc(big);
-		assert(p);
-
-		memset(p, 0xCC, big);
-
-		for (size_t i = 0; i < big; i++)
-			assert(((uint8_t *)p)[i] == 0xCC);
-
-		kfree(p);
-		log_info("heap_test", "large alloc ok");
-	}
-
-	/* 6. krealloc grow */
-	{
-		char *p = kmalloc(64);
-		assert(p);
-
-		strcpy(p, "hello world");
-
-		p = krealloc(p, 512);
-		assert(p);
-		assert(strcmp(p, "hello world") == 0);
-
-		kfree(p);
-		log_info("heap_test", "realloc grow ok");
-	}
-
-	/* 7. krealloc shrink */
-	{
-		char *p = kmalloc(512);
-		assert(p);
-
-		strcpy(p, "shrink test");
-
-		p = krealloc(p, 32);
-		assert(p);
-		assert(strcmp(p, "shrink test") == 0);
-
-		kfree(p);
-		log_info("heap_test", "realloc shrink ok");
-	}
-
-	/* 8. kzalloc */
-	{
-		uint8_t *p = kzalloc(128);
-		assert(p);
-
-		for (int i = 0; i < 128; i++)
-			assert(p[i] == 0);
-
-		kfree(p);
-		log_info("heap_test", "kzalloc zeroing ok");
-	}
-
-	log_info("heap_test", "all tests passed");
-}
-
 void lyr_entry(void)
 {
+	__asm__ volatile("movq %%rsp, %0" : "=r"(_lyr_kstack_top));
 	if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false)
 		nointloop();
 
@@ -374,7 +82,7 @@ void lyr_entry(void)
 	struct limine_framebuffer *framebuffer =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_dark);
+	lyrterm_apply_theme(&lyrterm_theme_nord);
 	lyrterm_init(framebuffer->address, framebuffer->width, framebuffer->height,
 				 framebuffer->pitch / 4);
 
@@ -412,12 +120,27 @@ void lyr_entry(void)
 	log_info("entry", "PMM ok");
 
 	pmm_test();
+
+	assert(kernel_address_request.response != NULL);
+	_lyr_kvirt = kernel_address_request.response->virtual_base;
+	_lyr_kphys = kernel_address_request.response->physical_base;
+	paging_init();
+	assert(kernel_ptable != NULL);
 	paging_test();
 
 	kheap_init();
 	log_info("entry", "heap ok");
-
 	heap_test();
+
+	vas_t *kernel_vas = vas_adopt(kernel_ptable);
+	log_info("entry", "switched to kernel page table");
+	vas_switch(kernel_vas);
+	log_info("entry", "VMM ok");
+	vmm_test(kernel_vas);
+
+	/* done for now */
+	log_info("entry", "------------------------------");
+	log_info("entry", "lyr kernel v1.0.0 (c) 2026 Kevin Alavik");
 
 	nointloop();
 }

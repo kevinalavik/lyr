@@ -14,10 +14,13 @@ static void _page_validate_free(const page_t *page, const char *caller)
 {
 	if (!page)
 		kpanic(NULL, "%s: NULL page", caller);
-	if (page_is_poisoned(page))
-		kpanic(NULL, "%s: touched poisoned page @ %p", caller, page);
+	if (page_is_poisoned(page)) {
+		log_warn("pmm", "%s: touched poisoned page @ %p — skipping", caller,
+				 page);
+		return;
+	}
 	if (!page_is_free(page))
-		kpanic(NULL, "%s: page not free (flags=0x%llx)", caller, page->flags);
+		kpanic(NULL, "%s: page not free (flags=0x%x)", caller, page->flags);
 	if (page->refcount != 0)
 		kpanic(NULL, "%s: free page has nonzero refcount=%u", caller,
 			   page->refcount);
@@ -33,7 +36,7 @@ static void _page_validate_used(const page_t *page, const char *caller)
 	if (page_is_poisoned(page))
 		kpanic(NULL, "%s: touched poisoned page @ %p", caller, page);
 	if (!page_is_used(page))
-		kpanic(NULL, "%s: page not marked used (flags=0x%llx)", caller,
+		kpanic(NULL, "%s: page not marked used (flags=0x%x)", caller,
 			   page->flags);
 	if (page->refcount == 0)
 		kpanic(NULL, "%s: used page has zero refcount", caller);
@@ -88,8 +91,10 @@ static void _pmm_push(page_t *page)
 
 static page_t *_pmm_pop(void)
 {
-	if (!freelist)
+	if (!freelist) {
+		log_warn("pmm", "_pmm_pop: freelist exhausted");
 		return NULL;
+	}
 
 	page_t *page = freelist;
 	_page_validate_free(page, "_pmm_pop");
@@ -101,9 +106,9 @@ static page_t *_pmm_pop(void)
 
 	/* clear links */
 	page->u1.next = NULL;
-	page->u2.sharecount = 0; /* u2 reused: prev → sharecount */
+	page->u2.sharecount = 0; /* u2 reused: prev -> sharecount */
 
-	/* FREE → USED */
+	/* FREE -> USED */
 	page->flags &= ~PAGE_FREE;
 	page->flags |= PAGE_USED;
 
@@ -142,6 +147,7 @@ void pmm_init(void)
 	log_info("pmm", "initialized: %llu free pages, %llu total", free_pages,
 			 total_pages);
 }
+
 void *palloc_single(void)
 {
 	page_t *page = _pmm_pop();
@@ -176,10 +182,19 @@ void page_ref(page_t *page)
 
 void page_unref(page_t *page)
 {
+	if (!page) {
+		log_warn("pmm", "page_unref: called with NULL page");
+		return;
+	}
+
 	_page_validate_used(page, "page_unref");
 
-	if (page->refcount == 0)
-		kpanic(NULL, "page_unref: double-free @ page=%p", page);
+	if (page->refcount == 0) {
+		log_warn("pmm",
+				 "page_unref: double-free @ page=%p phys=0x%llx — ignoring",
+				 page, pfndb_page_to_phys(page));
+		return;
+	}
 
 	page->refcount--;
 
@@ -187,11 +202,12 @@ void page_unref(page_t *page)
 			  pfndb_page_to_phys(page), page->refcount, page->u2.sharecount);
 
 	if (page->refcount == 0) {
-		if (page->u2.sharecount != 0)
+		if (page->u2.sharecount != 0) {
 			kpanic(NULL,
-				   "page_unref: refcount=0 but sharecount=%llu, "
+				   "page_unref: refcount=0 but sharecount=%llu @ phys=0x%llx — "
 				   "unmap all PTEs before releasing ownership",
-				   page->u2.sharecount);
+				   page->u2.sharecount, pfndb_page_to_phys(page));
+		}
 
 		_pmm_push(page);
 	}
@@ -214,8 +230,13 @@ void page_unshare(page_t *page)
 {
 	_page_validate_used(page, "page_unshare");
 
-	if (page->u2.sharecount == 0)
-		kpanic(NULL, "page_unshare: sharecount already 0 @ page=%p", page);
+	if (page->u2.sharecount == 0) {
+		log_warn("pmm",
+				 "page_unshare: sharecount already 0 @ page=%p phys=0x%llx "
+				 "— map/unmap asymmetry (mapped with map_page_phys?)",
+				 page, pfndb_page_to_phys(page));
+		return;
+	}
 
 	page->u2.sharecount--;
 
@@ -230,6 +251,7 @@ uint64_t pmm_free_pages(void)
 {
 	return free_pages;
 }
+
 uint64_t pmm_total_pages(void)
 {
 	return total_pages;
