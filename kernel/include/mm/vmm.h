@@ -27,6 +27,8 @@ typedef struct vas {
 	uint64_t user_start;
 } vas_t;
 
+extern vas_t *_lyr_kernel_vas;
+
 vas_t *vas_create(ptable_t *pt);
 void vas_destroy(vas_t *vas);
 

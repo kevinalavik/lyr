@@ -17,12 +17,14 @@
 #include <mm/heap.h>
 #include <mm/vmm.h>
 #include <debug/test.h>
+#include <sys/acpi.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
 uint64_t _lyr_kstack_top = 0;
 uint64_t _lyr_kvirt = 0;
 uint64_t _lyr_kphys = 0;
+vas_t *_lyr_kernel_vas = NULL;
 
 /* kernel entry only */
 __attribute__((used, section(".limine_requests"))) static volatile uint64_t
@@ -53,6 +55,10 @@ __attribute__((
 							   .response = 0 };
 
 __attribute__((used,
+			   section(".limine_requests"))) volatile struct limine_rsdp_request
+	rsdp_request = { .id = LIMINE_RSDP_REQUEST_ID, .response = 0 };
+
+__attribute__((used,
 			   section(".limine_requests_start"))) static volatile uint64_t
 	limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
 
@@ -73,8 +79,8 @@ void lyr_entry(void)
 	if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false)
 		nointloop();
 
-	if (uart_init() != 0)
-		nointloop();
+	uint64_t uart_ret = uart_init();
+	log_info("entry", "UART %s", uart_ret == 0 ? "ok" : "not ok");
 
 	assert(framebuffer_request.response != NULL);
 	assert(framebuffer_request.response->framebuffer_count >= 1);
@@ -83,8 +89,7 @@ void lyr_entry(void)
 		framebuffer_request.response->framebuffers[0];
 
 	lyrterm_apply_theme(&lyrterm_theme_nord);
-	lyrterm_init(framebuffer->address, framebuffer->width, framebuffer->height,
-				 framebuffer->pitch / 4);
+	lyrterm_init(framebuffer);
 
 	for (int i = 0; banner[i] != NULL; i++)
 		kprintf("%s\n", banner[i]);
@@ -132,11 +137,15 @@ void lyr_entry(void)
 	log_info("entry", "heap ok");
 	heap_test();
 
-	vas_t *kernel_vas = vas_adopt(kernel_ptable);
+	_lyr_kernel_vas = vas_adopt(kernel_ptable);
 	log_info("entry", "switched to kernel page table");
-	vas_switch(kernel_vas);
+	vas_switch(_lyr_kernel_vas);
 	log_info("entry", "VMM ok");
-	vmm_test(kernel_vas);
+	vmm_test(_lyr_kernel_vas);
+
+	assert(rsdp_request.response != NULL);
+	acpi_init(rsdp_request.response->address);
+	acpi_dump_tables();
 
 	/* done for now */
 	log_info("entry", "------------------------------");

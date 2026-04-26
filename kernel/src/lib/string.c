@@ -73,6 +73,53 @@ void *memmove(void *dst, const void *src, size_t n)
 	return dst;
 }
 
+int memcmp(const void *s1, const void *s2, size_t n)
+{
+	const uint8_t *p1 = (const uint8_t *)s1;
+	const uint8_t *p2 = (const uint8_t *)s2;
+
+	if (n == 0)
+		return 0;
+
+	while (n && (((uintptr_t)p1 | (uintptr_t)p2) & (sizeof(uintptr_t) - 1))) {
+		if (*p1 != *p2)
+			return *p1 - *p2;
+		p1++;
+		p2++;
+		n--;
+	}
+
+	const uintptr_t *w1 = (const uintptr_t *)p1;
+	const uintptr_t *w2 = (const uintptr_t *)p2;
+
+	while (n >= sizeof(uintptr_t)) {
+		if (*w1 != *w2) {
+			const uint8_t *b1 = (const uint8_t *)w1;
+			const uint8_t *b2 = (const uint8_t *)w2;
+
+			for (size_t i = 0; i < sizeof(uintptr_t); i++) {
+				if (b1[i] != b2[i])
+					return b1[i] - b2[i];
+			}
+		}
+		w1++;
+		w2++;
+		n -= sizeof(uintptr_t);
+	}
+
+	p1 = (const uint8_t *)w1;
+	p2 = (const uint8_t *)w2;
+
+	while (n--) {
+		if (*p1 != *p2)
+			return *p1 - *p2;
+		p1++;
+		p2++;
+	}
+
+	return 0;
+}
+
 size_t strlen(const char *str)
 {
 	size_t len = 0;
