@@ -23,7 +23,6 @@ typedef struct page page_t;
 typedef struct page {
 	union {
 		page_t *next;
-		uint64_t *pte;
 	} u1;
 
 	union {

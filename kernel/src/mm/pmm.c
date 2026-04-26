@@ -189,7 +189,7 @@ void page_unref(page_t *page)
 	if (page->refcount == 0) {
 		if (page->u2.sharecount != 0)
 			kpanic(NULL,
-				   "page_unref: refcount=0 but sharecount=%llu — "
+				   "page_unref: refcount=0 but sharecount=%llu, "
 				   "unmap all PTEs before releasing ownership",
 				   page->u2.sharecount);
 

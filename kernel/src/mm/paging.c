@@ -103,9 +103,6 @@ static void _ptable_free_level(uint64_t *tbl, int depth)
 			if (!page)
 				continue; /* untracked region */
 
-			if (page->u1.pte == &tbl[i])
-				page->u1.pte = NULL;
-
 			page_unshare(page);
 			page_unref(page);
 		}
@@ -149,9 +146,6 @@ void map_page(ptable_t *pt, uint64_t virt, page_t *page, uint64_t flags)
 	if (*pte & VMM_PRESENT)
 		kpanic(NULL, "paging: map_page on already-present PTE (virt=0x%llx)",
 			   virt);
-
-	if (page->u1.pte == NULL)
-		page->u1.pte = pte;
 
 	*pte = phys | (flags & ~PAGE_FRAME_MASK) | VMM_PRESENT;
 
@@ -207,9 +201,6 @@ void unmap_page(ptable_t *pt, uint64_t virt)
 	page_t *page = pfndb_phys_to_page(phys);
 	if (!page)
 		return; /* untracked region */
-
-	if (page->u1.pte == pte)
-		page->u1.pte = NULL;
 
 	page_unshare(page); /* sharecount--, clears PAGE_SHARED if ≤ 1 */
 	page_unref(page); /* refcount--; frees page if it hits 0 */
