@@ -333,19 +333,19 @@ void paging_init(void)
 			new_pml4[i] = boot_pml4[i];
 	}
 
-	log_info("paging", "kernel sections mapped:");
-	log_info("paging", "  .limine_requests 0x%llx - 0x%llx (RO NX)",
-			 (uint64_t)__limine_requests_start,
-			 (uint64_t)__limine_requests_end);
-	log_info("paging", "  .text            0x%llx - 0x%llx (RX)",
-			 (uint64_t)__text_start, (uint64_t)__text_end);
-	log_info("paging", "  .rodata          0x%llx - 0x%llx (RO NX)",
-			 (uint64_t)__rodata_start, (uint64_t)__rodata_end);
-	log_info("paging", "  .data+.bss       0x%llx - 0x%llx (RW NX)",
-			 (uint64_t)__data_start, (uint64_t)__data_end);
-	log_info("paging", "  stack            0x%llx - 0x%llx (RW NX)",
-			 (uint64_t)&_lyr_kstack_top - 64 * 1024,
-			 (uint64_t)&_lyr_kstack_top);
+	log_debug("paging", "kernel sections mapped:");
+	log_debug("paging", "  .limine_requests 0x%llx - 0x%llx (RO NX)",
+			  (uint64_t)__limine_requests_start,
+			  (uint64_t)__limine_requests_end);
+	log_debug("paging", "  .text            0x%llx - 0x%llx (RX)",
+			  (uint64_t)__text_start, (uint64_t)__text_end);
+	log_debug("paging", "  .rodata          0x%llx - 0x%llx (RO NX)",
+			  (uint64_t)__rodata_start, (uint64_t)__rodata_end);
+	log_debug("paging", "  .data+.bss       0x%llx - 0x%llx (RW NX)",
+			  (uint64_t)__data_start, (uint64_t)__data_end);
+	log_debug("paging", "  stack            0x%llx - 0x%llx (RW NX)",
+			  (uint64_t)&_lyr_kstack_top - 64 * 1024,
+			  (uint64_t)&_lyr_kstack_top);
 
 #undef MAP_SECTION
 }

@@ -144,8 +144,8 @@ void pmm_init(void)
 		_pmm_push_noscrub(page);
 	}
 
-	log_info("pmm", "initialized: %llu free pages, %llu total", free_pages,
-			 total_pages);
+	log_debug("pmm", "initialized: %llu free pages, %llu total", free_pages,
+			  total_pages);
 }
 
 void *palloc_single(void)

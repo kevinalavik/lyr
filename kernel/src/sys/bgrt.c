@@ -31,7 +31,7 @@ static void blit_bmp(struct limine_framebuffer *fb, void *bmp_virt,
 		return;
 	}
 
-	log_info("bgrt", "BMP %dx%d bpp=%u flip=%d", img_w, img_h, bpp, flip);
+	log_debug("bgrt", "BMP %dx%d bpp=%u flip=%d", img_w, img_h, bpp, flip);
 
 	uint8_t *pixels = (uint8_t *)bmp_virt + fhdr->pixel_offset;
 	uint32_t bytes_pp = bpp / 8;
@@ -76,10 +76,10 @@ void bgrt_init(struct limine_framebuffer *fb)
 		return;
 	}
 
-	log_info("bgrt", "version=%u status=0x%02x image_type=%u", bgrt->version,
-			 bgrt->status, bgrt->image_type);
-	log_info("bgrt", "image @ phys 0x%llx  offset (%u, %u)",
-			 bgrt->image_address, bgrt->image_offset_x, bgrt->image_offset_y);
+	log_trace("bgrt", "version=%u status=0x%02x image_type=%u", bgrt->version,
+			  bgrt->status, bgrt->image_type);
+	log_trace("bgrt", "image @ phys 0x%llx  offset (%u, %u)",
+			  bgrt->image_address, bgrt->image_offset_x, bgrt->image_offset_y);
 
 	if ((bgrt->status & 0x1) == 0) {
 		log_warn("bgrt", "BGRT status says image is not valid, skipping");
@@ -94,6 +94,6 @@ void bgrt_init(struct limine_framebuffer *fb)
 
 	void *bmp = PHYS_TO_VIRT(bgrt->image_address);
 	blit_bmp(fb, bmp, bgrt->image_offset_x, bgrt->image_offset_y);
-	log_info("bgrt", "boot logo drawn at (%u, %u)", bgrt->image_offset_x,
-			 bgrt->image_offset_y);
+	log_debug("bgrt", "boot logo drawn at (%u, %u)", bgrt->image_offset_x,
+			  bgrt->image_offset_y);
 }

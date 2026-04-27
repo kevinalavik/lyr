@@ -148,11 +148,13 @@ void lyr_entry(void)
 	LIMINE_REQUIRE(hhdm_request);
 
 	_lyr_hhdm_offset = hhdm_request.response->offset;
-	log_info("entry", "HHDM offset -> 0x%llx", _lyr_hhdm_offset);
+	log_trace("entry", "HHDM offset -> 0x%llx", _lyr_hhdm_offset);
 
 	pfndb_init(memmap_request.response);
 	log_info("entry", "PFNDB ok");
+#if _DEBUG
 	pfndb_dump();
+#endif
 
 	pmm_init();
 	log_info("entry", "PMM ok");
@@ -169,7 +171,7 @@ void lyr_entry(void)
 
 	/* heap / VMM */
 	kheap_init();
-	log_info("entry", "heap ok");
+	log_info("entry", "Heap ok");
 	heap_test();
 
 	_lyr_kernel_vas = vas_adopt(kernel_ptable);
@@ -181,7 +183,9 @@ void lyr_entry(void)
 	/* ACPI */
 	LIMINE_REQUIRE(rsdp_request);
 	acpi_init(rsdp_request.response->address);
+#if _DEBUG
 	acpi_dump_tables();
+#endif
 	bgrt_init(fb); /* fun thing to test */
 
 	/* boot summary */

@@ -101,7 +101,7 @@ void acpi_init(void *rsdp)
 		g_xsdt = 0;
 		g_root = ACPI_SDT(ACPI_VIRT(r->rsdt_address));
 
-		log_info("acpi", "Using RSDT at %p", g_root);
+		log_debug("acpi", "Using RSDT at %p", g_root);
 		return;
 	}
 
@@ -111,12 +111,12 @@ void acpi_init(void *rsdp)
 		g_xsdt = 1;
 		g_root = ACPI_SDT(ACPI_VIRT(x->xsdt_address));
 
-		log_info("acpi", "Using XSDT at %p", g_root);
+		log_debug("acpi", "Using XSDT at %p", g_root);
 		return;
 	}
 
 	g_xsdt = 0;
 	g_root = ACPI_SDT(ACPI_VIRT(r->rsdt_address));
 
-	log_info("acpi", "XSDT missing, fallback to RSDT at %p", g_root);
+	log_warn("acpi", "XSDT missing, fallback to RSDT at %p", g_root);
 }
