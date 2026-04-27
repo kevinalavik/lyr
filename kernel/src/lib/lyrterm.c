@@ -15,8 +15,8 @@
 #define _LYRTERM_LINE_PADDING_X 0
 #define _LYRTERM_LINE_WIDTH (_LYRTERM_FONT_WIDTH + _LYRTERM_LINE_PADDING_X)
 
-#define _LYRTERM_MARGIN_X 10
-#define _LYRTERM_MARGIN_Y 10
+#define _LYRTERM_MARGIN_X 0
+#define _LYRTERM_MARGIN_Y 0
 
 static uint8_t *fb_base;
 static uint32_t fb_width;

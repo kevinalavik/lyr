@@ -20,44 +20,47 @@
 #include <sys/acpi.h>
 #include <sys/bgrt.h>
 
-/* public variables */
+#ifndef LYR_VERSION
+#define LYR_VERSION "unknown"
+#endif // LYR_VERSION
+
 uint64_t _lyr_hhdm_offset = 0;
 uint64_t _lyr_kstack_top = 0;
 uint64_t _lyr_kvirt = 0;
 uint64_t _lyr_kphys = 0;
 vas_t *_lyr_kernel_vas = NULL;
+struct limine_bootloader_info_response *_lyr_bootloader_info = NULL;
+struct limine_firmware_type_response *_lyr_firmware_type_info = NULL;
+struct limine_file *_lyr_file_info = NULL;
 
-/* kernel entry only */
-__attribute__((used, section(".limine_requests"))) static volatile uint64_t
-	limine_base_revision[] = LIMINE_BASE_REVISION(6);
+#define LIMINE_REQUEST_SECTION \
+	__attribute__((used, section(".limine_requests")))
 
-__attribute__((
-	used,
-	section(
-		".limine_requests"))) static volatile struct limine_framebuffer_request
-	framebuffer_request = { .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
-							.revision = 0 };
+#define LIMINE_REQUEST(type, id_token, name, ...)                         \
+	LIMINE_REQUEST_SECTION static volatile struct limine_##type##_request \
+		name = { .id = LIMINE_##id_token##_REQUEST_ID,                    \
+				 .revision = 0,                                           \
+				 ##__VA_ARGS__ }
 
-__attribute__((
-	used,
-	section(".limine_requests"))) static volatile struct limine_memmap_request
-	memmap_request = { .id = LIMINE_MEMMAP_REQUEST_ID, .revision = 0 };
+#define LIMINE_RESPONSE(name) ((name).response)
+#define LIMINE_REQUIRE(name) assert(LIMINE_RESPONSE(name) != NULL)
 
-__attribute__((
-	used,
-	section(".limine_requests"))) static volatile struct limine_hhdm_request
-	hhdm_request = { .id = LIMINE_HHDM_REQUEST_ID, .revision = 0 };
+LIMINE_REQUEST_SECTION static volatile uint64_t limine_base_revision[] =
+	LIMINE_BASE_REVISION(6);
 
-__attribute__((
-	used,
-	section(
-		".limine_requests"))) volatile struct limine_executable_address_request
-	kernel_address_request = { .id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID,
-							   .response = 0 };
+LIMINE_REQUEST(framebuffer, FRAMEBUFFER, framebuffer_request);
+LIMINE_REQUEST(memmap, MEMMAP, memmap_request);
+LIMINE_REQUEST(hhdm, HHDM, hhdm_request);
+LIMINE_REQUEST(executable_address, EXECUTABLE_ADDRESS, kernel_address_request);
+LIMINE_REQUEST(rsdp, RSDP, rsdp_request);
+LIMINE_REQUEST(bootloader_info, BOOTLOADER_INFO, bootloader_info_request);
+LIMINE_REQUEST(firmware_type, FIRMWARE_TYPE, firmware_type_request);
+LIMINE_REQUEST(executable_file, EXECUTABLE_FILE, kernel_file_request);
 
-__attribute__((used,
-			   section(".limine_requests"))) volatile struct limine_rsdp_request
-	rsdp_request = { .id = LIMINE_RSDP_REQUEST_ID, .response = 0 };
+LIMINE_REQUEST_SECTION static volatile struct limine_stack_size_request
+	stack_size_request = { .id = LIMINE_STACK_SIZE_REQUEST_ID,
+						   .revision = 0,
+						   .stack_size = 64 * 1024ULL };
 
 __attribute__((used,
 			   section(".limine_requests_start"))) static volatile uint64_t
@@ -71,49 +74,78 @@ static const char *banner[] = { " _             ___  ____  ",
 								"| | | | | '__| | | \\___ \\ ",
 								"| | |_| | |  | |_| |___) |",
 								"|_|\\__, |_|   \\___/|____/ ",
-								"   |___/                  ",
+								"   |___/ lyr kernel v" LYR_VERSION
+								" (c) 2026 Kevin Alavik",
 								NULL };
+
+static void print_banner(void)
+{
+	for (int i = 0; banner[i]; i++)
+		kprintf("\e[0;%dm%s\e[0m\n", 94 + i, banner[i]);
+	kprintf("\n");
+
+	/* cool ansi color debug */
+	// for (int i = 40; i <= 47; i++)
+	// 	kprintf("\x1b[%dm  \x1b[0m", i);
+	// kprintf("\n");
+	// for (int i = 100; i <= 107; i++)
+	// 	kprintf("\x1b[%dm  \x1b[0m", i);
+	// kprintf("\n\n");
+}
+
+static const char *firmware_type_str(uint32_t type)
+{
+	switch (type) {
+	case LIMINE_FIRMWARE_TYPE_X86BIOS:
+		return "BIOS";
+	case LIMINE_FIRMWARE_TYPE_EFI64:
+		return "UEFI";
+	default:
+		return "unknown";
+	}
+}
 
 void lyr_entry(void)
 {
 	__asm__ volatile("movq %%rsp, %0" : "=r"(_lyr_kstack_top));
-	if (LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision) == false)
+
+	if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision))
 		nointloop();
 
-	uint64_t uart_ret = uart_init();
-	log_info("entry", "UART %s", uart_ret == 0 ? "ok" : "not ok");
+	log_info("entry", "UART %s", uart_init() == 0 ? "ok" : "not ok");
 
-	assert(framebuffer_request.response != NULL);
+	/* framebuffer */
+	LIMINE_REQUIRE(framebuffer_request);
 	assert(framebuffer_request.response->framebuffer_count >= 1);
 	assert(framebuffer_request.response->framebuffers[0] != NULL);
-	struct limine_framebuffer *framebuffer =
+	struct limine_framebuffer *fb =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_nord);
-	lyrterm_init(framebuffer);
+	lyrterm_apply_theme(&lyrterm_theme_dark);
+	lyrterm_init(fb);
+	print_banner();
 
-	for (int i = 0; banner[i] != NULL; i++)
-		kprintf("%s\n", banner[i]);
-	kprintf("\n");
+	/* etc requests */
+	LIMINE_REQUIRE(bootloader_info_request);
+	_lyr_bootloader_info = bootloader_info_request.response;
 
-	const char *reset = "\x1b[0m";
-	const char *block = "  ";
-	for (int i = 40; i <= 47; i++)
-		kprintf("\x1b[%dm%s%s", i, block, reset);
-	kprintf("\n");
-	for (int i = 100; i <= 107; i++)
-		kprintf("\x1b[%dm%s%s", i, block, reset);
-	kprintf("\n\n");
+	LIMINE_REQUIRE(firmware_type_request);
+	_lyr_firmware_type_info = firmware_type_request.response;
 
+	LIMINE_REQUIRE(kernel_file_request);
+	_lyr_file_info = kernel_file_request.response->executable_file;
+
+	/* gdt and idt */
 	gdt_init();
 	log_info("entry", "GDT ok");
 	idt_init();
 	log_info("entry", "IDT ok");
 
-	assert(memmap_request.response != NULL);
+	/* physical memory  */
+	LIMINE_REQUIRE(memmap_request);
 	assert(memmap_request.response->entry_count != 1);
 	assert(memmap_request.response->entries[0] != NULL);
-	assert(hhdm_request.response != NULL);
+	LIMINE_REQUIRE(hhdm_request);
 
 	_lyr_hhdm_offset = hhdm_request.response->offset;
 	log_info("entry", "HHDM offset -> 0x%llx", _lyr_hhdm_offset);
@@ -124,33 +156,41 @@ void lyr_entry(void)
 
 	pmm_init();
 	log_info("entry", "PMM ok");
-
 	pmm_test();
 
-	assert(kernel_address_request.response != NULL);
+	/* paging */
+	LIMINE_REQUIRE(kernel_address_request);
 	_lyr_kvirt = kernel_address_request.response->virtual_base;
 	_lyr_kphys = kernel_address_request.response->physical_base;
+
 	paging_init();
 	assert(kernel_ptable != NULL);
 	paging_test();
 
+	/* heap / VMM */
 	kheap_init();
 	log_info("entry", "heap ok");
 	heap_test();
 
 	_lyr_kernel_vas = vas_adopt(kernel_ptable);
-	log_info("entry", "switched to kernel page table");
+	log_trace("entry", "switched to kernel page table");
 	vas_switch(_lyr_kernel_vas);
 	log_info("entry", "VMM ok");
 	vmm_test(_lyr_kernel_vas);
 
-	assert(rsdp_request.response != NULL);
+	/* ACPI */
+	LIMINE_REQUIRE(rsdp_request);
 	acpi_init(rsdp_request.response->address);
 	acpi_dump_tables();
 
-	/* done for now */
+	/* boot summary */
 	log_info("entry", "------------------------------");
-	log_info("entry", "lyr kernel v1.0.0 (c) 2026 Kevin Alavik");
+	log_info("entry", "lyr kernel v" LYR_VERSION " (c) 2026 Kevin Alavik");
+	log_info("entry", " * Booted with %s v%s", _lyr_bootloader_info->name,
+			 _lyr_bootloader_info->version);
+	log_info("entry", " * Firmware type: %s",
+			 firmware_type_str(_lyr_firmware_type_info->firmware_type));
+	log_info("entry", " * Kernel booted from %s", _lyr_file_info->path);
 
 	bgrt_init(framebuffer);
 

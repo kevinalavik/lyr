@@ -4,7 +4,7 @@
 #include <util/kprintf.h>
 
 #define _TRACE 0
-#define _DEBUG 1
+#define _DEBUG 0
 
 #ifndef LOG_USE_COLOR
 #define LOG_USE_COLOR 1
