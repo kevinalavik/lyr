@@ -18,6 +18,7 @@
 #include <mm/vmm.h>
 #include <debug/test.h>
 #include <sys/acpi.h>
+#include <sys/bgrt.h>
 
 /* public variables */
 uint64_t _lyr_hhdm_offset = 0;
@@ -150,6 +151,8 @@ void lyr_entry(void)
 	/* done for now */
 	log_info("entry", "------------------------------");
 	log_info("entry", "lyr kernel v1.0.0 (c) 2026 Kevin Alavik");
+
+	bgrt_init(framebuffer);
 
 	nointloop();
 }
