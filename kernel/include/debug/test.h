@@ -454,7 +454,6 @@ static void vmm_test(vas_t *vas)
 		vas_unmap(vas, mapped, PAGE_SIZE);
 		assert(get_phys(vas->pml4, mapped) == 0);
 
-		/* phys map must not have stolen ownership of the page */
 		assert(page_is_used(pg));
 		page_unref(pg);
 
@@ -467,7 +466,6 @@ static void vmm_test(vas_t *vas)
 		uint64_t addr = vas_map_anon(vas, 0, len, VMM_PRESENT | VMM_WRITABLE);
 		assert(addr != 0);
 
-		/* unmap middle two pages */
 		vas_unmap(vas, addr + PAGE_SIZE, PAGE_SIZE * 2);
 
 		vad_t *left = vas_find(vas, addr);
@@ -502,17 +500,143 @@ static void vmm_test(vas_t *vas)
 
 		vas_unmap(vas, addr, PAGE_SIZE * npages);
 		assert(pmm_free_pages() == snap);
-		log_debug("vmm_test", "8: %llu pages reclaimed ok (data=%llu pt=%llu)",
-				  (uint64_t)npages, (uint64_t)npages,
-				  snap - after_map - npages);
+		log_debug("vmm_test", "8: %llu pages reclaimed ok", (uint64_t)npages);
 	}
 
-	/* leak check — net pages consumed must be zero */
-	uint64_t free_after = pmm_free_pages();
-	log_debug("vmm_test", "free pages: before=%llu after=%llu delta=%lld",
-			  free_before, free_after,
-			  (int64_t)free_after - (int64_t)free_before);
-	assert(free_after == free_before);
+	/* 9. unique per-word pattern across 32 regions, full read-back */
+	{
+#define T9_COUNT 32
+#define T9_SIZE (PAGE_SIZE * 3)
+		void *r[T9_COUNT];
+		for (int i = 0; i < T9_COUNT; i++) {
+			r[i] = (void *)vas_map_anon(vas, 0, T9_SIZE,
+										VMM_PRESENT | VMM_WRITABLE);
+			assert(r[i] != NULL);
+			uint64_t *p = (uint64_t *)r[i];
+			for (size_t j = 0; j < T9_SIZE / sizeof(uint64_t); j++)
+				p[j] = 0xABCD000000000000ull ^ ((uint64_t)i << 32) ^ j;
+		}
+		for (int i = 0; i < T9_COUNT; i++) {
+			uint64_t *p = (uint64_t *)r[i];
+			for (size_t j = 0; j < T9_SIZE / sizeof(uint64_t); j++) {
+				uint64_t expected =
+					0xABCD000000000000ull ^ ((uint64_t)i << 32) ^ j;
+				assert(p[j] == expected);
+			}
+			vas_unmap(vas, (uint64_t)r[i], T9_SIZE);
+		}
+		log_debug("vmm_test", "9: multi-region pattern verify ok");
+#undef T9_COUNT
+#undef T9_SIZE
+	}
+
+	/* 10. interleaved free/realloc — aliasing detection */
+	{
+#define T10_COUNT 16
+#define T10_SIZE PAGE_SIZE
+		void *r[T10_COUNT];
+		for (int i = 0; i < T10_COUNT; i++) {
+			r[i] = (void *)vas_map_anon(vas, 0, T10_SIZE,
+										VMM_PRESENT | VMM_WRITABLE);
+			assert(r[i] != NULL);
+			*(volatile uint64_t *)r[i] = 0xFEEDFACE00000000ull | (uint64_t)i;
+		}
+		/* free evens, reallocate with inverted sentinel */
+		for (int i = 0; i < T10_COUNT; i += 2) {
+			vas_unmap(vas, (uint64_t)r[i], T10_SIZE);
+			r[i] = (void *)vas_map_anon(vas, 0, T10_SIZE,
+										VMM_PRESENT | VMM_WRITABLE);
+			assert(r[i] != NULL);
+			*(volatile uint64_t *)r[i] = ~(0xFEEDFACE00000000ull | (uint64_t)i);
+		}
+		/* odd regions must be untouched */
+		for (int i = 1; i < T10_COUNT; i += 2) {
+			uint64_t expected = 0xFEEDFACE00000000ull | (uint64_t)i;
+			assert(*(volatile uint64_t *)r[i] == expected);
+		}
+		for (int i = 0; i < T10_COUNT; i++)
+			vas_unmap(vas, (uint64_t)r[i], T10_SIZE);
+		log_debug("vmm_test", "10: interleaved free/realloc aliasing ok");
+#undef T10_COUNT
+#undef T10_SIZE
+	}
+
+	/* 11. vas_protect RW->RO->RW round-trip, data intact */
+	{
+		uint64_t addr =
+			vas_map_anon(vas, 0, PAGE_SIZE * 2, VMM_PRESENT | VMM_WRITABLE);
+		assert(addr != 0);
+
+		uint64_t *p = (uint64_t *)addr;
+		size_t words = (PAGE_SIZE * 2) / sizeof(uint64_t);
+		for (size_t j = 0; j < words; j++)
+			p[j] = 0xC0FFEE00ull ^ j;
+
+		vas_protect(vas, addr, PAGE_SIZE * 2, VMM_PRESENT);
+		vas_protect(vas, addr, PAGE_SIZE * 2, VMM_PRESENT | VMM_WRITABLE);
+
+		for (size_t j = 0; j < words; j++)
+			assert(p[j] == (0xC0FFEE00ull ^ j));
+
+		vad_t *v = vas_find(vas, addr);
+		assert(v && (v->flags & VMM_WRITABLE));
+		assert(get_phys(vas->pml4, addr) != 0);
+		assert(get_phys(vas->pml4, addr + PAGE_SIZE) != 0);
+
+		vas_unmap(vas, addr, PAGE_SIZE * 2);
+		log_debug("vmm_test", "11: protect round-trip ok");
+	}
+
+	/* 12. double-unmap must not crash or corrupt VAD list */
+	{
+		uint64_t addr =
+			vas_map_anon(vas, 0, PAGE_SIZE, VMM_PRESENT | VMM_WRITABLE);
+		assert(addr != 0);
+		vas_unmap(vas, addr, PAGE_SIZE);
+		vas_unmap(vas, addr, PAGE_SIZE); /* no-op, must not panic */
+		assert(vas_find(vas, addr) == NULL);
+		log_debug("vmm_test", "12: double-unmap ok");
+	}
+
+	/* 13. zero-length map must fail; size-1 must round up and succeed */
+	{
+		uint64_t r = vas_map_anon(vas, 0, 0, VMM_PRESENT | VMM_WRITABLE);
+		assert(r == 0);
+
+		uint64_t addr = vas_map_anon(vas, 0, 1, VMM_PRESENT | VMM_WRITABLE);
+		assert(addr != 0);
+		assert((addr & 0xFFF) == 0);
+		*(volatile uint8_t *)addr = 0xBE;
+		assert(*(volatile uint8_t *)addr == 0xBE);
+		vas_unmap(vas, addr, 1);
+		log_debug("vmm_test", "13: zero-len fail / sub-page round-up ok");
+	}
+
+	/* 14. VAD_FIXED collision must fail */
+	{
+		uint64_t want = 0x0000480000000000ull;
+		uint64_t first = vas_map_anon(vas, want, PAGE_SIZE,
+									  VMM_PRESENT | VMM_WRITABLE | VAD_FIXED);
+		assert(first == want);
+
+		uint64_t collision = vas_map_anon(
+			vas, want, PAGE_SIZE, VMM_PRESENT | VMM_WRITABLE | VAD_FIXED);
+		assert(collision == 0);
+
+		vas_unmap(vas, want, PAGE_SIZE);
+		log_debug("vmm_test", "14: VAD_FIXED collision rejected ok");
+	}
+
+	/* 15. PMM leak check — net pages consumed must be zero */
+	{
+		uint64_t free_after = pmm_free_pages();
+		log_debug("vmm_test",
+				  "15: free pages before=%llu after=%llu delta=%lld",
+				  free_before, free_after,
+				  (int64_t)free_after - (int64_t)free_before);
+		assert(free_after == free_before);
+		log_debug("vmm_test", "15: no PMM leak ok");
+	}
 
 	log_debug("vmm_test", "all tests passed");
 }

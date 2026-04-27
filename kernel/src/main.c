@@ -182,6 +182,7 @@ void lyr_entry(void)
 	LIMINE_REQUIRE(rsdp_request);
 	acpi_init(rsdp_request.response->address);
 	acpi_dump_tables();
+	bgrt_init(fb); /* fun thing to test */
 
 	/* boot summary */
 	log_info("entry", "------------------------------");
@@ -191,8 +192,6 @@ void lyr_entry(void)
 	log_info("entry", " * Firmware type: %s",
 			 firmware_type_str(_lyr_firmware_type_info->firmware_type));
 	log_info("entry", " * Kernel booted from %s", _lyr_file_info->path);
-
-	bgrt_init(framebuffer);
 
 	nointloop();
 }
