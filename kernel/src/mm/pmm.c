@@ -6,6 +6,12 @@
 #include <debug/assert.h>
 #include <lib/string.h>
 
+#if _PMM_TRACE
+#define _pmm_log_trace(...) log_trace(##__VA_ARGS)
+#else
+#define _pmm_log_trace(...) (void)0
+#endif
+
 static page_t *freelist = NULL;
 static uint64_t free_pages = 0;
 static uint64_t total_pages = 0;
@@ -156,7 +162,8 @@ void *palloc_single(void)
 
 	page->refcount = 1;
 
-	log_trace("pmm", "palloc_single phys=0x%llx", pfndb_page_to_phys(page));
+	_pmm_log_trace("pmm", "palloc_single phys=0x%llx",
+				   pfndb_page_to_phys(page));
 	return (void *)pfndb_page_to_phys(page);
 }
 
@@ -168,7 +175,7 @@ page_t *palloc_page(void)
 
 	page->refcount = 1;
 
-	log_trace("pmm", "palloc_page phys=0x%llx", pfndb_page_to_phys(page));
+	_pmm_log_trace("pmm", "palloc_page phys=0x%llx", pfndb_page_to_phys(page));
 	return page;
 }
 
@@ -176,8 +183,8 @@ void page_ref(page_t *page)
 {
 	_page_validate_used(page, "page_ref");
 	page->refcount++;
-	log_trace("pmm", "page_ref phys=0x%llx refcount=%u",
-			  pfndb_page_to_phys(page), page->refcount);
+	_pmm_log_trace("pmm", "page_ref phys=0x%llx refcount=%u",
+				   pfndb_page_to_phys(page), page->refcount);
 }
 
 void page_unref(page_t *page)
@@ -198,8 +205,9 @@ void page_unref(page_t *page)
 
 	page->refcount--;
 
-	log_trace("pmm", "page_unref phys=0x%llx refcount=%u sharecount=%llu",
-			  pfndb_page_to_phys(page), page->refcount, page->u2.sharecount);
+	_pmm_log_trace("pmm", "page_unref phys=0x%llx refcount=%u sharecount=%llu",
+				   pfndb_page_to_phys(page), page->refcount,
+				   page->u2.sharecount);
 
 	if (page->refcount == 0) {
 		if (page->u2.sharecount != 0) {
@@ -222,8 +230,8 @@ void page_share(page_t *page)
 	if (page->u2.sharecount > 1)
 		page->flags |= PAGE_SHARED;
 
-	log_trace("pmm", "page_share phys=0x%llx sharecount=%llu",
-			  pfndb_page_to_phys(page), page->u2.sharecount);
+	_pmm_log_trace("pmm", "page_share phys=0x%llx sharecount=%llu",
+				   pfndb_page_to_phys(page), page->u2.sharecount);
 }
 
 void page_unshare(page_t *page)
@@ -243,8 +251,8 @@ void page_unshare(page_t *page)
 	if (page->u2.sharecount <= 1)
 		page->flags &= ~PAGE_SHARED;
 
-	log_trace("pmm", "page_unshare phys=0x%llx sharecount=%llu",
-			  pfndb_page_to_phys(page), page->u2.sharecount);
+	_pmm_log_trace("pmm", "page_unshare phys=0x%llx sharecount=%llu",
+				   pfndb_page_to_phys(page), page->u2.sharecount);
 }
 
 uint64_t pmm_free_pages(void)

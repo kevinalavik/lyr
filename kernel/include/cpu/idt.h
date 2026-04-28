@@ -53,8 +53,19 @@ typedef struct {
 	uint64_t ss;
 } __attribute__((packed)) interrupt_frame_t;
 
+#define IRQ_BASE 0x20
+
+typedef void (*irq_callback)(interrupt_frame_t *);
+
+typedef struct {
+	void *ctx;
+	irq_callback callback;
+} irq_handler_t;
+
 void idt_init(void);
 void idt_set_desc(idt_entry_t *desc, uint64_t offset, uint8_t type,
 				  uint8_t dpl);
 
-#endif // _LYR_CPU_IDT_H
+void irq_install(uint8_t irq, irq_callback callback, interrupt_frame_t *ctx);
+
+#endif

@@ -21,9 +21,11 @@ typedef uint64_t ptable_t;
 #define VMM_FLAGS_KERNEL_RO (VMM_PRESENT)
 #define VMM_FLAGS_USER_RW (VMM_PRESENT | VMM_WRITABLE | VMM_USER)
 #define VMM_FLAGS_USER_RO (VMM_PRESENT | VMM_USER)
+#define VMM_FLAGS_MMIO (VMM_PRESENT | VMM_WRITABLE | VMM_PCD | VMM_PWT | VMM_NX)
 
 void map_page(ptable_t *pt, uint64_t virt, page_t *page, uint64_t flags);
 void map_page_phys(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t flags);
+void map_mmio(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t npages);
 void unmap_page(ptable_t *pt, uint64_t virt);
 
 uint64_t get_phys(ptable_t *pt, uint64_t virt);

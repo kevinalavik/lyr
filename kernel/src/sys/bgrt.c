@@ -1,4 +1,4 @@
-#include <sys/bgrt.h>
+#include <sys/acpi/bgrt.h>
 #include <sys/acpi.h>
 #include <debug/log.h>
 #include <mm/page.h>

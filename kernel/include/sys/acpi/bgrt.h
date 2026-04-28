@@ -1,5 +1,5 @@
-#ifndef _LYR_SYS_BGRT_H
-#define _LYR_SYS_BGRT_H
+#ifndef _LYR_SYS_ACPI_BGRT_H
+#define _LYR_SYS_ACPI_BGRT_H
 
 #include <stdint.h>
 #include <sys/acpi.h>
@@ -39,4 +39,4 @@ typedef struct bmp_dib_header {
 
 void bgrt_init(struct limine_framebuffer *fb);
 
-#endif // _LYR_SYS_BGRT_H
+#endif // _LYR_SYS_ACPI_BGRT_H

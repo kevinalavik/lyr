@@ -3,7 +3,7 @@
 
 #include <util/kprintf.h>
 
-#define _TRACE 0
+#define _TRACE 1
 #define _DEBUG 1
 
 #ifndef LOG_USE_COLOR

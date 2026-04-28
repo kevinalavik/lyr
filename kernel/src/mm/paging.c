@@ -292,6 +292,30 @@ void ptable_free_empty(ptable_t *pt, uint64_t virt)
 	}
 }
 
+void map_mmio(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t npages)
+{
+	assert(pt != NULL);
+
+	virt = ALIGN_DOWN(virt, PAGE_SIZE);
+	phys = ALIGN_DOWN(phys, PAGE_SIZE);
+
+	uint64_t *pml4 = (uint64_t *)PHYS_TO_VIRT((uint64_t)pt);
+
+	for (uint64_t i = 0; i < npages; i++) {
+		uint64_t v = virt + i * PAGE_SIZE;
+		uint64_t p = phys + i * PAGE_SIZE;
+
+		uint64_t *pte = _leaf_entry(pml4, v, VMM_PRESENT | VMM_WRITABLE);
+		if (!pte)
+			kpanic(NULL, "paging: map_mmio failed to allocate pte for 0x%llx",
+				   v);
+
+		*pte = p | VMM_FLAGS_MMIO;
+
+		asm volatile("invlpg (%0)" ::"r"(v) : "memory");
+	}
+}
+
 void paging_init(void)
 {
 	kernel_ptable = ptable_create();

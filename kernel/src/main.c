@@ -18,7 +18,10 @@
 #include <mm/vmm.h>
 #include <debug/test.h>
 #include <sys/acpi.h>
-#include <sys/bgrt.h>
+#include <sys/acpi/bgrt.h>
+#include <sys/acpi/madt.h>
+#include <sys/apic.h>
+#include <dev/pit.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -187,6 +190,18 @@ void lyr_entry(void)
 	acpi_dump_tables();
 #endif
 	bgrt_init(fb); /* fun thing to test */
+	madt_init();
+	log_info("entry", "MADT ok");
+	apic_init();
+	log_info("entry", "APIC ok");
+
+	/* timer */
+	pit_init(100);
+
+	if (pit_get_ticks() /* should atleast ticked once */ < 1) {
+		log_err("entry", "PIT (timer) failed");
+	} else
+		log_info("entry", "PIT (timer) ok");
 
 	/* boot summary */
 	log_info("entry", "------------------------------");
@@ -197,5 +212,6 @@ void lyr_entry(void)
 			 firmware_type_str(_lyr_firmware_type_info->firmware_type));
 	log_info("entry", " * Kernel booted from %s", _lyr_file_info->path);
 
-	nointloop();
+	for (;;)
+		hlt();
 }

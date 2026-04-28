@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <mm/page.h>
 
+#define _PMM_TRACE 0
+
 void pmm_init(void);
 
 void *palloc_single(void);

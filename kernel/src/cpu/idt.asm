@@ -55,6 +55,7 @@ isr_handler_stub:
 	push rax
 
 	cld
+	mov rdi, rsp
 	call isr_common_handler
 
 	add rsp, 0x30
