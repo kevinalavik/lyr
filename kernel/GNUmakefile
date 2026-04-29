@@ -49,7 +49,6 @@ override CFLAGS += \
     -Wextra \
     -Werror \
     -std=gnu11 \
-    -nostdinc \
     -ffreestanding \
     -fno-stack-protector \
     -fno-stack-check \

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <mm/page.h>
 
-#define _PMM_TRACE 0
+#define _PMM_TRACE 1
 
 void pmm_init(void);
 

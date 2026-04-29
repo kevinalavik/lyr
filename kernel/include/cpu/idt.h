@@ -66,6 +66,7 @@ void idt_init(void);
 void idt_set_desc(idt_entry_t *desc, uint64_t offset, uint8_t type,
 				  uint8_t dpl);
 
-void irq_install(uint8_t irq, irq_callback callback, interrupt_frame_t *ctx);
+void irq_install(uint8_t irq, irq_callback callback, interrupt_frame_t *ctx,
+				 uint8_t lapic_id);
 
 #endif

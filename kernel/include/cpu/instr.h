@@ -40,8 +40,13 @@ static inline uint8_t inb(uint16_t port)
 static inline uint64_t read_cr3(void)
 {
 	uint64_t val;
-	asm volatile("mov %%cr3, %0" : "=r"(val));
+	__asm__ volatile("mov %%cr3, %0" : "=r"(val));
 	return val;
+}
+
+static inline void write_cr3(uint64_t cr3)
+{
+	__asm__ volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
 }
 
 static inline uint64_t rdmsr(uint32_t msr)
@@ -55,6 +60,19 @@ static inline void wrmsr(uint32_t msr, uint64_t val)
 {
 	__asm__ volatile("wrmsr" ::"c"(msr), "a"((uint32_t)val),
 					 "d"((uint32_t)(val >> 32)));
+}
+
+static inline uint64_t read_rflags(void)
+{
+	uint64_t rflags;
+	__asm__ volatile("pushfq; popq %0" : "=r"(rflags)::"memory");
+	return rflags;
+}
+
+static inline int interrupts_enabled(void)
+{
+	/* IF = bit 9 */
+	return (read_rflags() & (1ULL << 9)) != 0;
 }
 
 #endif // _LYR_CPU_INSTR_H

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <debug/log.h>
+#include <sys/smp.h>
 
 static bool _pit_init = false;
 static volatile uint64_t _pit_ticks = 0;
@@ -13,6 +14,7 @@ void tick(interrupt_frame_t *frame)
 {
 	(void)frame;
 	_pit_ticks++;
+	log_trace("pit", "ticking on CPU %d!", get_cpu_local()->cpu_index);
 }
 
 void pit_init(uint16_t freq)
@@ -32,7 +34,7 @@ void pit_init(uint16_t freq)
 	outb(PIT_COMMAND, 0x36); // mode 3, rw
 	outb(PIT_COUNTER0, div & 0xFF);
 	outb(PIT_COUNTER0, div >> 8);
-	irq_install(0, tick, NULL);
+	irq_install(0, tick, NULL, 0xFF); /* install pit timer on all cores */
 
 	_pit_init = true;
 	log_trace("pit", "PIT is now running at %uHz (divisor = %u).",

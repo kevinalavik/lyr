@@ -22,6 +22,7 @@
 #include <sys/acpi/madt.h>
 #include <sys/apic.h>
 #include <dev/pit.h>
+#include <sys/smp.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -59,6 +60,7 @@ LIMINE_REQUEST(rsdp, RSDP, rsdp_request);
 LIMINE_REQUEST(bootloader_info, BOOTLOADER_INFO, bootloader_info_request);
 LIMINE_REQUEST(firmware_type, FIRMWARE_TYPE, firmware_type_request);
 LIMINE_REQUEST(executable_file, EXECUTABLE_FILE, kernel_file_request);
+LIMINE_REQUEST(mp, MP, mp_request);
 
 LIMINE_REQUEST_SECTION static volatile struct limine_stack_size_request
 	stack_size_request = { .id = LIMINE_STACK_SIZE_REQUEST_ID,
@@ -195,12 +197,25 @@ void lyr_entry(void)
 	apic_init();
 	log_info("entry", "APIC ok");
 
+	/* smp */
+	LIMINE_REQUIRE(mp_request);
+	smp_init(mp_request.response);
+	if (get_cpu_local()->lapic_id != 0)
+		log_err("entry", "SMP failed");
+	else
+		log_info("entry", "SMP ok");
+
 	/* timer */
 	pit_init(100);
 
-	if (pit_get_ticks() /* should atleast ticked once */ < 1) {
+	/* Give the PIT a moment to deliver at least one tick. */
+	uint64_t t0 = pit_get_ticks();
+	for (uint64_t i = 0; i < 10000000ULL && pit_get_ticks() == t0; i++)
+		__asm__ volatile("pause" ::: "memory");
+
+	if (pit_get_ticks() == t0)
 		log_err("entry", "PIT (timer) failed");
-	} else
+	else
 		log_info("entry", "PIT (timer) ok");
 
 	/* boot summary */

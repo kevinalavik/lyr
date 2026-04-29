@@ -372,4 +372,5 @@ void paging_init(void)
 			  (uint64_t)&_lyr_kstack_top);
 
 #undef MAP_SECTION
+	write_cr3((uint64_t)kernel_ptable);
 }

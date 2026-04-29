@@ -7,9 +7,9 @@
 #include <lib/string.h>
 
 #if _PMM_TRACE
-#define _pmm_log_trace(...) log_trace(##__VA_ARGS)
+#define _pmm_log_trace(...) log_trace(__VA_ARGS__)
 #else
-#define _pmm_log_trace(...) (void)0
+#define _pmm_log_trace(...) ((void)0)
 #endif
 
 static page_t *freelist = NULL;

@@ -1,13 +1,14 @@
 #include <sys/acpi/madt.h>
 #include <debug/log.h>
 #include <cpu/instr.h>
+#include <sys/smp.h>
 
 madt_t *madt = NULL;
 
 uintptr_t lapic_base = 0;
 
-madt_lapic_t *lapics[256]; /* max of 256 cores*/
-madt_ioapic_t *ioapics[256]; /* ^ */
+madt_lapic_t *lapics[MAX_CPUS];
+madt_ioapic_t *ioapics[MAX_CPUS];
 
 size_t lapic_count = 0;
 size_t ioapic_count = 0;
@@ -64,7 +65,7 @@ void madt_init()
 		switch (mhdr->type) {
 		case MADT_LAPIC: {
 			madt_lapic_t *lapic = (madt_lapic_t *)(madt->structures + i);
-			if (lapic_count >= 256) {
+			if (lapic_count >= MAX_CPUS) {
 				log_warn(
 					"madt",
 					"Reached maximum allowed CPUs, processor #%u will be left disabled.",
@@ -80,7 +81,7 @@ void madt_init()
 		}
 		case MADT_IOAPIC: {
 			madt_ioapic_t *ioapic = (madt_ioapic_t *)(madt->structures + i);
-			if (ioapic_count >= 256) {
+			if (ioapic_count >= MAX_CPUS) {
 				log_warn(
 					"madt",
 					"Reached maximum allowed IOAPIC controllers, IOAPIC #%u will be unused.",
