@@ -112,7 +112,6 @@ void test(void *)
 		return;
 	}
 
-	log_info("test", "/etc/motd size: %d", file->node->size);
 	char *buf = kzalloc(file->node->size);
 	size_t done = 0;
 	r = vfs_read(file, buf, file->node->size, &done);
