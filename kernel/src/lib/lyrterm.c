@@ -59,8 +59,9 @@ static size_t lyrterm_dropped;
 #define ansi_colors_bright (active_theme->ansi_bright)
 
 #define CURSOR_COLOR current_fg
+
 #ifdef LYRTERM_LINE_CURSOR
-#define CURSOR_HEIGHT (_LYRTERM_FONT_HEIGHT / 6)
+#define CURSOR_HEIGHT ((_LYRTERM_FONT_HEIGHT - _LYRTERM_LINE_PADDING_Y) / 6)
 #else
 #define CURSOR_HEIGHT _LYRTERM_FONT_HEIGHT
 #endif
@@ -89,6 +90,21 @@ typedef struct {
 
 static utf8_state_t utf8 = { 0, 0 };
 
+static inline uint32_t min_u32(uint32_t a, uint32_t b)
+{
+	return a < b ? a : b;
+}
+
+static inline uint32_t glyph_draw_height(void)
+{
+	return min_u32(_LYRTERM_FONT_HEIGHT, _LYRTERM_LINE_HEIGHT);
+}
+
+static inline uint32_t cursor_draw_height(void)
+{
+	return min_u32(CURSOR_HEIGHT, _LYRTERM_LINE_HEIGHT);
+}
+
 static bool lyrterm_q_empty(void)
 {
 	return lyrterm_rpos == lyrterm_wpos;
@@ -116,7 +132,7 @@ static inline uint32_t pack_color(uint32_t rgb)
 {
 	uint8_t r8 = (rgb >> 16) & 0xFF;
 	uint8_t g8 = (rgb >> 8) & 0xFF;
-	uint8_t b8 = (rgb >> 0) & 0xFF;
+	uint8_t b8 = rgb & 0xFF;
 
 	uint32_t r = (uint32_t)r8 >> (8 - red_mask_size);
 	uint32_t g = (uint32_t)g8 >> (8 - green_mask_size);
@@ -129,6 +145,7 @@ static inline uint32_t pack_color(uint32_t rgb)
 static inline void write_pixel(uint32_t x, uint32_t y, uint32_t packed)
 {
 	uint8_t *p = fb_base + (uint32_t)(y * fb_pitch + x * fb_Bpp);
+
 	switch (fb_Bpp) {
 	case 2:
 		p[0] = (uint8_t)(packed & 0xFF);
@@ -150,14 +167,17 @@ static inline uint32_t term_x0(void)
 {
 	return _LYRTERM_MARGIN_X;
 }
+
 static inline uint32_t term_y0(void)
 {
 	return _LYRTERM_MARGIN_Y;
 }
+
 static inline uint32_t term_width(void)
 {
 	return fb_width - (_LYRTERM_MARGIN_X * 2);
 }
+
 static inline uint32_t term_height(void)
 {
 	return fb_height - (_LYRTERM_MARGIN_Y * 2);
@@ -166,19 +186,24 @@ static inline uint32_t term_height(void)
 static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 					  uint32_t packed)
 {
+	if (w == 0 || h == 0)
+		return;
+
 	if (fb_Bpp == 4) {
 		for (uint32_t row = 0; row < h; row++) {
 			uint32_t *p = (uint32_t *)(fb_base + (y + row) * fb_pitch + x * 4);
 			uint32_t n = w;
+
 			__asm__ volatile("rep stosl"
 							 : "+D"(p), "+c"(n)
 							 : "a"(packed)
 							 : "memory");
 		}
 	} else {
-		for (uint32_t row = 0; row < h; row++)
+		for (uint32_t row = 0; row < h; row++) {
 			for (uint32_t col = 0; col < w; col++)
 				write_pixel(x + col, y + row, packed);
+		}
 	}
 }
 
@@ -190,17 +215,21 @@ static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
 												_lyrterm_font_sentinel;
 
 	const uint32_t bytes_per_row = (_LYRTERM_FONT_WIDTH + 7) / 8;
+	const uint32_t draw_h = glyph_draw_height();
 
 	if (fb_Bpp == 4) {
-		for (uint32_t row = 0; row < _LYRTERM_FONT_HEIGHT; row++) {
+		for (uint32_t row = 0; row < draw_h; row++) {
 			const uint8_t *row_data = &glyph[row * bytes_per_row];
 			uint32_t *dst =
 				(uint32_t *)(fb_base + (y + row) * fb_pitch + x * 4);
+
 			uint32_t col = 0;
+
 			for (uint32_t b = 0; b < bytes_per_row; b++) {
 				uint8_t byte = row_data[b];
 				uint32_t remaining = _LYRTERM_FONT_WIDTH - col;
 				uint32_t bits = remaining < 8 ? remaining : 8;
+
 				for (uint32_t bit = 0; bit < bits; bit++) {
 					dst[col++] = (byte & 0x80) ? fg : bg;
 					byte <<= 1;
@@ -208,13 +237,15 @@ static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
 			}
 		}
 	} else {
-		for (uint32_t row = 0; row < _LYRTERM_FONT_HEIGHT; row++) {
+		for (uint32_t row = 0; row < draw_h; row++) {
 			const uint8_t *row_data = &glyph[row * bytes_per_row];
 			uint32_t col = 0;
+
 			for (uint32_t b = 0; b < bytes_per_row; b++) {
 				uint8_t byte = row_data[b];
 				uint32_t remaining = _LYRTERM_FONT_WIDTH - col;
 				uint32_t bits = remaining < 8 ? remaining : 8;
+
 				for (uint32_t bit = 0; bit < bits; bit++) {
 					write_pixel(x + col, y + row, (byte & 0x80) ? fg : bg);
 					col++;
@@ -222,6 +253,11 @@ static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
 				}
 			}
 		}
+	}
+
+	if (_LYRTERM_LINE_HEIGHT > _LYRTERM_FONT_HEIGHT) {
+		fill_rect(x, y + _LYRTERM_FONT_HEIGHT, _LYRTERM_FONT_WIDTH,
+				  _LYRTERM_LINE_HEIGHT - _LYRTERM_FONT_HEIGHT, bg);
 	}
 }
 
@@ -232,11 +268,15 @@ static void scroll_up(void)
 	uint32_t w = term_width();
 	uint32_t h = term_height();
 
+	if (h <= _LYRTERM_LINE_HEIGHT)
+		return;
+
 	uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
 
 	if (x0 == 0 && w == fb_width) {
 		uint8_t *dst = fb_base + y0 * fb_pitch;
 		uint8_t *src = fb_base + (y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch;
+
 		memcpy(dst, src, rows_to_copy * fb_pitch);
 	} else {
 		for (uint32_t row = 0; row < rows_to_copy; row++) {
@@ -244,26 +284,31 @@ static void scroll_up(void)
 			uint8_t *src = fb_base +
 						   (y0 + row + _LYRTERM_LINE_HEIGHT) * fb_pitch +
 						   x0 * fb_Bpp;
+
 			memcpy(dst, src, w * fb_Bpp);
 		}
 	}
 
-	fill_rect(x0, y0 + (h - _LYRTERM_LINE_HEIGHT), w, _LYRTERM_LINE_HEIGHT,
+	fill_rect(x0, y0 + h - _LYRTERM_LINE_HEIGHT, w, _LYRTERM_LINE_HEIGHT,
 			  default_bg);
 }
 
 static void cursor_draw(void)
 {
 	uint32_t top = cursor_y - _LYRTERM_FONT_ASCENT;
-	fill_rect(cursor_x, top + (_LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT),
-			  _LYRTERM_FONT_WIDTH, CURSOR_HEIGHT, CURSOR_COLOR);
+	uint32_t h = cursor_draw_height();
+	uint32_t y = top + (_LYRTERM_LINE_HEIGHT - h);
+
+	fill_rect(cursor_x, y, _LYRTERM_FONT_WIDTH, h, CURSOR_COLOR);
 }
 
 static void cursor_erase(void)
 {
 	uint32_t top = cursor_y - _LYRTERM_FONT_ASCENT;
-	fill_rect(cursor_x, top + (_LYRTERM_FONT_HEIGHT - CURSOR_HEIGHT),
-			  _LYRTERM_FONT_WIDTH, CURSOR_HEIGHT, current_bg);
+	uint32_t h = cursor_draw_height();
+	uint32_t y = top + (_LYRTERM_LINE_HEIGHT - h);
+
+	fill_rect(cursor_x, y, _LYRTERM_FONT_WIDTH, h, current_bg);
 }
 
 static void newline(void)
@@ -280,7 +325,8 @@ static void newline(void)
 
 static void advance_cursor(void)
 {
-	cursor_x += _LYRTERM_FONT_WIDTH;
+	cursor_x += _LYRTERM_LINE_WIDTH;
+
 	if (cursor_x + _LYRTERM_FONT_WIDTH > term_x0() + term_width())
 		newline();
 }
@@ -292,8 +338,10 @@ static void ansi_handle_sgr(int *params, int nparams)
 		current_bg = default_bg;
 		return;
 	}
+
 	for (int i = 0; i < nparams; i++) {
 		int p = params[i];
+
 		if (p == 0) {
 			current_fg = default_fg;
 			current_bg = default_bg;
@@ -317,6 +365,7 @@ static void ansi_dispatch_csi(char final)
 {
 	int nparams =
 		(ansi_params[ansi_nparams] || ansi_nparams) ? ansi_nparams + 1 : 0;
+
 	for (size_t i = 0;
 		 i < sizeof(ansi_csi_handlers) / sizeof(*ansi_csi_handlers); i++) {
 		if (ansi_csi_handlers[i].final == final) {
@@ -329,9 +378,9 @@ static void ansi_dispatch_csi(char final)
 static uint32_t utf8_feed(uint8_t byte)
 {
 	if (utf8.bytes_left == 0) {
-		if (byte < 0x80)
+		if (byte < 0x80) {
 			return (uint32_t)byte;
-		else if ((byte & 0xE0) == 0xC0) {
+		} else if ((byte & 0xE0) == 0xC0) {
 			utf8.codepoint = byte & 0x1F;
 			utf8.bytes_left = 1;
 		} else if ((byte & 0xF0) == 0xE0) {
@@ -340,23 +389,31 @@ static uint32_t utf8_feed(uint8_t byte)
 		} else if ((byte & 0xF8) == 0xF0) {
 			utf8.codepoint = byte & 0x07;
 			utf8.bytes_left = 3;
-		} else
+		} else {
 			return 0xFFFD;
+		}
+
 		return 0;
 	}
+
 	if ((byte & 0xC0) != 0x80) {
 		utf8.bytes_left = 0;
 		utf8.codepoint = 0;
 		return 0xFFFD;
 	}
+
 	utf8.codepoint = (utf8.codepoint << 6) | (byte & 0x3F);
+
 	if (--utf8.bytes_left == 0) {
 		uint32_t cp = utf8.codepoint;
 		utf8.codepoint = 0;
+
 		if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
 			return 0xFFFD;
+
 		return cp;
 	}
+
 	return 0;
 }
 
@@ -402,6 +459,7 @@ void lyrterm_init(const struct limine_framebuffer *lfb)
 	fill_rect(0, 0, fb_width, fb_height, default_bg);
 
 	initialized = true;
+
 	async_io_register_drain_hook(lyrterm_async_drain, NULL);
 	cursor_draw();
 }
@@ -410,6 +468,7 @@ void lyrterm_apply_theme(const lyrterm_theme_t *theme)
 {
 	if (!theme)
 		return;
+
 	active_theme = theme;
 	default_fg = pack_color(theme->fg);
 	default_bg = pack_color(theme->bg);
@@ -425,6 +484,37 @@ void lyrterm_set_colors(uint32_t fg, uint32_t bg)
 	current_bg = default_bg;
 }
 
+static void tab_advance(void)
+{
+	do {
+		advance_cursor();
+	} while ((((cursor_x - term_x0()) / _LYRTERM_LINE_WIDTH) % 8) != 0);
+}
+
+static void lyrterm_putcp_raw_locked(uint32_t codepoint)
+{
+	cursor_erase();
+
+	switch (codepoint) {
+	case '\n':
+		newline();
+		break;
+	case '\r':
+		cursor_x = term_x0();
+		break;
+	case '\t':
+		tab_advance();
+		break;
+	default:
+		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, codepoint, current_fg,
+			   current_bg);
+		advance_cursor();
+		break;
+	}
+
+	cursor_draw();
+}
+
 static void lyrterm_putch_locked(char raw)
 {
 	if (!initialized)
@@ -434,10 +524,12 @@ static void lyrterm_putch_locked(char raw)
 
 	if (ansi_state == ANSI_STATE_ESC) {
 		ansi_state = (raw == '[') ? ANSI_STATE_CSI : ANSI_STATE_NORMAL;
+
 		if (ansi_state == ANSI_STATE_CSI) {
 			ansi_nparams = 0;
 			ansi_params[0] = 0;
 		}
+
 		return;
 	}
 
@@ -453,6 +545,7 @@ static void lyrterm_putch_locked(char raw)
 			ansi_nparams = 0;
 			ansi_state = ANSI_STATE_NORMAL;
 		}
+
 		return;
 	}
 
@@ -464,36 +557,20 @@ static void lyrterm_putch_locked(char raw)
 	}
 
 	uint32_t cp = utf8_feed(byte);
+
 	if (cp == 0)
 		return;
 
-	cursor_erase();
-	switch (cp) {
-	case '\n':
-		newline();
-		break;
-	case '\r':
-		cursor_x = term_x0();
-		break;
-	case '\t':
-		do {
-			advance_cursor();
-		} while ((cursor_x / _LYRTERM_FONT_WIDTH) % 8);
-		break;
-	default:
-		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, cp, current_fg,
-			   current_bg);
-		advance_cursor();
-		break;
-	}
-	cursor_draw();
+	lyrterm_putcp_raw_locked(cp);
 }
 
 void lyrterm_putch(char raw)
 {
 	if (!spinlock_try_acquire(&lyrterm_render_lock))
 		return;
+
 	lyrterm_putch_locked(raw);
+
 	spinlock_release(&lyrterm_render_lock);
 }
 
@@ -503,8 +580,10 @@ void lyrterm_putstr(const char *str)
 		return;
 
 	spinlock_acquire(&lyrterm_render_lock);
+
 	while (*str)
 		lyrterm_putch_locked(*str++);
+
 	spinlock_release(&lyrterm_render_lock);
 }
 
@@ -541,6 +620,7 @@ size_t lyrterm_drain(size_t budget)
 
 		ch = lyrterm_q[lyrterm_rpos];
 		lyrterm_rpos = (lyrterm_rpos + 1) % LYRTERM_Q_SIZE;
+
 		spinlock_release(&lyrterm_lock);
 
 		lyrterm_putch_locked(ch);
@@ -548,6 +628,7 @@ size_t lyrterm_drain(size_t budget)
 	}
 
 	spinlock_release(&lyrterm_render_lock);
+
 	return drained;
 }
 
@@ -588,32 +669,16 @@ static void lyrterm_putcp_locked(uint32_t codepoint)
 {
 	if (!initialized)
 		return;
-	cursor_erase();
-	switch (codepoint) {
-	case '\n':
-		newline();
-		break;
-	case '\r':
-		cursor_x = term_x0();
-		break;
-	case '\t':
-		do {
-			advance_cursor();
-		} while ((cursor_x / _LYRTERM_FONT_WIDTH) % 8);
-		break;
-	default:
-		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, codepoint, current_fg,
-			   current_bg);
-		advance_cursor();
-		break;
-	}
-	cursor_draw();
+
+	lyrterm_putcp_raw_locked(codepoint);
 }
 
 void lyrterm_putcp(uint32_t codepoint)
 {
 	if (!spinlock_try_acquire(&lyrterm_render_lock))
 		return;
+
 	lyrterm_putcp_locked(codepoint);
+
 	spinlock_release(&lyrterm_render_lock);
 }

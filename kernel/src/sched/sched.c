@@ -274,7 +274,7 @@ static void process_note_no_threads(pcb_t *process)
 	spinlock_acquire(&sched_lock);
 	process_unlink_locked(process);
 	spinlock_release(&sched_lock);
-	log_debug("sched", "process pid=%d (%s) has no live threads", process->pid,
+	log_trace("sched", "process pid=%d (%s) has no live threads", process->pid,
 			  process->name);
 }
 
@@ -646,7 +646,7 @@ pcb_t *sched_process_create(const char *name, vas_t *vas)
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
 
-	log_debug("sched", "created process pid=%d name=%s pml4=0x%llx",
+	log_trace("sched", "created process pid=%d name=%s pml4=0x%llx",
 			  process->pid, process->name, (uint64_t)process->pml4);
 	return process;
 }
@@ -683,7 +683,7 @@ tcb_t *sched_create_thread_on_cpu(pcb_t *process, const char *name,
 	spinlock_release(&cpu->runq_lock);
 	irq_restore(flags);
 
-	log_debug("sched", "created tid=%d pid=%d (%s) on cpu%u load=%u",
+	log_trace("sched", "created tid=%d pid=%d (%s) on cpu%u load=%u",
 			  thread->tid, process->pid, thread->name, cpu->cpu_index,
 			  atomic_load(&cpu->sched_load));
 	return thread;
