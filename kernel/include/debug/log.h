@@ -55,7 +55,10 @@
 #define log_warn(subsys, fmt, ...) \
 	__log(LOG_WARN, LOG_CLR_WARN, subsys, fmt, ##__VA_ARGS__)
 
-#define log_err(subsys, fmt, ...) \
-	__log(LOG_ERR, LOG_CLR_ERR, subsys, fmt, ##__VA_ARGS__)
+#define log_err(subsys, fmt, ...)                                \
+	do {                                                         \
+		__log(LOG_ERR, LOG_CLR_ERR, subsys, fmt, ##__VA_ARGS__); \
+		kprintf_flush_lyrterm();                                 \
+	} while (0)
 
 #endif

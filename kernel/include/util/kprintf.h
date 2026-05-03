@@ -8,4 +8,7 @@
 int kprintf(const char *format, ...);
 int vsnprintf(char *str, size_t size, const char *format, va_list ap);
 
+void kprintf_flush_lyrterm(void);
+size_t kprintf_dropped_lyrterm_bytes(void);
+
 #endif // _LYR_UTIL_KPRINTF_H

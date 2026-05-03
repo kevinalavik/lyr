@@ -102,9 +102,9 @@ static void print_banner(void)
 void test(void *arg)
 {
 	(void)arg;
-	kprintf("Hello from tid=%d running on CPU %d!\n", sched_current()->tid,
-			get_cpu_local()->cpu_index);
-	sched_thread_exit(0);
+	while (1)
+		kprintf("Hello from tid=%d running on CPU %d!\n", sched_current()->tid,
+				get_cpu_local()->cpu_index);
 }
 
 void lyr_entry(void)
@@ -113,6 +113,8 @@ void lyr_entry(void)
 
 	if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision))
 		nointloop();
+
+	print_banner();
 
 	log_info("entry", "UART %s", uart_init() == 0 ? "ok" : "not ok");
 
@@ -125,7 +127,6 @@ void lyr_entry(void)
 
 	lyrterm_apply_theme(&lyrterm_theme_dark);
 	lyrterm_init(fb);
-	print_banner();
 
 	/* etc requests */
 	LIMINE_REQUIRE(bootloader_info_request);
@@ -224,6 +225,7 @@ void lyr_entry(void)
 
 	pcb_t *p = sched_process_create("hello", _lyr_kernel_vas);
 	assert(p);
-	sched_create_thread(p, "hello", test, NULL);
+	for (int i = 0; i < 100; i++)
+		sched_create_thread(p, "hello", test, NULL);
 	sched_exit(); /* finished */
 }

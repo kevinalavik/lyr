@@ -15,6 +15,7 @@ interrupt_frame_t *tick(interrupt_frame_t *frame)
 {
 	_pit_ticks++;
 	log_trace("pit", "ticking on CPU %d!", get_cpu_local()->cpu_index);
+	kprintf_flush_lyrterm();
 	return sched_tick(frame);
 }
 
