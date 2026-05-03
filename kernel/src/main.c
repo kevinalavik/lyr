@@ -105,26 +105,32 @@ static void print_banner(void)
 
 void test(void *)
 {
-	vfs_file_t *file = NULL;
-	int r = vfs_open("/etc/motd", VFS_O_RDONLY, 0, &vfs_root_cred, &file);
-	if (r != VFS_OK) {
-		kprintf("initrd: failed to open /etc/motd status=%d\n", r);
-		return;
-	}
+	kprintf("init: Hello, World!\n");
+	kprintf("init: motd\n");
+	/* display motd */
+	{
+		vfs_file_t *file = NULL;
+		int r = vfs_open("/etc/motd", VFS_O_RDONLY, 0, &vfs_root_cred, &file);
+		if (r != VFS_OK) {
+			kprintf("initrd: failed to open /etc/motd status=%d\n", r);
+			return;
+		}
 
-	char *buf = kzalloc(file->node->size);
-	size_t done = 0;
-	r = vfs_read(file, buf, file->node->size, &done);
-	vfs_close(file);
-	if (r != VFS_OK) {
-		kprintf("initrd: failed to read /etc/motd status=%d\n", r);
-		return;
-	}
+		char *buf = kzalloc(file->node->size);
+		size_t done = 0;
+		r = vfs_read(file, buf, file->node->size, &done);
+		vfs_close(file);
+		if (r != VFS_OK) {
+			kprintf("initrd: failed to read /etc/motd status=%d\n", r);
+			return;
+		}
 
-	buf[done] = '\0';
-	kprintf("%s", buf);
-	if (done == 0 || buf[done - 1] != '\n')
-		kprintf("\n");
+		buf[done] = '\0';
+		kprintf("\n%s", buf);
+		if (done == 0 || buf[done - 1] != '\n')
+			kprintf("\n");
+		kfree(buf);
+	}
 }
 
 void lyr_entry(void)
@@ -246,6 +252,10 @@ void lyr_entry(void)
 		sched_test();
 		log_info("entry", "Scheduler ok");
 	}
+
+	/* we are done, now launch init proc */
+	log_info("entry", "lyr-kernel " LYR_VERSION
+					  " done initializing, launching init proc");
 
 	pcb_t *p = sched_process_create("init", _lyr_kernel_vas);
 	assert(p);
