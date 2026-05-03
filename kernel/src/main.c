@@ -208,7 +208,7 @@ void lyr_entry(void)
 	sched_init();
 
 	/* timer */
-	pit_init(100);
+	pit_init(1000);
 
 	/* Give the PIT a moment to deliver at least one tick. */
 	uint64_t t0 = pit_get_ticks();
