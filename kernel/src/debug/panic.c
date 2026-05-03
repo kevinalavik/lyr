@@ -3,6 +3,7 @@
 #include <util/kprintf.h>
 #include <cpu/instr.h>
 #include <stdatomic.h>
+#include <sys/smp.h>
 
 static atomic_flag panic_lock = ATOMIC_FLAG_INIT;
 
@@ -55,6 +56,7 @@ __attribute__((noreturn)) void kpanic(interrupt_frame_t *frame, const char *fmt,
 	} else {
 		log_err("panic", "reason: (no message)");
 	}
+	log_err("panic", "faulting CPU: %d", get_cpu_local()->cpu_index);
 
 	log_err("panic", "");
 

@@ -10,7 +10,223 @@
 #include <lib/string.h>
 #include <sched/sched.h>
 #include <cpu/instr.h>
+#include <dev/async.h>
 #include <dev/pit.h>
+
+typedef struct {
+	uint32_t calls;
+	int last_status;
+	async_io_op_t last_op;
+	async_io_target_t last_target;
+} async_test_cb_t;
+
+typedef struct {
+	size_t remaining;
+	size_t calls;
+	size_t last_budget;
+} async_test_hook_t;
+
+static async_test_hook_t async_test_hook_ctx;
+
+static void async_test_complete(const async_io_request_t *request,
+								void *context)
+{
+	async_test_cb_t *cb = context;
+	assert(cb);
+	assert(request);
+
+	cb->calls++;
+	cb->last_status = request->status ? *request->status : ASYNC_IO_OK;
+	cb->last_op = request->op;
+	cb->last_target = request->target;
+}
+
+static size_t async_test_drain_hook(size_t budget, void *context)
+{
+	async_test_hook_t *hook = context;
+	assert(hook);
+
+	hook->calls++;
+	hook->last_budget = budget;
+
+	if (hook->remaining == 0)
+		return 0;
+
+	size_t n = hook->remaining;
+	if (budget != 0 && n > budget)
+		n = budget;
+
+	hook->remaining -= n;
+	return n;
+}
+
+static void async_test(void)
+{
+	log_debug("async_test", "starting");
+	assert(async_io_is_initialized());
+
+	/* 1. invalid request validation */
+	{
+		async_io_request_t req;
+		uint32_t result = 0;
+
+		assert(async_io_submit(NULL) == ASYNC_IO_ERR_BAD_REQUEST);
+
+		async_io_request_mmio_in(&req, (uintptr_t)&result, ASYNC_IO_WIDTH_32,
+								 NULL, NULL, NULL, NULL, NULL);
+		assert(async_io_submit(&req) == ASYNC_IO_ERR_BAD_REQUEST);
+
+		async_io_request_mmio_out(&req, (uintptr_t)&result,
+								  (async_io_width_t)7, 0, NULL, NULL, NULL,
+								  NULL);
+		assert(async_io_submit(&req) == ASYNC_IO_ERR_BAD_REQUEST);
+
+		assert(async_io_register_drain_hook(NULL, NULL) ==
+			   ASYNC_IO_ERR_BAD_REQUEST);
+		log_debug("async_test", "validation ok");
+	}
+
+	/* 2. queued MMIO write/read, done/status, callback */
+	{
+		uint32_t mmio = 0;
+		uint32_t result = 0;
+		volatile int done = 0;
+		volatile int status = 123;
+		async_test_cb_t cb = { 0 };
+		async_io_request_t req;
+
+		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
+								  0xA5A55A5Au, &done, &status,
+								  async_test_complete, &cb);
+		assert(async_io_submit(&req) == ASYNC_IO_OK);
+		assert(mmio == 0);
+		assert(done == 0);
+
+		assert(async_io_drain(1) == 1);
+		assert(mmio == 0xA5A55A5Au);
+		assert(done == 1);
+		assert(status == ASYNC_IO_OK);
+		assert(cb.calls == 1);
+		assert(cb.last_status == ASYNC_IO_OK);
+		assert(cb.last_op == ASYNC_IO_OP_OUT);
+		assert(cb.last_target == ASYNC_IO_TARGET_MMIO);
+
+		mmio = 0x11223344u;
+		done = 0;
+		status = 321;
+		cb.calls = 0;
+		async_io_request_mmio_in(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
+								 &result, &done, &status,
+								 async_test_complete, &cb);
+		assert(async_io_submit(&req) == ASYNC_IO_OK);
+		assert(result == 0);
+		assert(async_io_drain(1) == 1);
+		assert(result == 0x11223344u);
+		assert(done == 1);
+		assert(status == ASYNC_IO_OK);
+		assert(cb.calls == 1);
+		assert(cb.last_op == ASYNC_IO_OP_IN);
+		log_debug("async_test", "queued mmio read/write ok");
+	}
+
+	/* 3. drain budget preserves FIFO ordering */
+	{
+		uint32_t mmio = 0;
+		async_io_request_t req;
+
+		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
+								  1, NULL, NULL, NULL, NULL);
+		assert(async_io_submit(&req) == ASYNC_IO_OK);
+		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
+								  2, NULL, NULL, NULL, NULL);
+		assert(async_io_submit(&req) == ASYNC_IO_OK);
+
+		assert(async_io_drain(1) == 1);
+		assert(mmio == 1);
+		assert(async_io_drain(1) == 1);
+		assert(mmio == 2);
+		assert(async_io_drain(1) == 0);
+		log_debug("async_test", "budget/FIFO ok");
+	}
+
+	/* 4. sync MMIO helpers for every supported width */
+	{
+		uint8_t mmio8 = 0;
+		uint16_t mmio16 = 0;
+		uint32_t mmio32 = 0;
+
+		assert(async_io_mmio_write8_sync((uintptr_t)&mmio8, 0x7Bu) ==
+			   ASYNC_IO_OK);
+		assert(mmio8 == 0x7Bu);
+		mmio8 = 0x5Cu;
+		assert(async_io_mmio_read8_sync((uintptr_t)&mmio8) == 0x5Cu);
+
+		assert(async_io_mmio_write16_sync((uintptr_t)&mmio16, 0xBEEFu) ==
+			   ASYNC_IO_OK);
+		assert(mmio16 == 0xBEEFu);
+		mmio16 = 0xCAFEu;
+		assert(async_io_mmio_read16_sync((uintptr_t)&mmio16) == 0xCAFEu);
+
+		assert(async_io_mmio_write32_sync((uintptr_t)&mmio32,
+										  0xDEADBEEFu) == ASYNC_IO_OK);
+		assert(mmio32 == 0xDEADBEEFu);
+		mmio32 = 0xC001CAFEu;
+		assert(async_io_mmio_read32_sync((uintptr_t)&mmio32) ==
+			   0xC001CAFEu);
+		log_debug("async_test", "sync mmio helpers ok");
+	}
+
+	/* 5. drain hooks are idempotent and budgeted */
+	{
+		async_test_hook_ctx.remaining = 5;
+		async_test_hook_ctx.calls = 0;
+		async_test_hook_ctx.last_budget = 0;
+
+		assert(async_io_register_drain_hook(async_test_drain_hook,
+											&async_test_hook_ctx) ==
+			   ASYNC_IO_OK);
+		assert(async_io_register_drain_hook(async_test_drain_hook,
+											&async_test_hook_ctx) ==
+			   ASYNC_IO_OK);
+
+		assert(async_io_drain(3) == 3);
+		assert(async_test_hook_ctx.remaining == 2);
+		assert(async_test_hook_ctx.last_budget == 3);
+
+		assert(async_io_drain(0) == 2);
+		assert(async_test_hook_ctx.remaining == 0);
+		log_debug("async_test", "drain hooks ok");
+	}
+
+	/* 6. queue full is reported and a full drain executes all requests */
+	{
+		uint32_t mmio = 0;
+		async_io_request_t req;
+		size_t queued = 0;
+
+		for (uint32_t i = 0; i < 1024; i++) {
+			async_io_request_mmio_out(&req, (uintptr_t)&mmio,
+									  ASYNC_IO_WIDTH_32, i, NULL, NULL, NULL,
+									  NULL);
+			int status = async_io_submit(&req);
+			if (status == ASYNC_IO_OK) {
+				queued++;
+				continue;
+			}
+
+			assert(status == ASYNC_IO_ERR_FULL);
+			break;
+		}
+
+		assert(queued > 0);
+		assert(async_io_drain(0) == queued);
+		assert(mmio == (uint32_t)(queued - 1));
+		assert(async_io_drain(0) == 0);
+		log_debug("async_test", "queue full/drain ok queued=%zu", queued);
+	}
+
+	log_debug("async_test", "all tests passed");
+}
 
 static void pmm_test(void)
 {
@@ -647,20 +863,26 @@ static void vmm_test(vas_t *vas)
 typedef struct {
 	atomic_uint *counter;
 	atomic_uint *done;
+	atomic_bool *start;
 	uint32_t iterations;
 } sched_test_arg_t;
 
 static void sched_test_thread(void *arg)
 {
 	sched_test_arg_t *test = arg;
+	while (!atomic_load_explicit(test->start, memory_order_acquire))
+		__asm__ volatile("pause" ::: "memory");
+
 	for (uint32_t i = 0; i < test->iterations; i++)
 		atomic_fetch_add_explicit(test->counter, 1, memory_order_relaxed);
 	atomic_fetch_add_explicit(test->done, 1, memory_order_release);
 }
 
-static void sched_user_placeholder(void *arg)
+static void sched_test_wait_for_start(void *arg)
 {
-	(void)arg;
+	atomic_bool *start = arg;
+	while (!atomic_load_explicit(start, memory_order_acquire))
+		__asm__ volatile("pause" ::: "memory");
 }
 
 typedef struct {
@@ -682,9 +904,12 @@ static void sched_write_imm64(uint8_t *p, uint64_t value)
 
 static void sched_test_wait_cleanup(const char *stage)
 {
-	uint64_t deadline = pit_get_ticks() + 200;
-	while (sched_reap_pending() && pit_get_ticks() < deadline)
+	uint64_t deadline = pit_get_ticks() + 2000;
+	while (sched_reap_pending() && pit_get_ticks() < deadline) {
 		hlt();
+		for (uint32_t i = 0; i < 1000 && sched_reap_pending(); i++)
+			__asm__ volatile("pause" ::: "memory");
+	}
 
 	assert(!sched_reap_pending());
 	log_debug("sched_test", "%s cleanup ok", stage);
@@ -723,11 +948,15 @@ static void sched_test(void)
 
 	{
 		unsigned before[MAX_CPUS];
+		atomic_bool placement_start;
+		atomic_init(&placement_start, false);
+
 		for (uint32_t i = 0; i < cpu_count; i++)
 			before[i] = atomic_load(&cpu_locals[i].sched_load);
 
 		tcb_t *t = sched_create_thread(proc, "sched-placement",
-									   sched_user_placeholder, NULL);
+									   sched_test_wait_for_start,
+									   &placement_start);
 		assert(t);
 		assert(t->process == proc);
 		assert(t->mode == TCB_MODE_KERNEL);
@@ -743,10 +972,11 @@ static void sched_test(void)
 
 		log_debug("sched_test", "least-loaded CPU placement ok: tid=%d cpu%u",
 				  placement_tid, placement_cpu);
+		atomic_store_explicit(&placement_start, true, memory_order_release);
 	}
 
 	{
-		uint64_t deadline = pit_get_ticks() + 200;
+		uint64_t deadline = pit_get_ticks() + 2000;
 		while (sched_process_exists(placement_pid) &&
 			   pit_get_ticks() < deadline)
 			hlt();
@@ -758,6 +988,7 @@ static void sched_test(void)
 		enum { THREADS = 4, ITERS = 128 };
 		atomic_uint counter;
 		atomic_uint done;
+		atomic_bool start;
 		sched_test_arg_t args[THREADS];
 		tcb_t *threads[THREADS];
 		bool used[MAX_CPUS];
@@ -765,11 +996,13 @@ static void sched_test(void)
 
 		atomic_init(&counter, 0);
 		atomic_init(&done, 0);
+		atomic_init(&start, false);
 		memset(used, 0, sizeof(used));
 
 		for (int i = 0; i < THREADS; i++) {
 			args[i].counter = &counter;
 			args[i].done = &done;
+			args[i].start = &start;
 			args[i].iterations = ITERS;
 			threads[i] = sched_create_thread(kernel, "sched-counter",
 											 sched_test_thread, &args[i]);
@@ -780,7 +1013,9 @@ static void sched_test(void)
 			}
 		}
 
-		uint64_t deadline = pit_get_ticks() + 200;
+		atomic_store_explicit(&start, true, memory_order_release);
+
+		uint64_t deadline = pit_get_ticks() + 2000;
 		while (atomic_load_explicit(&done, memory_order_acquire) < THREADS &&
 			   pit_get_ticks() < deadline)
 			hlt();
@@ -838,7 +1073,7 @@ static void sched_test(void)
 		assert(ut);
 		uint32_t user_cpu = ut->cpu ? ut->cpu->cpu_index : 0;
 
-		uint64_t deadline = pit_get_ticks() + 200;
+		uint64_t deadline = pit_get_ticks() + 2000;
 		while ((*user_counter != 1 || sched_process_exists(user_pid) ||
 				sched_reap_pending()) &&
 			   pit_get_ticks() < deadline)

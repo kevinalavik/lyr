@@ -1,6 +1,7 @@
 #ifndef _LYR_DEBUG_LOG_H
 #define _LYR_DEBUG_LOG_H
 
+#include <dev/uart.h>
 #include <util/kprintf.h>
 
 #define _TRACE 0
@@ -58,6 +59,7 @@
 #define log_err(subsys, fmt, ...)                                \
 	do {                                                         \
 		__log(LOG_ERR, LOG_CLR_ERR, subsys, fmt, ##__VA_ARGS__); \
+		uart_flush();                                            \
 		kprintf_flush_lyrterm();                                 \
 	} while (0)
 

@@ -1,6 +1,6 @@
 #include <sys/acpi/madt.h>
 #include <debug/log.h>
-#include <cpu/instr.h>
+#include <dev/async.h>
 #include <sys/smp.h>
 
 madt_t *madt = NULL;
@@ -54,8 +54,8 @@ void madt_init()
 
 	if (madt->flags & 1) {
 		log_debug("madt", "Masking 8259 PIC vectors");
-		outb(0x21, 0xff);
-		outb(0xa1, 0xff);
+		async_io_outb_sync(0x21, 0xff);
+		async_io_outb_sync(0xa1, 0xff);
 	}
 
 	lapic_base = madt->lapic_addr;

@@ -1,4 +1,5 @@
 #include <dev/pit.h>
+#include <dev/async.h>
 #include <cpu/instr.h>
 #include <cpu/idt.h>
 #include <stdint.h>
@@ -15,7 +16,7 @@ interrupt_frame_t *tick(interrupt_frame_t *frame)
 {
 	_pit_ticks++;
 	log_trace("pit", "ticking on CPU %d!", get_cpu_local()->cpu_index);
-	kprintf_flush_lyrterm();
+	async_io_drain(64);
 	return sched_tick(frame);
 }
 
@@ -33,9 +34,9 @@ void pit_init(uint16_t freq)
 
 	uint16_t div = PIT_CLOCK / freq;
 
-	outb(PIT_COMMAND, 0x36); // mode 3, rw
-	outb(PIT_COUNTER0, div & 0xFF);
-	outb(PIT_COUNTER0, div >> 8);
+	async_io_outb_sync(PIT_COMMAND, 0x36); // mode 3, rw
+	async_io_outb_sync(PIT_COUNTER0, div & 0xFF);
+	async_io_outb_sync(PIT_COUNTER0, div >> 8);
 	irq_install(0, tick, NULL,
 				(uint8_t)get_cpu_local()->lapic_id); /* BSP scheduler tick */
 
@@ -64,9 +65,9 @@ void pit_reload(void)
 {
 	cli();
 	uint16_t div = PIT_CLOCK / _pit_hz;
-	outb(PIT_COMMAND, 0x36);
-	outb(PIT_COUNTER0, div & 0xFF);
-	outb(PIT_COUNTER0, div >> 8);
+	async_io_outb_sync(PIT_COMMAND, 0x36);
+	async_io_outb_sync(PIT_COUNTER0, div & 0xFF);
+	async_io_outb_sync(PIT_COUNTER0, div >> 8);
 	sti();
 }
 

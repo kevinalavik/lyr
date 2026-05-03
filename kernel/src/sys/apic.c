@@ -1,5 +1,6 @@
 #include <sys/apic.h>
 #include <cpu/instr.h>
+#include <dev/async.h>
 #include <mm/vmm.h>
 #include <sys/acpi/madt.h>
 #include <stdint.h>
@@ -41,24 +42,24 @@ void apic_msr_write(uint64_t offset, uint64_t val)
 
 uint32_t ioapic_read(uintptr_t base, uint8_t regoff)
 {
-	*(volatile uint32_t *)(base + IOREGSEL) = regoff;
-	return *(volatile uint32_t *)(base + IOWIN);
+	async_io_mmio_write32_sync(base + IOREGSEL, regoff);
+	return async_io_mmio_read32_sync(base + IOWIN);
 }
 
 void ioapic_write(uintptr_t base, uint8_t regoff, uint32_t data)
 {
-	*(volatile uint32_t *)(base + IOREGSEL) = regoff;
-	*(volatile uint32_t *)(base + IOWIN) = data;
+	async_io_mmio_write32_sync(base + IOREGSEL, regoff);
+	async_io_mmio_write32_sync(base + IOWIN, data);
 }
 
 uint32_t lapic_read(uint16_t reg)
 {
-	return *(volatile uint32_t *)(lapic_base + reg);
+	return async_io_mmio_read32_sync(lapic_base + reg);
 }
 
 void lapic_write(uint16_t reg, uint32_t val)
 {
-	*(volatile uint32_t *)(lapic_base + reg) = val;
+	async_io_mmio_write32_sync(lapic_base + reg, val);
 }
 
 void apic_send_eoi(void)

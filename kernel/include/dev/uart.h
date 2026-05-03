@@ -344,5 +344,8 @@ int uart_init();
 void uart_wbuf(const char *buf, size_t len);
 void uart_wstr(const char *str);
 void uart_wch(char c);
+size_t uart_drain(size_t budget);
+void uart_flush(void);
+size_t uart_dropped_bytes(void);
 
 #endif // _LYR_DEV_UART_H

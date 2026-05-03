@@ -1,5 +1,6 @@
 #include <limine.h>
 #include <cpu/instr.h>
+#include <dev/async.h>
 #include <dev/uart.h>
 #include <util/kprintf.h>
 #include <cpu/gdt.h>
@@ -113,6 +114,8 @@ void lyr_entry(void)
 		nointloop();
 
 	print_banner();
+	async_io_init();
+	async_test();
 
 	log_info("entry", "UART %s", uart_init() == 0 ? "ok" : "not ok");
 
