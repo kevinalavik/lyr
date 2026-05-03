@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define APIC_BASE_MSR 0x1b
+#define APIC_TIMER_VECTOR 0xEF
 
 enum apic_regs {
 	APIC_ID = 0x20,
@@ -16,7 +17,11 @@ enum apic_regs {
 	APIC_LOCAL_DEST = 0xD0,
 	APIC_DEST_FORMAT = 0xE0,
 	APIC_SPURIOUS_IVR = 0xF0,
-	APIC_ERROR_STATUS = 0x280
+	APIC_ERROR_STATUS = 0x280,
+	APIC_LVT_TIMER = 0x320,
+	APIC_TIMER_INITCNT = 0x380,
+	APIC_TIMER_CURRCNT = 0x390,
+	APIC_TIMER_DIVIDE = 0x3E0
 };
 
 enum ioapic_regs { IOAPICID = 0, IOAPICVER = 1, IOAPICARB = 2 };
@@ -74,6 +79,7 @@ void lapic_write(uint16_t reg, uint32_t val);
 
 void apic_init();
 void apic_cpu_init(uint8_t cpu_id);
+void apic_timer_init(uint32_t hz);
 
 void ioapic_write_red(uint32_t gsi, uint8_t vec, uint8_t delivery_mode,
 					  uint8_t polarity, uint8_t trigger_mode, uint8_t lapic_id);

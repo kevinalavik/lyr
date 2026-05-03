@@ -18,9 +18,12 @@ typedef struct {
 } __attribute__((packed)) gdtr_t;
 
 typedef struct {
-	gdt_descriptor_t entries[5];
+	gdt_descriptor_t entries[7];
 } __attribute__((packed)) gdt_t;
 
 void gdt_init();
+void gdt_tss_init(uint64_t rsp0);
+void gdt_tss_init_cpu(uint32_t cpu_index, uint64_t rsp0);
+void gdt_set_kernel_stack(uint64_t rsp0);
 
 #endif // _LYR_CPU_GDT_H

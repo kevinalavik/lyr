@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <sys/apic.h>
 #include <sys/smp.h>
+#include <sched/sched.h>
 
 #define IDT_TRAP 0xF
 #define IDT_INTERRUPT 0xE
@@ -94,14 +95,15 @@ void irq_uninstall(uint8_t irq)
 	log_trace("irq", "Uninstalled IRQ#%u handler.", irq);
 }
 
-void irq_dispatch(uint8_t irq)
+interrupt_frame_t *irq_dispatch(uint8_t irq, interrupt_frame_t *frame)
 {
 	irq_handler_t *h = &irq_handlers[irq];
 	if (!h->callback) {
 		log_warn("irq", "Unhandled IRQ#%u.", irq);
-		return;
+		return frame;
 	}
-	h->callback(h->ctx);
+	interrupt_frame_t *next = h->callback(h->ctx ? h->ctx : frame);
+	return next ? next : frame;
 }
 
 void idt_set_desc(idt_entry_t *desc, uint64_t offset, uint8_t type, uint8_t dpl)
@@ -127,15 +129,26 @@ void idt_init(void)
 	__asm__ volatile("lidt %0" ::"m"(idtr));
 }
 
-void isr_common_handler(interrupt_frame_t *frame)
+interrupt_frame_t *isr_common_handler(interrupt_frame_t *frame)
 {
 	if (frame->vector == APIC_SPURIOUS_VECTOR)
-		return;
+		return frame;
+
+	if (frame->vector == 0x80)
+		return sched_syscall(frame);
+
+	if (frame->vector == APIC_TIMER_VECTOR) {
+		interrupt_frame_t *next = sched_tick(frame);
+		apic_send_eoi();
+		return next;
+	}
 
 	if (frame->vector < IRQ_BASE) {
 		kpanic(frame, "%s", _exception_str[frame->vector]);
 	}
 
-	irq_dispatch((uint8_t)(frame->vector - IRQ_BASE));
+	interrupt_frame_t *next =
+		irq_dispatch((uint8_t)(frame->vector - IRQ_BASE), frame);
 	apic_send_eoi();
+	return next;
 }

@@ -64,7 +64,9 @@ override CFLAGS += \
     -mno-sse \
     -mno-sse2 \
     -mno-red-zone \
-    -mcmodel=kernel
+    -mcmodel=kernel \
+    -Wno-unused-variable \
+    -Wno-unused-parameter
 
 override CPPFLAGS := \
     -I include \

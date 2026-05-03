@@ -13,6 +13,11 @@ typedef struct {
 		ATOMIC_FLAG_INIT \
 	}
 
+static inline void spinlock_init(spinlock_t *lock)
+{
+	atomic_flag_clear_explicit(&lock->flag, memory_order_release);
+}
+
 static inline void spinlock_acquire(spinlock_t *lock)
 {
 	while (atomic_flag_test_and_set_explicit(&lock->flag, memory_order_acquire))

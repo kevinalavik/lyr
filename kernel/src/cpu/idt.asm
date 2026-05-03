@@ -36,6 +36,43 @@
     pop r15
 %endmacro
 
+[global sched_iret_to_frame]
+sched_iret_to_frame:
+	mov ax, [rdi + 8]
+	mov ds, ax
+	mov ax, [rdi]
+	mov es, ax
+	mov rsp, rdi
+	add rsp, 0x30
+	popaq
+	add rsp, 0x10
+	iretq
+
+[global sched_iret_to_user]
+sched_iret_to_user:
+	mov ax, 0x23
+	mov ds, ax
+	mov es, ax
+	push qword 0x23
+	push rsi
+	push qword 0x202
+	push qword 0x1b
+	push rdi
+	iretq
+
+[global sched_switch_to_user]
+sched_switch_to_user:
+	mov cr3, rdi
+	mov ax, 0x23
+	mov ds, ax
+	mov es, ax
+	push qword 0x23
+	push rdx
+	push qword 0x202
+	push qword 0x1b
+	push rsi
+	iretq
+
 [extern isr_common_handler]
 isr_handler_stub:
 	pushaq
@@ -57,6 +94,12 @@ isr_handler_stub:
 	cld
 	mov rdi, rsp
 	call isr_common_handler
+
+	test rax, rax
+	jnz .got_frame
+	mov rax, rsp
+.got_frame:
+	mov rsp, rax
 
 	add rsp, 0x30
 	popaq

@@ -6,6 +6,7 @@
 #include <sys/apic.h>
 #include <debug/panic.h>
 #include <debug/log.h>
+#include <sched/sched.h>
 #include <stdatomic.h>
 
 #define MSR_GS_BASE 0xC0000101
@@ -42,9 +43,12 @@ static void init_cpu(cpu_local_t *cpu)
 {
 	gdt_init();
 	set_cpu_local(cpu);
+	gdt_tss_init_cpu(cpu->cpu_index, 0);
 	idt_init();
 	write_cr3((uint64_t)kernel_ptable);
 	apic_cpu_init(cpu->cpu_index);
+	if (!atomic_load_explicit(&cpu->sched_ready, memory_order_acquire))
+		sched_cpu_init(cpu);
 	log_trace("smp", "hello from cpu %d", cpu->cpu_index);
 }
 
@@ -70,9 +74,7 @@ void smp_entry(struct limine_mp_info *smp_info)
 	while (!atomic_load_explicit(&ap_go, memory_order_acquire))
 		__asm__ volatile("pause" ::: "memory");
 
-	__asm__ volatile("sti");
-	for (;;)
-		hlt();
+	sched_idle_loop();
 }
 
 void smp_init(struct limine_mp_response *mp)

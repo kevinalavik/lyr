@@ -55,7 +55,7 @@ typedef struct {
 
 #define IRQ_BASE 0x20
 
-typedef void (*irq_callback)(interrupt_frame_t *);
+typedef interrupt_frame_t *(*irq_callback)(interrupt_frame_t *);
 
 typedef struct {
 	void *ctx;

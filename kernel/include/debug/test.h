@@ -8,6 +8,9 @@
 #include <mm/pfndb.h>
 #include <mm/page.h>
 #include <lib/string.h>
+#include <sched/sched.h>
+#include <cpu/instr.h>
+#include <dev/pit.h>
 
 static void pmm_test(void)
 {
@@ -639,6 +642,216 @@ static void vmm_test(vas_t *vas)
 	}
 
 	log_debug("vmm_test", "all tests passed");
+}
+
+typedef struct {
+	atomic_uint *counter;
+	atomic_uint *done;
+	uint32_t iterations;
+} sched_test_arg_t;
+
+static void sched_test_thread(void *arg)
+{
+	sched_test_arg_t *test = arg;
+	for (uint32_t i = 0; i < test->iterations; i++)
+		atomic_fetch_add_explicit(test->counter, 1, memory_order_relaxed);
+	atomic_fetch_add_explicit(test->done, 1, memory_order_release);
+}
+
+static void sched_user_placeholder(void *arg)
+{
+	(void)arg;
+}
+
+typedef struct {
+	uint64_t rip;
+	uint64_t rsp;
+} sched_user_arg_t;
+
+static void sched_user_launcher(void *arg)
+{
+	sched_user_arg_t *user = arg;
+	sched_enter_user(user->rip, user->rsp);
+}
+
+static void sched_write_imm64(uint8_t *p, uint64_t value)
+{
+	for (int i = 0; i < 8; i++)
+		p[i] = (uint8_t)(value >> (i * 8));
+}
+
+static void sched_test_wait_cleanup(const char *stage)
+{
+	uint64_t deadline = pit_get_ticks() + 200;
+	while (sched_reap_pending() && pit_get_ticks() < deadline)
+		hlt();
+
+	assert(!sched_reap_pending());
+	log_debug("sched_test", "%s cleanup ok", stage);
+}
+
+static void sched_test(void)
+{
+	log_debug("sched_test", "starting");
+	assert(sched_is_initialized());
+
+	tcb_t *current = sched_current();
+	assert(current);
+	pcb_t *kernel = current->process;
+	assert(kernel);
+	assert(kernel->pid == 1);
+	assert(current->tid == 1);
+	assert(kernel->pml4 == kernel_ptable);
+	assert(kernel->vas == _lyr_kernel_vas);
+	for (uint32_t i = 0; i < cpu_count; i++) {
+		assert(cpu_locals[i].idle_thread);
+		assert(cpu_locals[i].idle_thread->tid == 0);
+		assert(cpu_locals[i].idle_thread->process);
+		assert(cpu_locals[i].idle_thread->process->pid == 0);
+	}
+	log_debug("sched_test", "kernel pcb/current tcb ok");
+
+	pcb_t *proc = sched_process_create("sched-test", NULL);
+	assert(proc);
+	pid_t placement_pid = proc->pid;
+	assert(proc->pid > kernel->pid);
+	assert(proc->vas);
+	assert(proc->pml4 == proc->vas->pml4);
+	assert(proc->pml4 != kernel_ptable);
+	log_debug("sched_test", "process create ok pid=%d pml4=0x%llx", proc->pid,
+			  (uint64_t)proc->pml4);
+
+	{
+		unsigned before[MAX_CPUS];
+		for (uint32_t i = 0; i < cpu_count; i++)
+			before[i] = atomic_load(&cpu_locals[i].sched_load);
+
+		tcb_t *t = sched_create_thread(proc, "sched-placement",
+									   sched_user_placeholder, NULL);
+		assert(t);
+		assert(t->process == proc);
+		assert(t->mode == TCB_MODE_KERNEL);
+		assert(t->cpu);
+		tid_t placement_tid = t->tid;
+		uint32_t placement_cpu = t->cpu->cpu_index;
+
+		for (uint32_t i = 0; i < cpu_count; i++) {
+			if (i == placement_cpu)
+				continue;
+			assert(before[placement_cpu] <= before[i]);
+		}
+
+		log_debug("sched_test", "least-loaded CPU placement ok: tid=%d cpu%u",
+				  placement_tid, placement_cpu);
+	}
+
+	{
+		uint64_t deadline = pit_get_ticks() + 200;
+		while (sched_process_exists(placement_pid) &&
+			   pit_get_ticks() < deadline)
+			hlt();
+		assert(!sched_process_exists(placement_pid));
+		sched_test_wait_cleanup("placement");
+	}
+
+	{
+		enum { THREADS = 4, ITERS = 128 };
+		atomic_uint counter;
+		atomic_uint done;
+		sched_test_arg_t args[THREADS];
+		tcb_t *threads[THREADS];
+		bool used[MAX_CPUS];
+		uint32_t used_count = 0;
+
+		atomic_init(&counter, 0);
+		atomic_init(&done, 0);
+		memset(used, 0, sizeof(used));
+
+		for (int i = 0; i < THREADS; i++) {
+			args[i].counter = &counter;
+			args[i].done = &done;
+			args[i].iterations = ITERS;
+			threads[i] = sched_create_thread(kernel, "sched-counter",
+											 sched_test_thread, &args[i]);
+			assert(threads[i] && threads[i]->cpu);
+			if (!used[threads[i]->cpu->cpu_index]) {
+				used[threads[i]->cpu->cpu_index] = true;
+				used_count++;
+			}
+		}
+
+		uint64_t deadline = pit_get_ticks() + 200;
+		while (atomic_load_explicit(&done, memory_order_acquire) < THREADS &&
+			   pit_get_ticks() < deadline)
+			hlt();
+
+		assert(atomic_load(&done) == THREADS);
+		assert(atomic_load(&counter) == THREADS * ITERS);
+		assert(used_count > 1 || cpu_count == 1);
+		log_debug("sched_test",
+				  "preemptive counter ok: %u increments across %u cpu(s)",
+				  atomic_load(&counter), used_count);
+		sched_test_wait_cleanup("counter");
+	}
+
+	{
+		const uint64_t code_va = 0x0000000000400000ULL;
+		const uint64_t data_va = 0x0000000000401000ULL;
+		const uint64_t stack_va = 0x0000000000402000ULL;
+		sched_user_arg_t user_arg;
+		pcb_t *uproc = sched_process_create("sched-user-test", NULL);
+		assert(uproc);
+		pid_t user_pid = uproc->pid;
+		page_t *data_page = palloc_page();
+		uint64_t data_phys = pfndb_page_to_phys(data_page);
+		assert(vas_map_anon(uproc->vas, code_va, PAGE_SIZE,
+							VMM_PRESENT | VMM_WRITABLE | VMM_USER |
+								VAD_FIXED) == code_va);
+		assert(vas_map_phys(uproc->vas, data_va, data_phys, PAGE_SIZE,
+							VMM_PRESENT | VMM_WRITABLE | VMM_USER |
+								VAD_FIXED) == data_va);
+		assert(vas_map_anon(uproc->vas, stack_va, PAGE_SIZE,
+							VMM_PRESENT | VMM_WRITABLE | VMM_USER |
+								VAD_FIXED) == stack_va);
+
+		uint8_t *code = PHYS_TO_VIRT(get_phys(uproc->pml4, code_va));
+		uint64_t *user_counter = PHYS_TO_VIRT(data_phys);
+		assert(code && user_counter);
+		*user_counter = 0;
+
+		uint8_t program[] = {
+			0x48, 0xB8, 0,	  0,	0, 0, 0, 0, 0, 0, /* mov rax, data_va */
+			0xF0, 0x48, 0xFF, 0x00, /* lock inc qword [rax] */
+			0x48, 0xC7, 0xC0, 0x3C, 0, 0, 0, /* mov rax, 60 */
+			0x48, 0x31, 0xFF, /* xor rdi, rdi */
+			0xCD, 0x80, /* int 0x80 */
+			0xEB, 0xFE, /* jmp $ */
+		};
+		sched_write_imm64(&program[2], data_va);
+		memcpy(code, program, sizeof(program));
+		vas_protect(uproc->vas, code_va, PAGE_SIZE, VMM_PRESENT | VMM_USER);
+
+		user_arg.rip = code_va;
+		user_arg.rsp = stack_va + PAGE_SIZE - 16;
+		tcb_t *ut = sched_create_thread(uproc, "sched-user-counter",
+										sched_user_launcher, &user_arg);
+		assert(ut);
+		uint32_t user_cpu = ut->cpu ? ut->cpu->cpu_index : 0;
+
+		uint64_t deadline = pit_get_ticks() + 200;
+		while ((*user_counter != 1 || sched_process_exists(user_pid) ||
+				sched_reap_pending()) &&
+			   pit_get_ticks() < deadline)
+			hlt();
+
+		assert(*user_counter == 1);
+		assert(!sched_process_exists(user_pid));
+		assert(!sched_reap_pending());
+		page_unref(data_page);
+		log_debug("sched_test", "userspace int80 exit ok on cpu%u", user_cpu);
+	}
+
+	log_debug("sched_test", "all tests passed");
 }
 
 #endif // _LYR_DEBUG_TEST_H

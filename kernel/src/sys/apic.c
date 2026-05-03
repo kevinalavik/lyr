@@ -194,6 +194,19 @@ void apic_cpu_init(uint8_t cpu_index)
 	(void)lapic_read(APIC_ERROR_STATUS);
 }
 
+void apic_timer_init(uint32_t hz)
+{
+	if (!hz)
+		hz = 100;
+
+	lapic_write(APIC_TIMER_DIVIDE, 0x3); /* divide by 16 */
+	lapic_write(APIC_LVT_TIMER, APIC_TIMER_VECTOR | (1u << 17)); /* periodic */
+	lapic_write(APIC_TIMER_INITCNT, 100000000u / hz);
+
+	log_debug("apic", "CPU %u LAPIC timer enabled at ~%uHz",
+			  get_cpu_local()->cpu_index, hz);
+}
+
 void apic_init(void)
 {
 	map_page_phys(_lyr_kernel_vas->pml4, (uint64_t)PHYS_TO_VIRT(lapic_base),

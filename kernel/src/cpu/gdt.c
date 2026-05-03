@@ -1,4 +1,6 @@
 #include <cpu/gdt.h>
+#include <lib/string.h>
+#include <sys/smp.h>
 /*
 Access Byte
 -----------
@@ -52,10 +54,44 @@ gdt_t gdt = { .entries = {
 						 GDT_FLAG_GRAN_4K | GDT_FLAG_64BIT),
 
 				  _ENTRY(0, 0xFFFF, GDT_USER_DATA, GDT_FLAG_GRAN_4K),
+
+				  /* TSS, filled by gdt_tss_init(). */
+				  _ENTRY(0, 0, 0, 0),
+				  _ENTRY(0, 0, 0, 0),
 			  } };
 
 gdtr_t gdtr = { .limit = sizeof(gdt.entries) - 1,
 				.base = (uint64_t)&gdt.entries };
+
+typedef struct {
+	uint32_t reserved0;
+	uint64_t rsp[3];
+	uint64_t reserved1;
+	uint64_t ist[7];
+	uint64_t reserved2;
+	uint16_t reserved3;
+	uint16_t iopb;
+} __attribute__((packed)) tss_t;
+
+static tss_t cpu_tss[MAX_CPUS];
+
+static void gdt_set_tss_descriptor(tss_t *tss)
+{
+	uint64_t base = (uint64_t)tss;
+	uint64_t limit = sizeof(*tss) - 1;
+	uint64_t low = 0;
+
+	low |= limit & 0xFFFF;
+	low |= (base & 0xFFFF) << 16;
+	low |= ((base >> 16) & 0xFF) << 32;
+	low |= 0x89ULL << 40;
+	low |= ((limit >> 16) & 0x0F) << 48;
+	low |= ((base >> 24) & 0xFF) << 56;
+
+	uint64_t *raw = (uint64_t *)gdt.entries;
+	raw[5] = low;
+	raw[6] = base >> 32;
+}
 
 void gdt_init()
 {
@@ -74,4 +110,32 @@ void gdt_init()
 					 :
 					 : [g] "m"(gdtr)
 					 : "rax", "memory");
+}
+
+void gdt_tss_init_cpu(uint32_t cpu_index, uint64_t rsp0)
+{
+	if (cpu_index >= MAX_CPUS)
+		cpu_index = 0;
+
+	tss_t *tss = &cpu_tss[cpu_index];
+	memset(tss, 0, sizeof(*tss));
+	tss->rsp[0] = rsp0;
+	tss->iopb = sizeof(*tss);
+	gdt_set_tss_descriptor(tss);
+
+	__asm__ volatile("ltr %%ax" ::"a"((uint16_t)0x28) : "memory");
+}
+
+void gdt_tss_init(uint64_t rsp0)
+{
+	gdt_tss_init_cpu(0, rsp0);
+}
+
+void gdt_set_kernel_stack(uint64_t rsp0)
+{
+	cpu_local_t *cpu = get_cpu_local();
+	uint32_t index = cpu ? cpu->cpu_index : 0;
+	if (index >= MAX_CPUS)
+		index = 0;
+	cpu_tss[index].rsp[0] = rsp0;
 }

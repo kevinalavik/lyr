@@ -134,8 +134,7 @@ void vas_destroy(vas_t *vas)
 
 	vad_t *v = vas->list_head;
 	while (v) {
-		if (v->flags & VAD_ANONYMOUS)
-			_uncommit_range(vas, v->start, v->end);
+		_uncommit_range(vas, v->start, v->end);
 		vad_t *next = v->next;
 		kfree(v);
 		v = next;

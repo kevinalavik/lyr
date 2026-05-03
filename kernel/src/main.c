@@ -23,6 +23,7 @@
 #include <sys/apic.h>
 #include <dev/pit.h>
 #include <sys/smp.h>
+#include <sched/sched.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -98,16 +99,12 @@ static void print_banner(void)
 	// kprintf("\n\n");
 }
 
-static const char *firmware_type_str(uint32_t type)
+void test(void *arg)
 {
-	switch (type) {
-	case LIMINE_FIRMWARE_TYPE_X86BIOS:
-		return "BIOS";
-	case LIMINE_FIRMWARE_TYPE_EFI64:
-		return "UEFI";
-	default:
-		return "unknown";
-	}
+	(void)arg;
+	kprintf("Hello from tid=%d running on CPU %d!\n", sched_current()->tid,
+			get_cpu_local()->cpu_index);
+	sched_thread_exit(0);
 }
 
 void lyr_entry(void)
@@ -142,6 +139,7 @@ void lyr_entry(void)
 
 	/* gdt and idt */
 	gdt_init();
+	gdt_tss_init(_lyr_kstack_top);
 	log_info("entry", "GDT ok");
 	idt_init();
 	log_info("entry", "IDT ok");
@@ -205,6 +203,9 @@ void lyr_entry(void)
 	else
 		log_info("entry", "SMP ok");
 
+	/* scheduler */
+	sched_init();
+
 	/* timer */
 	pit_init(100);
 
@@ -215,18 +216,14 @@ void lyr_entry(void)
 
 	if (pit_get_ticks() == t0)
 		log_err("entry", "PIT (timer) failed");
-	else
+	else {
 		log_info("entry", "PIT (timer) ok");
+		sched_test();
+		log_info("entry", "Scheduler ok");
+	}
 
-	/* boot summary */
-	log_info("entry", "------------------------------");
-	log_info("entry", "lyr kernel v" LYR_VERSION " (c) 2026 Kevin Alavik");
-	log_info("entry", " * Booted with %s v%s", _lyr_bootloader_info->name,
-			 _lyr_bootloader_info->version);
-	log_info("entry", " * Firmware type: %s",
-			 firmware_type_str(_lyr_firmware_type_info->firmware_type));
-	log_info("entry", " * Kernel booted from %s", _lyr_file_info->path);
-
-	for (;;)
-		hlt();
+	pcb_t *p = sched_process_create("hello", _lyr_kernel_vas);
+	assert(p);
+	sched_create_thread(p, "hello", test, NULL);
+	sched_exit(); /* finished */
 }

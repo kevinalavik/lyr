@@ -244,7 +244,13 @@ ptable_t *ptable_create(void)
 		kpanic(NULL, "paging: failed to allocate PML4");
 
 	uint64_t phys = pfndb_page_to_phys(page);
-	memset(PHYS_TO_VIRT(phys), 0, PAGE_SIZE);
+	uint64_t *pml4 = PHYS_TO_VIRT(phys);
+	memset(pml4, 0, PAGE_SIZE);
+	if (kernel_ptable) {
+		uint64_t *kpml4 = PHYS_TO_VIRT((uint64_t)kernel_ptable);
+		for (int i = 256; i < 512; i++)
+			pml4[i] = kpml4[i];
+	}
 	return (ptable_t *)phys;
 }
 
@@ -252,7 +258,24 @@ void ptable_destroy(ptable_t *pt)
 {
 	assert(pt != NULL);
 	uint64_t *pml4 = (uint64_t *)PHYS_TO_VIRT((uint64_t)pt);
-	_ptable_free_level(pml4, 4);
+
+	if (pt == kernel_ptable) {
+		_ptable_free_level(pml4, 4);
+		return;
+	}
+
+	for (int i = 0; i < 256; i++) {
+		uint64_t e = pml4[i];
+		if (!(e & VMM_PRESENT))
+			continue;
+		if (e & VMM_HUGE)
+			continue;
+
+		uint64_t *child = (uint64_t *)PHYS_TO_VIRT(e & PAGE_FRAME_MASK);
+		_ptable_free_level(child, 3);
+	}
+
+	_free_pt((uint64_t)pt);
 }
 
 void ptable_free_empty(ptable_t *pt, uint64_t virt)
