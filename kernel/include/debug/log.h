@@ -19,11 +19,11 @@
 
 #if LOG_USE_COLOR
 #define LOG_CLR_RESET "\e[0m"
-#define LOG_CLR_TRACE "\e[0;37m"
-#define LOG_CLR_DEBUG "\e[0;36m"
-#define LOG_CLR_INFO ""
-#define LOG_CLR_WARN "\e[0;33m"
-#define LOG_CLR_ERR "\e[0;31m"
+#define LOG_CLR_TRACE "\e[0;97m"
+#define LOG_CLR_DEBUG "\e[0;96m"
+#define LOG_CLR_INFO "\e[0;37m"
+#define LOG_CLR_WARN "\e[0;93m"
+#define LOG_CLR_ERR "\e[0;91m"
 #else
 #define LOG_CLR_RESET ""
 #define LOG_CLR_TRACE ""

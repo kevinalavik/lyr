@@ -3,6 +3,9 @@
 QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot
 
 override IMAGE_NAME := lyr
+INITRD_ROOT := initrd
+INITRD_IMAGE := initrd/initrd.cpio
+INITRD_FILES := $(filter-out $(INITRD_IMAGE),$(shell find $(INITRD_ROOT) -type f -o -type d 2>/dev/null | LC_ALL=C sort))
 
 HOST_CC := cc
 HOST_CFLAGS := -g -O2 -pipe
@@ -68,10 +71,17 @@ kernel/.deps-obtained:
 kernel: kernel/.deps-obtained
 	$(MAKE) -C kernel
 
-$(IMAGE_NAME).iso: limine/limine kernel
+.PHONY: FORCE
+FORCE:
+
+$(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES)
+	python3 utils/mkinitrd.py $(INITRD_ROOT) $@
+
+$(IMAGE_NAME).iso: limine/limine kernel $(INITRD_IMAGE)
 	rm -rf iso_root
 	mkdir -p iso_root/boot
 	cp -v kernel/bin/lyr iso_root/boot/lyr.efi
+	cp -v $(INITRD_IMAGE) iso_root/boot/initrd.cpio
 	mkdir -p iso_root/boot/limine
 	cp -v limine.conf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
 	mkdir -p iso_root/EFI/BOOT
@@ -100,7 +110,7 @@ $(IMAGE_NAME).hdd: limine/limine kernel
 .PHONY: clean
 clean:
 	$(MAKE) -C kernel clean
-	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd
+	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE)
 
 .PHONY: distclean
 distclean: clean

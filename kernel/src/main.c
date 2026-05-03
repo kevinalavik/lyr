@@ -25,6 +25,8 @@
 #include <dev/pit.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
+#include <fs/initrd.h>
+#include <fs/vfs.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -62,6 +64,7 @@ LIMINE_REQUEST(rsdp, RSDP, rsdp_request);
 LIMINE_REQUEST(bootloader_info, BOOTLOADER_INFO, bootloader_info_request);
 LIMINE_REQUEST(firmware_type, FIRMWARE_TYPE, firmware_type_request);
 LIMINE_REQUEST(executable_file, EXECUTABLE_FILE, kernel_file_request);
+LIMINE_REQUEST(module, MODULE, module_request);
 LIMINE_REQUEST(mp, MP, mp_request);
 
 LIMINE_REQUEST_SECTION static volatile struct limine_stack_size_request
@@ -102,8 +105,26 @@ static void print_banner(void)
 
 void test(void *)
 {
-	kprintf("Hello from kernel proc tid=%d running on CPU %d!\n",
-			sched_current()->tid, get_cpu_local()->cpu_index);
+	vfs_file_t *file = NULL;
+	int r = vfs_open("/etc/motd", VFS_O_RDONLY, 0, &vfs_root_cred, &file);
+	if (r != VFS_OK) {
+		kprintf("initrd: failed to open /etc/motd status=%d\n", r);
+		return;
+	}
+
+	char buf[1024];
+	size_t done = 0;
+	r = vfs_read(file, buf, sizeof(buf) - 1, &done);
+	vfs_close(file);
+	if (r != VFS_OK) {
+		kprintf("initrd: failed to read /etc/motd status=%d\n", r);
+		return;
+	}
+
+	buf[done] = '\0';
+	kprintf("%s", buf);
+	if (done == 0 || buf[done - 1] != '\n')
+		kprintf("\n");
 }
 
 void lyr_entry(void)
@@ -126,7 +147,7 @@ void lyr_entry(void)
 	struct limine_framebuffer *fb =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_nord);
+	lyrterm_apply_theme(&lyrterm_theme_dark);
 	lyrterm_init(fb);
 
 	/* etc requests */
@@ -184,6 +205,8 @@ void lyr_entry(void)
 	vas_switch(_lyr_kernel_vas);
 	log_info("entry", "VMM ok");
 	vmm_test(_lyr_kernel_vas);
+	vfs_tmpfs_test(_lyr_kernel_vas);
+	assert(initrd_load_from_limine(module_request.response) == VFS_OK);
 
 	/* ACPI */
 	LIMINE_REQUIRE(rsdp_request);

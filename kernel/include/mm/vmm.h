@@ -6,10 +6,14 @@
 #include <mm/page.h>
 #include <mm/paging.h>
 
+struct vfs_node;
+
 #define VAD_PROT_MASK 0x0000000000000FFFull
 #define VAD_ANONYMOUS (1ULL << 12) /* backed by zero-filled PMM pages */
 #define VAD_FIXED (1ULL << 13) /* address was caller-specified     */
 #define VAD_MAPPED (1ULL << 14) /* pages already faulted/committed  */
+#define VAD_FILE (1ULL << 15) /* backed by a VFS file page       */
+#define VAD_SHARED (1ULL << 16) /* writes are shared with file     */
 
 #define VAS_USER_START 0x0000000000001000ull
 #define VAS_USER_END 0x00007FFFFFFFFFFFull
@@ -18,6 +22,8 @@ typedef struct vad {
 	uint64_t start;
 	uint64_t end;
 	uint64_t flags;
+	struct vfs_node *file;
+	uint64_t file_offset;
 	struct vad *next;
 } vad_t;
 
@@ -35,6 +41,8 @@ void vas_destroy(vas_t *vas);
 uint64_t vas_map_anon(vas_t *vas, uint64_t hint, size_t length, uint64_t flags);
 uint64_t vas_map_phys(vas_t *vas, uint64_t hint, uint64_t phys, size_t length,
 					  uint64_t flags);
+uint64_t vas_map_file(vas_t *vas, uint64_t hint, struct vfs_node *file,
+					  uint64_t file_offset, size_t length, uint64_t flags);
 int vas_unmap(vas_t *vas, uint64_t start, size_t length);
 int vas_protect(vas_t *vas, uint64_t start, size_t length, uint64_t new_prot);
 vad_t *vas_find(vas_t *vas, uint64_t addr);

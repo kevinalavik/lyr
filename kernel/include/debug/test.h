@@ -12,6 +12,8 @@
 #include <cpu/instr.h>
 #include <dev/async.h>
 #include <dev/pit.h>
+#include <fs/vfs.h>
+#include <fs/tmpfs.h>
 
 typedef struct {
 	uint32_t calls;
@@ -76,9 +78,8 @@ static void async_test(void)
 								 NULL, NULL, NULL, NULL, NULL);
 		assert(async_io_submit(&req) == ASYNC_IO_ERR_BAD_REQUEST);
 
-		async_io_request_mmio_out(&req, (uintptr_t)&result,
-								  (async_io_width_t)7, 0, NULL, NULL, NULL,
-								  NULL);
+		async_io_request_mmio_out(&req, (uintptr_t)&result, (async_io_width_t)7,
+								  0, NULL, NULL, NULL, NULL);
 		assert(async_io_submit(&req) == ASYNC_IO_ERR_BAD_REQUEST);
 
 		assert(async_io_register_drain_hook(NULL, NULL) ==
@@ -116,8 +117,8 @@ static void async_test(void)
 		status = 321;
 		cb.calls = 0;
 		async_io_request_mmio_in(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
-								 &result, &done, &status,
-								 async_test_complete, &cb);
+								 &result, &done, &status, async_test_complete,
+								 &cb);
 		assert(async_io_submit(&req) == ASYNC_IO_OK);
 		assert(result == 0);
 		assert(async_io_drain(1) == 1);
@@ -134,11 +135,11 @@ static void async_test(void)
 		uint32_t mmio = 0;
 		async_io_request_t req;
 
-		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
-								  1, NULL, NULL, NULL, NULL);
+		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32, 1,
+								  NULL, NULL, NULL, NULL);
 		assert(async_io_submit(&req) == ASYNC_IO_OK);
-		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
-								  2, NULL, NULL, NULL, NULL);
+		async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32, 2,
+								  NULL, NULL, NULL, NULL);
 		assert(async_io_submit(&req) == ASYNC_IO_OK);
 
 		assert(async_io_drain(1) == 1);
@@ -167,12 +168,11 @@ static void async_test(void)
 		mmio16 = 0xCAFEu;
 		assert(async_io_mmio_read16_sync((uintptr_t)&mmio16) == 0xCAFEu);
 
-		assert(async_io_mmio_write32_sync((uintptr_t)&mmio32,
-										  0xDEADBEEFu) == ASYNC_IO_OK);
+		assert(async_io_mmio_write32_sync((uintptr_t)&mmio32, 0xDEADBEEFu) ==
+			   ASYNC_IO_OK);
 		assert(mmio32 == 0xDEADBEEFu);
 		mmio32 = 0xC001CAFEu;
-		assert(async_io_mmio_read32_sync((uintptr_t)&mmio32) ==
-			   0xC001CAFEu);
+		assert(async_io_mmio_read32_sync((uintptr_t)&mmio32) == 0xC001CAFEu);
 		log_debug("async_test", "sync mmio helpers ok");
 	}
 
@@ -182,12 +182,10 @@ static void async_test(void)
 		async_test_hook_ctx.calls = 0;
 		async_test_hook_ctx.last_budget = 0;
 
-		assert(async_io_register_drain_hook(async_test_drain_hook,
-											&async_test_hook_ctx) ==
-			   ASYNC_IO_OK);
-		assert(async_io_register_drain_hook(async_test_drain_hook,
-											&async_test_hook_ctx) ==
-			   ASYNC_IO_OK);
+		assert(async_io_register_drain_hook(
+				   async_test_drain_hook, &async_test_hook_ctx) == ASYNC_IO_OK);
+		assert(async_io_register_drain_hook(
+				   async_test_drain_hook, &async_test_hook_ctx) == ASYNC_IO_OK);
 
 		assert(async_io_drain(3) == 3);
 		assert(async_test_hook_ctx.remaining == 2);
@@ -205,9 +203,8 @@ static void async_test(void)
 		size_t queued = 0;
 
 		for (uint32_t i = 0; i < 1024; i++) {
-			async_io_request_mmio_out(&req, (uintptr_t)&mmio,
-									  ASYNC_IO_WIDTH_32, i, NULL, NULL, NULL,
-									  NULL);
+			async_io_request_mmio_out(&req, (uintptr_t)&mmio, ASYNC_IO_WIDTH_32,
+									  i, NULL, NULL, NULL, NULL);
 			int status = async_io_submit(&req);
 			if (status == ASYNC_IO_OK) {
 				queued++;
@@ -860,6 +857,78 @@ static void vmm_test(vas_t *vas)
 	log_debug("vmm_test", "all tests passed");
 }
 
+static void vfs_tmpfs_test(vas_t *vas)
+{
+	log_debug("vfs_tmpfs_test", "starting");
+
+	vfs_node_t *root = tmpfs_create_root(0755, 0, 0);
+	assert(root);
+	vfs_init(root);
+	assert(vfs_root() == root);
+
+	vfs_cred_t user = { .uid = 1000, .gid = 1000, .umask = 0022 };
+	vfs_cred_t other = { .uid = 2000, .gid = 2000, .umask = 0022 };
+
+	assert(vfs_mkdir("/tmp", 0777, &vfs_root_cred) == VFS_OK);
+	assert(vfs_chmod("/tmp", 01777, &vfs_root_cred) == VFS_OK);
+
+	vfs_file_t *file = NULL;
+	assert(vfs_open("/tmp/hello", VFS_O_CREAT | VFS_O_RDWR, 0640, &user,
+					&file) == VFS_OK);
+	assert(file);
+
+	const char *msg = "hello tmpfs";
+	size_t done = 0;
+	assert(vfs_write(file, msg, strlen(msg), &done) == VFS_OK);
+	assert(done == strlen(msg));
+	assert(vfs_seek(file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
+
+	char buf[32];
+	memset(buf, 0, sizeof(buf));
+	assert(vfs_read(file, buf, sizeof(buf), &done) == VFS_OK);
+	assert(done == strlen(msg));
+	assert(strcmp(buf, msg) == 0);
+
+	vfs_stat_t st;
+	assert(vfs_stat("/tmp/hello", &user, &st) == VFS_OK);
+	assert(VFS_S_ISREG(st.mode));
+	assert((st.mode & 0777) == 0640);
+	assert(st.uid == user.uid);
+	assert(st.gid == user.gid);
+	assert(st.size == strlen(msg));
+	log_debug("vfs_tmpfs_test", "create/read/write/stat ok");
+
+	vfs_file_t *denied = NULL;
+	assert(vfs_open("/tmp/hello", VFS_O_RDONLY, 0, &other, &denied) ==
+		   VFS_ERR_ACCES);
+	assert(vfs_chown("/tmp/hello", other.uid, other.gid, &user) ==
+		   VFS_ERR_PERM);
+	assert(vfs_unlink("/tmp/hello", &other) == VFS_ERR_PERM);
+	log_debug("vfs_tmpfs_test", "permissions/sticky directory ok");
+
+	uint64_t map = vas_map_file(vas, 0, vfs_file_node(file), 0, PAGE_SIZE,
+								VMM_PRESENT | VMM_WRITABLE | VAD_SHARED);
+	assert(map != 0);
+	char *mapped = (char *)map;
+	assert(mapped[0] == 'h');
+	mapped[0] = 'H';
+	mapped[6] = 'T';
+
+	assert(vfs_seek(file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
+	memset(buf, 0, sizeof(buf));
+	assert(vfs_read(file, buf, strlen(msg), &done) == VFS_OK);
+	assert(done == strlen(msg));
+	assert(strcmp(buf, "Hello Tmpfs") == 0);
+	vas_unmap(vas, map, PAGE_SIZE);
+	log_debug("vfs_tmpfs_test", "file-backed VMM mapping ok");
+
+	assert(vfs_close(file) == VFS_OK);
+	assert(vfs_unlink("/tmp/hello", &vfs_root_cred) == VFS_OK);
+	assert(vfs_rmdir("/tmp", &vfs_root_cred) == VFS_OK);
+
+	log_debug("vfs_tmpfs_test", "all tests passed");
+}
+
 typedef struct {
 	atomic_uint *counter;
 	atomic_uint *done;
@@ -954,9 +1023,9 @@ static void sched_test(void)
 		for (uint32_t i = 0; i < cpu_count; i++)
 			before[i] = atomic_load(&cpu_locals[i].sched_load);
 
-		tcb_t *t = sched_create_thread(proc, "sched-placement",
-									   sched_test_wait_for_start,
-									   &placement_start);
+		tcb_t *t =
+			sched_create_thread(proc, "sched-placement",
+								sched_test_wait_for_start, &placement_start);
 		assert(t);
 		assert(t->process == proc);
 		assert(t->mode == TCB_MODE_KERNEL);

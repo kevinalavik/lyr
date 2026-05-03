@@ -7,6 +7,7 @@
 #include <lib/align.h>
 #include <debug/assert.h>
 #include <debug/panic.h>
+#include <fs/vfs.h>
 
 static vad_t *_vad_alloc(uint64_t start, uint64_t end, uint64_t flags)
 {
@@ -16,8 +17,40 @@ static vad_t *_vad_alloc(uint64_t start, uint64_t end, uint64_t flags)
 	v->start = start;
 	v->end = end;
 	v->flags = flags;
+	v->file = NULL;
+	v->file_offset = 0;
 	v->next = NULL;
 	return v;
+}
+
+static vad_t *_vad_alloc_file(uint64_t start, uint64_t end, uint64_t flags,
+							  struct vfs_node *file, uint64_t file_offset)
+{
+	vad_t *v = _vad_alloc(start, end, flags | VAD_FILE);
+	if (!v)
+		return NULL;
+	v->file = file;
+	v->file_offset = file_offset;
+	vfs_node_ref(file);
+	return v;
+}
+
+static void _vad_free(vad_t *v)
+{
+	if (!v)
+		return;
+	if (v->file)
+		vfs_node_release(v->file);
+	kfree(v);
+}
+
+static vad_t *_vad_clone_segment(vad_t *src, uint64_t start, uint64_t end)
+{
+	if (src->flags & VAD_FILE) {
+		return _vad_alloc_file(start, end, src->flags, src->file,
+							   src->file_offset + (start - src->start));
+	}
+	return _vad_alloc(start, end, src->flags);
 }
 
 static void _vad_insert(vas_t *vas, vad_t *v)
@@ -39,7 +72,7 @@ static void _vad_remove_range(vas_t *vas, uint64_t start, uint64_t end)
 			continue;
 		}
 		if (v->start < start) {
-			vad_t *left = _vad_alloc(v->start, start, v->flags);
+			vad_t *left = _vad_clone_segment(v, v->start, start);
 			if (left) {
 				left->next = v->next;
 				*cur = left;
@@ -47,14 +80,14 @@ static void _vad_remove_range(vas_t *vas, uint64_t start, uint64_t end)
 			}
 		}
 		if (v->end > end) {
-			vad_t *right = _vad_alloc(end, v->end, v->flags);
+			vad_t *right = _vad_clone_segment(v, end, v->end);
 			if (right) {
 				right->next = v->next;
 				v->next = right;
 			}
 		}
 		*cur = v->next;
-		kfree(v);
+		_vad_free(v);
 	}
 }
 
@@ -104,6 +137,24 @@ static int _commit_anon(vas_t *vas, vad_t *vad)
 	return 0;
 }
 
+static int _commit_file(vas_t *vas, vad_t *vad)
+{
+	uint64_t prot = vad->flags & VAD_PROT_MASK;
+	uint64_t file_off = vad->file_offset;
+
+	for (uint64_t va = vad->start; va < vad->end; va += PAGE_SIZE) {
+		page_t *page = NULL;
+		int r = vfs_node_get_page(vad->file, file_off / PAGE_SIZE,
+								  (prot & VMM_WRITABLE) != 0, &page);
+		if (r != VFS_OK || !page)
+			return -1;
+
+		map_page(vas->pml4, va, page, prot);
+		file_off += PAGE_SIZE;
+	}
+	return 0;
+}
+
 static void _uncommit_range(vas_t *vas, uint64_t start, uint64_t end)
 {
 	for (uint64_t va = start; va < end; va += PAGE_SIZE)
@@ -136,7 +187,7 @@ void vas_destroy(vas_t *vas)
 	while (v) {
 		_uncommit_range(vas, v->start, v->end);
 		vad_t *next = v->next;
-		kfree(v);
+		_vad_free(v);
 		v = next;
 	}
 
@@ -226,6 +277,47 @@ uint64_t vas_map_phys(vas_t *vas, uint64_t hint, uint64_t phys, size_t length,
 	}
 
 	_vad_insert(vas, vad);
+	return base;
+}
+
+uint64_t vas_map_file(vas_t *vas, uint64_t hint, struct vfs_node *file,
+					  uint64_t file_offset, size_t length, uint64_t flags)
+{
+	assert(vas);
+	if (!file || !length)
+		return 0;
+	if ((file_offset & (PAGE_SIZE - 1)) != 0)
+		return 0;
+
+	length = ALIGN_UP(length, PAGE_SIZE);
+
+	uint64_t base;
+	if (flags & VAD_FIXED) {
+		base = ALIGN_DOWN(hint, PAGE_SIZE);
+		uint64_t end = base + length;
+		if (end > VAS_USER_END || end < base)
+			return 0;
+		if (_vas_overlaps(vas, base, end))
+			return 0;
+	} else {
+		uint64_t search_hint = hint ? hint : vas->user_start;
+		base = _vas_find_free(vas, search_hint, length);
+		if (!base)
+			return 0;
+	}
+
+	vad_t *vad = _vad_alloc_file(base, base + length, flags, file, file_offset);
+	if (!vad)
+		return 0;
+
+	if (_commit_file(vas, vad) != 0) {
+		_uncommit_range(vas, base, base + length);
+		_vad_free(vad);
+		return 0;
+	}
+
+	_vad_insert(vas, vad);
+	vas->user_start = base + length;
 	return base;
 }
 
