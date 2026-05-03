@@ -3,7 +3,12 @@
 override OUTPUT := lyr
 
 PREFIX := /usr/local
-VERSION := 1.0.0
+override VERSION := $(shell \
+    git -C "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" rev-parse --short HEAD 2>/dev/null \
+    || echo unknown)$(shell \
+    git -C "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" \
+    diff --quiet --ignore-submodules HEAD 2>/dev/null \
+    && echo -clean || echo -dirty)
 
 TOOLCHAIN :=
 TOOLCHAIN_PREFIX :=

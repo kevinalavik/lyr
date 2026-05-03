@@ -80,7 +80,7 @@ static const char *banner[] = { " _             ___  ____  ",
 								"| | | | | '__| | | \\___ \\ ",
 								"| | |_| | |  | |_| |___) |",
 								"|_|\\__, |_|   \\___/|____/ ",
-								"   |___/ lyr kernel v" LYR_VERSION
+								"   |___/ lyr-kernel " LYR_VERSION
 								" (c) 2026 Kevin Alavik",
 								NULL };
 
