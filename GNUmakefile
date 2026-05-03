@@ -4,7 +4,7 @@ QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd
-INITRD_IMAGE := initrd/initrd.cpio
+INITRD_IMAGE := initrd.cpio
 INITRD_FILES := $(filter-out $(INITRD_IMAGE),$(shell find $(INITRD_ROOT) -type f -o -type d 2>/dev/null | LC_ALL=C sort))
 
 HOST_CC := cc
