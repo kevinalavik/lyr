@@ -112,9 +112,10 @@ void test(void *)
 		return;
 	}
 
-	char buf[1024];
+	log_info("test", "/etc/motd size: %d", file->node->size);
+	char *buf = kzalloc(file->node->size);
 	size_t done = 0;
-	r = vfs_read(file, buf, sizeof(buf) - 1, &done);
+	r = vfs_read(file, buf, file->node->size, &done);
 	vfs_close(file);
 	if (r != VFS_OK) {
 		kprintf("initrd: failed to read /etc/motd status=%d\n", r);
@@ -247,8 +248,8 @@ void lyr_entry(void)
 		log_info("entry", "Scheduler ok");
 	}
 
-	pcb_t *p = sched_process_create("hello", _lyr_kernel_vas);
+	pcb_t *p = sched_process_create("init", _lyr_kernel_vas);
 	assert(p);
-	sched_create_thread(p, "hello", test, NULL);
+	sched_create_thread(p, "init", test, NULL);
 	sched_exit(); /* finished */
 }
