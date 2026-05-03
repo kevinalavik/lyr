@@ -99,12 +99,10 @@ static void print_banner(void)
 	// kprintf("\n\n");
 }
 
-void test(void *arg)
+void test(void *)
 {
-	(void)arg;
-	while (1)
-		kprintf("Hello from tid=%d running on CPU %d!\n", sched_current()->tid,
-				get_cpu_local()->cpu_index);
+	kprintf("Hello from kernel proc tid=%d running on CPU %d!\n",
+			sched_current()->tid, get_cpu_local()->cpu_index);
 }
 
 void lyr_entry(void)
@@ -125,7 +123,7 @@ void lyr_entry(void)
 	struct limine_framebuffer *fb =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_dark);
+	lyrterm_apply_theme(&lyrterm_theme_nord);
 	lyrterm_init(fb);
 
 	/* etc requests */
@@ -189,8 +187,8 @@ void lyr_entry(void)
 	acpi_init(rsdp_request.response->address);
 #if _DEBUG
 	acpi_dump_tables();
-#endif
 	bgrt_init(fb); /* fun thing to test */
+#endif
 	madt_init();
 	log_info("entry", "MADT ok");
 	apic_init();
@@ -225,7 +223,6 @@ void lyr_entry(void)
 
 	pcb_t *p = sched_process_create("hello", _lyr_kernel_vas);
 	assert(p);
-	for (int i = 0; i < 100; i++)
-		sched_create_thread(p, "hello", test, NULL);
+	sched_create_thread(p, "hello", test, NULL);
 	sched_exit(); /* finished */
 }

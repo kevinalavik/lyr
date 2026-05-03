@@ -63,10 +63,9 @@ int kprintf(const char *format, ...)
 	else
 		len = (size_t)n;
 
-	if (spinlock_try_acquire(&console_lock)) {
-		console_enqueue_locked(buf, len);
-		spinlock_release(&console_lock);
-	}
+	spinlock_acquire(&console_lock);
+	console_enqueue_locked(buf, len);
+	spinlock_release(&console_lock);
 
 	uart_wbuf(buf, len);
 	return (int)len;

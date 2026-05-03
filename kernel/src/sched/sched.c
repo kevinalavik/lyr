@@ -432,7 +432,7 @@ static void thread_reap(tcb_t *thread)
 	tid_t tid = thread->tid;
 	pid_t pid = process ? process->pid : -1;
 
-	log_debug("sched", "reaping tid=%d pid=%d status=%d", tid, pid,
+	log_trace("sched", "reaping tid=%d pid=%d status=%d", tid, pid,
 			  thread->exit_status);
 	kstack_free(thread->kstack_base, thread->kstack_top);
 	if (tid > 0)
@@ -495,7 +495,7 @@ static void thread_finish_current_locked(cpu_local_t *cpu,
 	if (thread->reap_process)
 		process_note_no_threads(thread->process);
 
-	log_debug("sched", "tid=%d pid=%d exited%s on cpu%u status=%d", thread->tid,
+	log_trace("sched", "tid=%d pid=%d exited%s on cpu%u status=%d", thread->tid,
 			  thread->process ? thread->process->pid : -1, how ? how : "",
 			  cpu->cpu_index, status);
 }
@@ -503,7 +503,7 @@ static void thread_finish_current_locked(cpu_local_t *cpu,
 static void thread_bootstrap(tcb_t *thread)
 {
 	assert(thread && thread->entry);
-	log_debug("sched", "tid=%d pid=%d entering %s", thread->tid,
+	log_trace("sched", "tid=%d pid=%d entering %s", thread->tid,
 			  thread->process->pid, thread->name);
 	sti();
 	thread->entry(thread->arg);
@@ -513,7 +513,7 @@ static void thread_bootstrap(tcb_t *thread)
 static void idle_entry(void *arg)
 {
 	cpu_local_t *cpu = arg;
-	log_debug("sched", "cpu%u idle thread online", cpu->cpu_index);
+	log_trace("sched", "cpu%u idle thread online", cpu->cpu_index);
 	sti();
 	for (;;)
 		hlt();
@@ -562,7 +562,7 @@ void sched_cpu_init(cpu_local_t *cpu)
 	atomic_store_explicit(&cpu->sched_ready, true, memory_order_release);
 	irq_restore(flags);
 
-	log_debug("sched", "cpu%u run queue initialized", cpu->cpu_index);
+	log_trace("sched", "cpu%u run queue initialized", cpu->cpu_index);
 }
 
 void sched_init(void)
@@ -616,7 +616,7 @@ void sched_init(void)
 		idle_cpu->idle_thread = idle;
 		if (idle_cpu != cpu && idle_cpu->current_thread == NULL)
 			idle_cpu->current_thread = idle;
-		log_debug("sched", "cpu%u idle tid=%d ready", i, idle->tid);
+		log_trace("sched", "cpu%u idle tid=%d ready", i, idle->tid);
 	}
 
 	atomic_store_explicit(&sched_ready, true, memory_order_release);
@@ -747,7 +747,7 @@ void sched_idle_loop(void)
 
 	apic_timer_init(SCHED_TIMER_HZ);
 	switch_to_thread(cpu, cpu->idle_thread);
-	log_debug("sched", "cpu%u entering idle loop", cpu->cpu_index);
+	log_trace("sched", "cpu%u entering idle loop", cpu->cpu_index);
 	sched_iret_to_frame(thread_frame(cpu->idle_thread));
 }
 
@@ -758,7 +758,7 @@ void sched_prepare_user(tcb_t *thread, uint64_t rip, uint64_t user_rsp)
 
 	uint64_t flags = irq_save();
 	frame_init_user(thread, rip, user_rsp);
-	log_debug("sched", "tid=%d pid=%d prepared user rip=0x%llx rsp=0x%llx",
+	log_trace("sched", "tid=%d pid=%d prepared user rip=0x%llx rsp=0x%llx",
 			  thread->tid, thread->process->pid, rip, user_rsp);
 	irq_restore(flags);
 }
@@ -769,7 +769,7 @@ void sched_enter_user(uint64_t rip, uint64_t user_rsp)
 	if (!thread || !thread->process || !thread->process->vas)
 		kpanic(NULL, "sched_enter_user: current thread has no process VAS");
 
-	log_debug("sched", "tid=%d pid=%d dropping to user rip=0x%llx rsp=0x%llx",
+	log_trace("sched", "tid=%d pid=%d dropping to user rip=0x%llx rsp=0x%llx",
 			  thread->tid, thread->process->pid, rip, user_rsp);
 	cli();
 	thread->mode = TCB_MODE_USER;
