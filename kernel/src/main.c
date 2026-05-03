@@ -87,7 +87,7 @@ static const char *banner[] = { " _             ___  ____  ",
 static void print_banner(void)
 {
 	for (int i = 0; banner[i]; i++)
-		kprintf("\e[0;%dm%s\e[0m\n", 94 + i, banner[i]);
+		kprintf("\e[0;%dm%s\e[0m\n", 91 + i, banner[i]);
 	kprintf("\n");
 
 	/* cool ansi color debug */
