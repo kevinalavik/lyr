@@ -215,8 +215,28 @@ static int driver_runtime_write_file(const char *path, const char *data)
 
 void driver_log(driver_t *driver, const char *level, const char *message)
 {
-	log_info(driver && driver->name[0] ? driver->name : "driver", "%s: %s",
-			 level ? level : "info", message ? message : "");
+	char subsys[64];
+
+	const char *name = (driver && driver->name[0]) ? driver->name : "unknown";
+
+	npf_snprintf(subsys, sizeof(subsys), "driver/%s", name);
+
+	if (!level)
+		level = "info";
+
+	const char *msg = message ? message : "";
+
+	if (strcmp(level, "trace") == 0 || strcmp(level, "trce") == 0) {
+		log_trace(subsys, "%s", msg);
+	} else if (strcmp(level, "debug") == 0 || strcmp(level, "dbug") == 0) {
+		log_debug(subsys, "%s", msg);
+	} else if (strcmp(level, "warn") == 0) {
+		log_warn(subsys, "%s", msg);
+	} else if (strcmp(level, "err") == 0 || strcmp(level, "error") == 0) {
+		log_err(subsys, "%s", msg);
+	} else {
+		log_info(subsys, "%s", msg);
+	}
 }
 
 static int driver_read_file(const char *path, uint8_t **out, size_t *out_size)
