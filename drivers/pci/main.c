@@ -296,8 +296,8 @@ static int pci_dev_read(void *ctx, uint64_t off, void *buf, size_t len,
 			"%02x:%02x.%u vendor=%04x device=%04x class=%02x:%02x:%02x rev=%02x vendor_name=\"%s\" device_name=\"%s\"\n",
 			dev->bus, dev->slot, dev->function, dev->vendor_id, dev->device_id,
 			dev->class_code, dev->subclass, dev->prog_if, dev->revision,
-			vendor_name[0] ? vendor_name : "?",
-			device_name[0] ? device_name : "?");
+			vendor_name[0] ? vendor_name : "unknown",
+			device_name[0] ? device_name : "unknown");
 
 		if (n < 0)
 			break;
@@ -332,8 +332,9 @@ static int pci_device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 		tmp, sizeof(tmp),
 		"address=0000:%02x:%02x.%u\nvendor=%04x\ndevice=%04x\nvendor_name=%s\ndevice_name=%s\nclass=%02x\nsubclass=%02x\nprog_if=%02x\nrevision=%02x\n",
 		dev->bus, dev->slot, dev->function, dev->vendor_id, dev->device_id,
-		vendor_name[0] ? vendor_name : "?", device_name[0] ? device_name : "?",
-		dev->class_code, dev->subclass, dev->prog_if, dev->revision);
+		vendor_name[0] ? vendor_name : "unknown",
+		device_name[0] ? device_name : "unknown", dev->class_code,
+		dev->subclass, dev->prog_if, dev->revision);
 
 	if (n < 0)
 		return VFS_ERR_INVAL;
