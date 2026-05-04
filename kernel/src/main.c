@@ -327,6 +327,35 @@ void test(void *)
 		}
 	}
 
+	{
+		char *http = kzalloc(4096);
+		if (http) {
+			size_t done = 0;
+			net_http_response_t res;
+			memset(&res, 0, sizeof(res));
+			INIT_LOG("HTTP GET http://example.com/\n");
+			int r = net_http_get("example.com", "/", http, 4095, &done, &res,
+								 5000);
+			if (r == VFS_OK) {
+				http[done < 4095 ? done : 4095] = '\0';
+				INIT_LOG("HTTP status=%u bytes=%zu body=%zu\n", res.status,
+						 done, res.body_len);
+				if (res.header_len < done) {
+					size_t preview = done - res.header_len;
+					if (preview > 512)
+						preview = 512;
+					char saved = http[res.header_len + preview];
+					http[res.header_len + preview] = '\0';
+					kprintf("%s\n", http + res.header_len);
+					http[res.header_len + preview] = saved;
+				}
+			} else {
+				INIT_LOG("HTTP fetch failed status=%d\n", r);
+			}
+			kfree(http);
+		}
+	}
+
 	INIT_LOG("no shell, exiting.\n");
 	sched_thread_exit(0);
 }

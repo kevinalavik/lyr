@@ -92,6 +92,7 @@ extern ptable_t *kernel_ptable;
 extern uint64_t _lyr_hhdm_offset;
 
 static uint64_t next_mmio = E1000_MMIO_BASE;
+static uint32_t next_netdev_id;
 
 static void *phys_to_virt(uint64_t phys)
 {
@@ -301,7 +302,7 @@ static int e1000_probe(device_t *dev, void *ctx)
 
 	netdev_t nd;
 	memset(&nd, 0, sizeof(nd));
-	npf_snprintf(nd.name, sizeof(nd.name), "eth0");
+	npf_snprintf(nd.name, sizeof(nd.name), "eth%u", next_netdev_id++);
 	memcpy(nd.mac, e->mac, sizeof(nd.mac));
 	nd.mtu = NET_MTU;
 	nd.send = e1000_send;
