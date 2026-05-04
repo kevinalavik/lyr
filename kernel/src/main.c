@@ -82,30 +82,6 @@ __attribute__((used,
 __attribute__((used, section(".limine_requests_end"))) static volatile uint64_t
 	limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
-static const char *banner[] = { " _             ___  ____  ",
-								"| |_   _ _ __ / _ \\/ ___| ",
-								"| | | | | '__| | | \\___ \\ ",
-								"| | |_| | |  | |_| |___) |",
-								"|_|\\__, |_|   \\___/|____/ ",
-								"   |___/ lyr-kernel " LYR_VERSION
-								" (c) 2026 Kevin Alavik",
-								NULL };
-
-static void print_banner(void)
-{
-	for (int i = 0; banner[i]; i++)
-		kprintf("\e[0;%dm%s\e[0m\n", 91 + i, banner[i]);
-	kprintf("\n");
-
-	/* cool ansi color debug */
-	// for (int i = 40; i <= 47; i++)
-	// 	kprintf("\x1b[%dm  \x1b[0m", i);
-	// kprintf("\n");
-	// for (int i = 100; i <= 107; i++)
-	// 	kprintf("\x1b[%dm  \x1b[0m", i);
-	// kprintf("\n\n");
-}
-
 static char fs_type_char(vfs_mode_t mode)
 {
 	if (VFS_S_ISDIR(mode))
@@ -310,10 +286,10 @@ void lyr_entry(void)
 	if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision))
 		nointloop();
 
-	print_banner();
 	async_io_init();
 	async_test();
 
+	log_info("entry", "Welcome to lyr-kernel " LYR_VERSION);
 	log_info("entry", "UART %s", uart_init() == 0 ? "ok" : "not ok");
 
 	/* framebuffer */
