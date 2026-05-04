@@ -24,8 +24,6 @@ static void die(const char *msg, long err)
 int main(void)
 {
 	long ret;
-
-	puts("early-init: starting");
 	ret = lyr_change_root("/dev/nvme0n1", "ext2", "/bin/init");
 	if (ret < 0)
 		die("early-init: change_root /dev/nvme0n1 failed", ret);
