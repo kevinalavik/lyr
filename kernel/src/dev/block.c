@@ -155,7 +155,8 @@ int block_register(block_device_t *src)
 	int r = devfs_register_chr(path, dev->write_blocks ? 0660 : 0440,
 							   block_devfs_read, block_devfs_write, dev);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
-		log_warn("block", "failed to publish %s status=%d", path, r);
+		log_warn("block", "failed to publish %s status=%s(%d)", path,
+				 vfs_err_name(r), r);
 
 	log_info("block", "registered %s blocks=%llu size=%u offset=%llu", dev->name,
 			 dev->block_count, dev->block_size, dev->lba_offset);

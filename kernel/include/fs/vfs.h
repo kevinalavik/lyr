@@ -68,6 +68,8 @@
 #define VFS_ERR_NAMETOOLONG -36
 #define VFS_ERR_TIMEOUT -37
 
+const char *vfs_err_name(int err);
+
 typedef uint32_t vfs_mode_t;
 typedef uint32_t vfs_uid_t;
 typedef uint32_t vfs_gid_t;

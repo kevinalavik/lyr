@@ -91,10 +91,8 @@ drivers: kernel/.deps-obtained
 FORCE:
 
 $(NVME_TEST_DISK): 
-	rm -f $@ $@.test.txt $@.debugfs
 	dd if=/dev/zero of=$@ bs=1M count=16
 	PATH=$$PATH:/usr/sbin:/sbin mkfs.ext2 -q -F -L LYRTEST $@
-	rm -f $@.test.txt $@.debugfs
 
 $(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers $(DRIVER_SYS_FILES)
 	python3 utils/mkinitrd.py $(INITRD_ROOT) $@ $(DRIVERS_ROOT)/bin:sys
@@ -133,10 +131,10 @@ $(IMAGE_NAME).hdd: limine/limine kernel
 clean:
 	$(MAKE) -C kernel clean
 	$(MAKE) -C drivers clean
-	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE) $(NVME_TEST_DISK)
+	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE)
 
 .PHONY: distclean
 distclean: clean
 	$(MAKE) -C kernel distclean
 	$(MAKE) -C drivers distclean
-	rm -rf limine edk2-ovmf
+	rm -rf limine edk2-ovmf  $(NVME_TEST_DISK)

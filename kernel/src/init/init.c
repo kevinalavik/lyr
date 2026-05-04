@@ -64,7 +64,7 @@ static void fs_list_recursive(const char *path)
 	vfs_stat_t st;
 	int r = vfs_stat(path, &vfs_root_cred, &st);
 	if (r != VFS_OK) {
-		kprintf("? %s status=%d\n", path, r);
+		kprintf("? %s status=%s(%d)\n", path, vfs_err_name(r), r);
 		return;
 	}
 
@@ -79,7 +79,8 @@ static void fs_list_recursive(const char *path)
 	vfs_node_t *dir = NULL;
 	r = vfs_resolve(path, &vfs_root_cred, &dir);
 	if (r != VFS_OK) {
-		kprintf("! cannot open dir %s status=%d\n", path, r);
+		kprintf("! cannot open dir %s status=%s(%d)\n", path,
+				vfs_err_name(r), r);
 		return;
 	}
 
@@ -89,7 +90,8 @@ static void fs_list_recursive(const char *path)
 		if (r == VFS_ERR_NOENT)
 			break;
 		if (r != VFS_OK) {
-			kprintf("! readdir %s[%zu] status=%d\n", path, i, r);
+			kprintf("! readdir %s[%zu] status=%s(%d)\n", path, i,
+					vfs_err_name(r), r);
 			break;
 		}
 		if (strcmp(ent.name, ".") == 0 || strcmp(ent.name, "..") == 0)
@@ -171,7 +173,8 @@ __attribute__((unused)) static void init_fetch_site(const char *host)
 		vfs_file_t *file__ = NULL;                                             \
 		int r__ = vfs_open((path_), VFS_O_RDONLY, 0, &vfs_root_cred, &file__); \
 		if (r__ != VFS_OK) {                                                   \
-			kprintf("cat: failed to open %s status=%d\n", (path_), r__);       \
+			kprintf("cat: failed to open %s status=%s(%d)\n", (path_),         \
+					vfs_err_name(r__), r__);                                   \
 			break;                                                             \
 		}                                                                      \
                                                                                \
@@ -190,7 +193,8 @@ __attribute__((unused)) static void init_fetch_site(const char *host)
 		r__ = vfs_read(file__, buf__, cap__, &done__);                         \
 		vfs_close(file__);                                                     \
 		if (r__ != VFS_OK) {                                                   \
-			kprintf("cat: failed to read %s status=%d\n", (path_), r__);       \
+			kprintf("cat: failed to read %s status=%s(%d)\n", (path_),         \
+					vfs_err_name(r__), r__);                                   \
 			kfree(buf__);                                                      \
 			break;                                                             \
 		}                                                                      \
@@ -207,7 +211,7 @@ static void init_stat_path(const char *path)
 	vfs_stat_t st;
 	int r = vfs_stat(path, &vfs_root_cred, &st);
 	if (r != VFS_OK) {
-		INIT_LOG("%s: missing status=%d\n", path, r);
+		INIT_LOG("%s: missing status=%s(%d)\n", path, vfs_err_name(r), r);
 		return;
 	}
 	INIT_LOG("%s: mode=0%o size=%llu\n", path, st.mode,
@@ -220,14 +224,16 @@ static void init_write_file(const char *path, const char *text)
 	int r = vfs_open(path, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644,
 					 &vfs_root_cred, &file);
 	if (r != VFS_OK) {
-		INIT_LOG("write %s: open failed status=%d\n", path, r);
+		INIT_LOG("write %s: open failed status=%s(%d)\n", path,
+				 vfs_err_name(r), r);
 		return;
 	}
 	size_t done = 0;
 	r = vfs_write(file, text, strlen(text), &done);
 	vfs_close(file);
 	if (r != VFS_OK || done != strlen(text)) {
-		INIT_LOG("write %s: failed status=%d done=%zu\n", path, r, done);
+		INIT_LOG("write %s: failed status=%s(%d) done=%zu\n", path,
+				 vfs_err_name(r), r, done);
 		return;
 	}
 	INIT_LOG("write %s: %zu bytes\n", path, done);
@@ -241,7 +247,8 @@ static void init_mount_disk(void)
 		return;
 	}
 	int r = ext2_mount(disk, "/mnt");
-	INIT_LOG("mount /dev/nvme0n1 on /mnt type ext2 status=%d\n", r);
+	INIT_LOG("mount /dev/nvme0n1 on /mnt type ext2 status=%s(%d)\n",
+			 vfs_err_name(r), r);
 }
 
 __attribute__((unused)) static void init_play_starwars_telnet(void)
@@ -302,7 +309,8 @@ void init_proc_entry(void *arg)
 	fs_list_recursive("/mnt");
 	INIT_LOG("NVMe ext2 mkdir /mnt/write-test\n");
 	int mnt_r = vfs_mkdir("/mnt/write-test", 0755, &vfs_root_cred);
-	INIT_LOG("mkdir /mnt/write-test status=%d\n", mnt_r);
+	INIT_LOG("mkdir /mnt/write-test status=%s(%d)\n", vfs_err_name(mnt_r),
+			 mnt_r);
 	INIT_LOG("NVMe ext2 write /mnt/write-test/test.txt\n");
 	init_write_file("/mnt/write-test/test.txt",
 					"hello from lyr writing ext2 over NVMe");
@@ -356,7 +364,8 @@ void init_proc_entry(void *arg)
 				if (r == VFS_ERR_NOENT)
 					break;
 				if (r != VFS_OK) {
-					INIT_LOG("net: readdir /dev/net[%zu] status=%d\n", i, r);
+					INIT_LOG("net: readdir /dev/net[%zu] status=%s(%d)\n", i,
+							 vfs_err_name(r), r);
 					break;
 				}
 
@@ -376,7 +385,8 @@ void init_proc_entry(void *arg)
 			}
 			vfs_node_release(dir);
 		} else {
-			INIT_LOG("net: failed to open /dev/net status=%d\n", r);
+			INIT_LOG("net: failed to open /dev/net status=%s(%d)\n",
+					 vfs_err_name(r), r);
 		}
 	}
 
@@ -391,7 +401,8 @@ void init_proc_entry(void *arg)
 		vfs_node_t *dir = NULL;
 		int r = vfs_resolve("/dev/pci", &vfs_root_cred, &dir);
 		if (r != VFS_OK) {
-			INIT_LOG("pci: failed to open /dev/pci status=%d\n", r);
+			INIT_LOG("pci: failed to open /dev/pci status=%s(%d)\n",
+					 vfs_err_name(r), r);
 			return;
 		}
 
@@ -401,7 +412,8 @@ void init_proc_entry(void *arg)
 			if (r == VFS_ERR_NOENT)
 				break;
 			if (r != VFS_OK) {
-				INIT_LOG("pci: readdir /dev/pci[%zu] status=%d\n", i, r);
+				INIT_LOG("pci: readdir /dev/pci[%zu] status=%s(%d)\n", i,
+						 vfs_err_name(r), r);
 				break;
 			}
 
