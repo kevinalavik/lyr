@@ -266,10 +266,9 @@ static void e1000_hw_init(e1000_t *e)
 	e->tx_next = 0;
 
 	ewr(e, E1000_REG_TIPG, 10 | (8 << 10) | (6 << 20));
-	ewr(e, E1000_REG_TCTL, E1000_TCTL_EN | E1000_TCTL_PSP | (0x10 << 4) |
-							   (0x40 << 12));
-	ewr(e, E1000_REG_RCTL, E1000_RCTL_EN | E1000_RCTL_BAM |
-							   E1000_RCTL_SECRC);
+	ewr(e, E1000_REG_TCTL,
+		E1000_TCTL_EN | E1000_TCTL_PSP | (0x10 << 4) | (0x40 << 12));
+	ewr(e, E1000_REG_RCTL, E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_SECRC);
 }
 
 static int e1000_probe(device_t *dev, void *ctx)
@@ -292,7 +291,8 @@ static int e1000_probe(device_t *dev, void *ctx)
 	e->mmio_phys = bar0 & ~0x0full;
 	e->mmio_virt = next_mmio;
 	next_mmio += E1000_MMIO_STRIDE;
-	map_mmio(kernel_ptable, e->mmio_virt, e->mmio_phys, E1000_MMIO_STRIDE / PAGE_SIZE);
+	map_mmio(kernel_ptable, e->mmio_virt, e->mmio_phys,
+			 E1000_MMIO_STRIDE / PAGE_SIZE);
 	e->mmio = (volatile uint32_t *)e->mmio_virt;
 
 	e1000_read_mac(e);

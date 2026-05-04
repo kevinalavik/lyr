@@ -202,6 +202,147 @@ static int netdevs_read(void *ctx, uint64_t off, void *buf, size_t len,
 	return VFS_OK;
 }
 
+static void netdev_enqueue_rx(netdev_t *dev, const void *frame, size_t len)
+{
+	if (!dev || !frame || len == 0 || len > NET_ETH_FRAME_MAX)
+		return;
+
+	spinlock_acquire(&net_lock);
+	if (dev->rx_count == NETDEV_RX_QUEUE_LEN) {
+		dev->rx_dropped++;
+		spinlock_release(&net_lock);
+		return;
+	}
+
+	size_t idx = dev->rx_tail;
+	memcpy(dev->rx_queue + idx * NET_ETH_FRAME_MAX, frame, len);
+	dev->rx_len[idx] = (uint16_t)len;
+	dev->rx_tail = (idx + 1) % NETDEV_RX_QUEUE_LEN;
+	dev->rx_count++;
+	dev->rx_packets++;
+	spinlock_release(&net_lock);
+}
+
+static int netdev_chr_read(void *ctx, uint64_t off, void *buf, size_t len,
+						   size_t *done)
+{
+	(void)off;
+	netdev_t *dev = ctx;
+	if (done)
+		*done = 0;
+	if (!dev || !buf)
+		return VFS_ERR_INVAL;
+
+	dev->poll(dev);
+
+	spinlock_acquire(&net_lock);
+	if (!dev->rx_count) {
+		spinlock_release(&net_lock);
+		return VFS_OK;
+	}
+
+	size_t idx = dev->rx_head;
+	size_t frame_len = dev->rx_len[idx];
+	if (len < frame_len) {
+		spinlock_release(&net_lock);
+		return VFS_ERR_INVAL;
+	}
+
+	memcpy(buf, dev->rx_queue + idx * NET_ETH_FRAME_MAX, frame_len);
+	dev->rx_len[idx] = 0;
+	dev->rx_head = (idx + 1) % NETDEV_RX_QUEUE_LEN;
+	dev->rx_count--;
+	spinlock_release(&net_lock);
+
+	if (done)
+		*done = frame_len;
+	return VFS_OK;
+}
+
+static int netdev_chr_write(void *ctx, uint64_t off, const void *buf,
+							size_t len, size_t *done)
+{
+	(void)off;
+	netdev_t *dev = ctx;
+	if (done)
+		*done = 0;
+	if (!dev || !buf || len == 0 || len > NET_ETH_FRAME_MAX)
+		return VFS_ERR_INVAL;
+
+	int r = dev->send(dev, buf, len);
+	if (r != VFS_OK)
+		return r;
+	dev->tx_packets++;
+	if (done)
+		*done = len;
+	return VFS_OK;
+}
+
+static int netdev_info_read(void *ctx, uint64_t off, void *buf, size_t len,
+							size_t *done)
+{
+	netdev_t *dev = ctx;
+	if (done)
+		*done = 0;
+	if (!dev || !buf)
+		return VFS_ERR_INVAL;
+
+	char ip[24];
+	char gw[24];
+	char mask[24];
+	char server[24];
+	net_ipv4_format(dev->ipv4_addr, ip, sizeof(ip));
+	net_ipv4_format(dev->ipv4_gateway, gw, sizeof(gw));
+	net_ipv4_format(dev->ipv4_netmask, mask, sizeof(mask));
+	net_ipv4_format(dev->dhcp_server, server, sizeof(server));
+
+	char tmp[512];
+	int n = npf_snprintf(
+		tmp, sizeof(tmp),
+		"name=%s\nmac=%02x:%02x:%02x:%02x:%02x:%02x\nmtu=%u\nip=%s\nnetmask=%s\ngateway=%s\ndhcp=%s\ndhcp_server=%s\nrx_packets=%llu\ntx_packets=%llu\nrx_dropped=%llu\nrx_queued=%zu\n",
+		dev->name, dev->mac[0], dev->mac[1], dev->mac[2], dev->mac[3],
+		dev->mac[4], dev->mac[5], dev->mtu, ip, mask, gw,
+		dev->dhcp_configured ? "yes" : "no", server,
+		(unsigned long long)dev->rx_packets,
+		(unsigned long long)dev->tx_packets,
+		(unsigned long long)dev->rx_dropped, dev->rx_count);
+	if (n < 0)
+		return VFS_ERR_INVAL;
+
+	size_t total = (size_t)n;
+	if (total >= sizeof(tmp))
+		total = sizeof(tmp) - 1;
+	if (off >= total || len == 0)
+		return VFS_OK;
+	size_t copy = total - (size_t)off;
+	if (copy > len)
+		copy = len;
+	memcpy(buf, tmp + off, copy);
+	if (done)
+		*done = copy;
+	return VFS_OK;
+}
+
+static int netdev_publish(netdev_t *dev)
+{
+	char path[64];
+	npf_snprintf(path, sizeof(path), "/dev/net/%s", dev->name);
+	int r = devfs_register_chr(path, 0660, netdev_chr_read, netdev_chr_write,
+							   dev);
+	if (r != VFS_OK)
+		return r;
+
+	npf_snprintf(path, sizeof(path), "/dev/net/%s.info", dev->name);
+	r = devfs_register_chr(path, 0444, netdev_info_read, NULL, dev);
+	if (r != VFS_OK) {
+		char raw_path[64];
+		npf_snprintf(raw_path, sizeof(raw_path), "/dev/net/%s", dev->name);
+		devfs_unregister(raw_path);
+		return r;
+	}
+	return VFS_OK;
+}
+
 int net_init(void)
 {
 	int r = devfs_mkdir("/dev/net", 0755);
@@ -223,8 +364,39 @@ int netdev_register(netdev_t *src)
 	if (!dev)
 		return VFS_ERR_NOMEM;
 	memcpy(dev, src, sizeof(*dev));
+	dev->rx_queue = NULL;
+	memset(dev->rx_len, 0, sizeof(dev->rx_len));
+	dev->rx_head = 0;
+	dev->rx_tail = 0;
+	dev->rx_count = 0;
+	dev->rx_dropped = 0;
+	dev->rx_packets = 0;
+	dev->tx_packets = 0;
+	dev->rx_queue = kzalloc(NETDEV_RX_QUEUE_LEN * NET_ETH_FRAME_MAX);
+	if (!dev->rx_queue) {
+		kfree(dev);
+		return VFS_ERR_NOMEM;
+	}
 	if (!dev->mtu)
 		dev->mtu = NET_MTU;
+
+	spinlock_acquire(&net_lock);
+	for (netdev_t *cur = netdevs; cur; cur = cur->next) {
+		if (strcmp(cur->name, dev->name) == 0) {
+			spinlock_release(&net_lock);
+			kfree(dev->rx_queue);
+			kfree(dev);
+			return VFS_ERR_EXIST;
+		}
+	}
+	spinlock_release(&net_lock);
+
+	int pr = netdev_publish(dev);
+	if (pr != VFS_OK) {
+		kfree(dev->rx_queue);
+		kfree(dev);
+		return pr;
+	}
 
 	spinlock_acquire(&net_lock);
 	dev->next = netdevs;
@@ -466,6 +638,8 @@ void net_receive_frame(netdev_t *dev, const void *frame, size_t len)
 {
 	if (!dev || !frame || len < sizeof(eth_hdr_t))
 		return;
+
+	netdev_enqueue_rx(dev, frame, len);
 
 	const uint8_t *buf = frame;
 	const eth_hdr_t *eth = (const eth_hdr_t *)buf;

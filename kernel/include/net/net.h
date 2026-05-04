@@ -7,6 +7,8 @@
 #define NETDEV_NAME_MAX 15
 #define NET_ETH_ALEN 6
 #define NET_MTU 1500
+#define NET_ETH_FRAME_MAX 1518
+#define NETDEV_RX_QUEUE_LEN 16
 
 typedef struct netdev netdev_t;
 
@@ -33,6 +35,14 @@ struct netdev {
 	netdev_send_t send;
 	netdev_poll_t poll;
 	void *driver_data;
+	uint8_t *rx_queue;
+	uint16_t rx_len[NETDEV_RX_QUEUE_LEN];
+	size_t rx_head;
+	size_t rx_tail;
+	size_t rx_count;
+	uint64_t rx_dropped;
+	uint64_t tx_packets;
+	uint64_t rx_packets;
 	netdev_t *next;
 };
 

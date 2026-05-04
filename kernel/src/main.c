@@ -282,7 +282,7 @@ void test(void *)
 	{
 		uint32_t target = net_ipv4(8, 8, 8, 8);
 		const uint16_t ident = 0x4c59;
-		const uint16_t count = 4;
+		const uint16_t count = 16;
 		uint16_t sent = 0;
 		uint16_t received = 0;
 		uint64_t min_ms = (uint64_t)-1;
