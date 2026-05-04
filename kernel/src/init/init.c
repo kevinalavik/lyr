@@ -7,6 +7,7 @@
 #include <mm/paging.h>
 #include <mm/vmm.h>
 #include <sched/sched.h>
+#include <cpu/instr.h>
 
 #define INIT_STACK_TOP 0x00007ffffff000ULL
 #define INIT_STACK_SIZE (16 * PAGE_SIZE)

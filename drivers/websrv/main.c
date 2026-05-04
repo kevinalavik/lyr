@@ -995,7 +995,7 @@ static void websrv_thread(void *arg)
 
 static int websrv_main(driver_t *d)
 {
-	int r = net_tcp_listen(80, websrv_handle, d);
+	int r = net_tcp_listen(6969, websrv_handle, d);
 	if (r != VFS_OK)
 		return r;
 

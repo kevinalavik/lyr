@@ -1,7 +1,12 @@
 .SUFFIXES:
 
 TAP_IF ?= tap0
-QEMU_NET_USER := -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::8080-:80
+QEMU_NET_USER := \
+  -netdev user,id=net0,net=10.0.2.0/24,hostfwd=tcp::6969-:6969 -device e1000,netdev=net0 \
+  -netdev user,id=net1,net=10.0.3.0/24 -device e1000,netdev=net1 \
+  -netdev user,id=net2,net=10.0.4.0/24 -device e1000,netdev=net2 \
+  -netdev user,id=net3,net=10.0.5.0/24 -device e1000,netdev=net3 \
+  -netdev user,id=net4,net=10.0.6.0/24 -device e1000,netdev=net4
 NVME_TEST_DISK := disk.img
 QEMU_NVME := -drive file=$(NVME_TEST_DISK),if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=LYRNVME0
 QEMUFLAGS := -m 2G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME)
