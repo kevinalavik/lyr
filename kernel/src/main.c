@@ -22,6 +22,7 @@
 #include <sys/acpi/madt.h>
 #include <sys/apic.h>
 #include <dev/pit.h>
+#include <dev/block.h>
 #include <dev/device.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
@@ -175,6 +176,8 @@ void lyr_entry(void)
 
 	assert(device_system_init() == VFS_OK);
 	log_info("entry", "Device system ok");
+	assert(block_system_init() == VFS_OK);
+	log_info("entry", "Block layer ok");
 	assert(net_init() == VFS_OK);
 	log_info("entry", "Network core ok");
 

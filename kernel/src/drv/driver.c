@@ -1,6 +1,7 @@
 #include <drv/driver.h>
 #include <stdarg.h>
 #include <debug/log.h>
+#include <dev/block.h>
 #include <dev/device.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
@@ -41,6 +42,7 @@ extern int npf_vsnprintf(char *buffer, size_t bufsz, const char *format,
 static const kernel_symbol_t kernel_symbols[] = {
 	{ "devfs_mkdir", (uint64_t)devfs_mkdir },
 	{ "devfs_register_chr", (uint64_t)devfs_register_chr },
+	{ "block_register", (uint64_t)block_register },
 	{ "device_handler_register", (uint64_t)device_handler_register },
 	{ "device_register", (uint64_t)device_register },
 	{ "driver_log", (uint64_t)driver_log },
@@ -89,6 +91,7 @@ static const kernel_symbol_t kernel_symbols[] = {
 
 static const char *boot_driver_paths[] = {
 	"/sys/pci.sys",
+	"/sys/nvme.sys",
 	"/sys/e1000.sys",
 	"/sys/websrv.sys",
 };

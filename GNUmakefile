@@ -2,7 +2,9 @@
 
 TAP_IF ?= tap0
 QEMU_NET_USER := -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::8080-:80
-QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot $(QEMU_NET_USER)
+NVME_TEST_DISK := disk.img
+QEMU_NVME := -drive file=$(NVME_TEST_DISK),if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=LYRNVME0
+QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot $(QEMU_NET_USER) $(QEMU_NVME)
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd
@@ -24,7 +26,7 @@ all: $(IMAGE_NAME).iso
 all-hdd: $(IMAGE_NAME).hdd
 
 .PHONY: run
-run: $(IMAGE_NAME).iso
+run: $(IMAGE_NAME).iso $(NVME_TEST_DISK)
 	qemu-system-x86_64 \
 		-M q35 \
 		-cdrom $(IMAGE_NAME).iso \
@@ -38,7 +40,7 @@ enable-usernet-icmp:
 	printf "%s %s\n" "$$gid" "$$gid" | sudo tee /proc/sys/net/ipv4/ping_group_range
 
 .PHONY: run-uefi
-run-uefi: edk2-ovmf $(IMAGE_NAME).iso
+run-uefi: edk2-ovmf $(IMAGE_NAME).iso $(NVME_TEST_DISK)
 	qemu-system-x86_64 \
 		-M q35 \
 		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-x86_64.fd,readonly=on \
@@ -47,14 +49,14 @@ run-uefi: edk2-ovmf $(IMAGE_NAME).iso
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd
-run-hdd: $(IMAGE_NAME).hdd
+run-hdd: $(IMAGE_NAME).hdd $(NVME_TEST_DISK)
 	qemu-system-x86_64 \
 		-M q35 \
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-uefi
-run-hdd-uefi: edk2-ovmf $(IMAGE_NAME).hdd
+run-hdd-uefi: edk2-ovmf $(IMAGE_NAME).hdd $(NVME_TEST_DISK)
 	qemu-system-x86_64 \
 		-M q35 \
 		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-x86_64.fd,readonly=on \
@@ -87,6 +89,12 @@ drivers: kernel/.deps-obtained
 
 .PHONY: FORCE
 FORCE:
+
+$(NVME_TEST_DISK): 
+	rm -f $@ $@.test.txt $@.debugfs
+	dd if=/dev/zero of=$@ bs=1M count=16
+	PATH=$$PATH:/usr/sbin:/sbin mkfs.ext2 -q -F -L LYRTEST $@
+	rm -f $@.test.txt $@.debugfs
 
 $(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers $(DRIVER_SYS_FILES)
 	python3 utils/mkinitrd.py $(INITRD_ROOT) $@ $(DRIVERS_ROOT)/bin:sys
@@ -125,7 +133,7 @@ $(IMAGE_NAME).hdd: limine/limine kernel
 clean:
 	$(MAKE) -C kernel clean
 	$(MAKE) -C drivers clean
-	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE)
+	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE) $(NVME_TEST_DISK)
 
 .PHONY: distclean
 distclean: clean

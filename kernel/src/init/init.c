@@ -1,5 +1,7 @@
 #include <init/init.h>
 #include <debug/log.h>
+#include <dev/block.h>
+#include <fs/ext2.h>
 #include <fs/vfs.h>
 #include <lib/string.h>
 #include <mm/heap.h>
@@ -57,7 +59,7 @@ static int fs_join_path(const char *parent, const char *name, char *out,
 	return VFS_OK;
 }
 
-__attribute__((unused)) static void fs_list_recursive(const char *path)
+static void fs_list_recursive(const char *path)
 {
 	vfs_stat_t st;
 	int r = vfs_stat(path, &vfs_root_cred, &st);
@@ -90,6 +92,8 @@ __attribute__((unused)) static void fs_list_recursive(const char *path)
 			kprintf("! readdir %s[%zu] status=%d\n", path, i, r);
 			break;
 		}
+		if (strcmp(ent.name, ".") == 0 || strcmp(ent.name, "..") == 0)
+			continue;
 
 		char child_path[256];
 		r = fs_join_path(path, ent.name, child_path, sizeof(child_path));
@@ -101,7 +105,6 @@ __attribute__((unused)) static void fs_list_recursive(const char *path)
 	}
 
 	vfs_node_release(dir);
-	kprintf("\n");
 }
 
 static size_t ipv4_prefix_len(uint32_t mask)
@@ -139,7 +142,7 @@ static void init_print_ip_addr(void)
 	}
 }
 
-static void init_fetch_site(const char *host)
+__attribute__((unused)) static void init_fetch_site(const char *host)
 {
 	char *http = kzalloc(4096);
 	if (!http) {
@@ -199,6 +202,48 @@ static void init_fetch_site(const char *host)
 
 #define FETCH_SITE(host_) init_fetch_site((host_))
 
+static void init_stat_path(const char *path)
+{
+	vfs_stat_t st;
+	int r = vfs_stat(path, &vfs_root_cred, &st);
+	if (r != VFS_OK) {
+		INIT_LOG("%s: missing status=%d\n", path, r);
+		return;
+	}
+	INIT_LOG("%s: mode=0%o size=%llu\n", path, st.mode,
+			 (unsigned long long)st.size);
+}
+
+static void init_write_file(const char *path, const char *text)
+{
+	vfs_file_t *file = NULL;
+	int r = vfs_open(path, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644,
+					 &vfs_root_cred, &file);
+	if (r != VFS_OK) {
+		INIT_LOG("write %s: open failed status=%d\n", path, r);
+		return;
+	}
+	size_t done = 0;
+	r = vfs_write(file, text, strlen(text), &done);
+	vfs_close(file);
+	if (r != VFS_OK || done != strlen(text)) {
+		INIT_LOG("write %s: failed status=%d done=%zu\n", path, r, done);
+		return;
+	}
+	INIT_LOG("write %s: %zu bytes\n", path, done);
+}
+
+static void init_mount_disk(void)
+{
+	block_device_t *disk = block_find("nvme0n1");
+	if (!disk) {
+		INIT_LOG("mount /dev/nvme0n1 on /mnt: no block device\n");
+		return;
+	}
+	int r = ext2_mount(disk, "/mnt");
+	INIT_LOG("mount /dev/nvme0n1 on /mnt type ext2 status=%d\n", r);
+}
+
 __attribute__((unused)) static void init_play_starwars_telnet(void)
 {
 	char *buf = kzalloc(4097);
@@ -246,6 +291,24 @@ void init_proc_entry(void *arg)
 	INIT_LOG("Hello, World!\n");
 	INIT_LOG("motd\n");
 	CAT_FILE("/etc/motd");
+	INIT_LOG("block devices\n");
+	init_stat_path("/dev/nvme0n1");
+	init_mount_disk();
+	INIT_LOG("mounts\n");
+	CAT_FILE("/dev/mounts");
+	INIT_LOG("ls -laR /mnt\n");
+	kprintf("%-10s %3s %11s %10s %4s %s\n", "mode", "lnk", "uid:gid", "size",
+			"perm", "path");
+	fs_list_recursive("/mnt");
+	INIT_LOG("NVMe ext2 mkdir /mnt/write-test\n");
+	int mnt_r = vfs_mkdir("/mnt/write-test", 0755, &vfs_root_cred);
+	INIT_LOG("mkdir /mnt/write-test status=%d\n", mnt_r);
+	INIT_LOG("NVMe ext2 write /mnt/write-test/test.txt\n");
+	init_write_file("/mnt/write-test/test.txt",
+					"hello from lyr writing ext2 over NVMe");
+	INIT_LOG("NVMe ext2 read /mnt/write-test/test.txt\n");
+	CAT_FILE("/mnt/write-test/test.txt");
+	kprintf("\n");
 	INIT_LOG("netdevs\n");
 	CAT_FILE("/dev/net/devices");
 	INIT_LOG("net routes\n");
@@ -417,8 +480,10 @@ void init_proc_entry(void *arg)
 		}
 	}
 
+#if _DEBUG
 	FETCH_SITE("127.0.0.1");
 	FETCH_SITE("example.com");
+#endif
 
 	/* uncomment for a supprise :^) */
 	// init_play_starwars_telnet();
