@@ -860,6 +860,41 @@ static int send_html(htmlbuf_t *b, void *resp, size_t cap, size_t *out)
 	return VFS_OK;
 }
 
+static int send_file_raw(const char *path, void *resp, size_t cap, size_t *out)
+{
+	char *buf = NULL;
+	size_t len = 0;
+	int truncated = 0;
+
+	int r = read_file_limited(path, &buf, &len, &truncated);
+	if (r != VFS_OK)
+		return r;
+
+	if (truncated) {
+		kfree(buf);
+		return VFS_ERR_INVAL;
+	}
+
+	int n = npf_snprintf(resp, cap,
+						 "HTTP/1.0 200 OK\r\n"
+						 "Content-Type: text/html; charset=utf-8\r\n"
+						 "Content-Length: %zu\r\n"
+						 "Connection: close\r\n\r\n",
+						 len);
+
+	if (n < 0 || (size_t)n + len >= cap) {
+		kfree(buf);
+		return VFS_ERR_INVAL;
+	}
+
+	memcpy((char *)resp + n, buf, len);
+	*out = (size_t)n + len;
+	web_stat_bytes_sent += *out;
+
+	kfree(buf);
+	return VFS_OK;
+}
+
 static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 						 const void *req, size_t len, void *resp, size_t cap,
 						 size_t *out, void *ctx)
@@ -927,6 +962,10 @@ static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 		if (!*path)
 			path = "/";
 		r = build_edit(path, &b);
+	} else if (!strncmp(url, "/roll", 4)) {
+		web_stat_raw++;
+		hb_free(&b);
+		return send_file_raw("/www/roll.html", resp, cap, out);
 	} else {
 		r = VFS_ERR_NOENT;
 	}
