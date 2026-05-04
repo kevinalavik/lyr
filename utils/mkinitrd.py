@@ -44,10 +44,11 @@ def write_entry(out, name, mode, uid, gid, nlink, data=b""):
     pad4(out)
 
 
-def collect_entries(root, output):
+def collect_entries(root, output, prefix="", suffix=None):
     entries = []
     root = os.path.abspath(root)
     output = os.path.abspath(output)
+    prefix = prefix.strip("/")
 
     for current, dirs, files in os.walk(root):
         dirs.sort()
@@ -58,6 +59,8 @@ def collect_entries(root, output):
         if rel_dir != ".":
             if os.path.abspath(current) == output:
                 continue
+            if prefix:
+                rel_dir = os.path.join(prefix, rel_dir)
             st = os.lstat(current)
             mode = stat.S_IFDIR | stat.S_IMODE(st.st_mode)
             entries.append((rel_dir, mode, 0, 0, 2, b""))
@@ -67,6 +70,10 @@ def collect_entries(root, output):
             if os.path.abspath(path) == output:
                 continue
             rel = os.path.relpath(path, root)
+            if prefix:
+                rel = os.path.join(prefix, rel)
+            if suffix and not rel.endswith(suffix):
+                continue
             st = os.lstat(path)
             if not stat.S_ISREG(st.st_mode):
                 continue
@@ -79,12 +86,20 @@ def collect_entries(root, output):
 
 
 def main(argv):
-    if len(argv) != 3:
-        print(f"usage: {argv[0]} <root-dir> <output.cpio>", file=sys.stderr)
+    if len(argv) < 3:
+        print(f"usage: {argv[0]} <root-dir> <output.cpio> [overlay-dir ...]", file=sys.stderr)
         return 2
 
     root, output = argv[1], argv[2]
     entries = collect_entries(root, output)
+    for overlay in argv[3:]:
+        if ":" in overlay:
+            overlay_root, prefix = overlay.split(":", 1)
+        else:
+            overlay_root = overlay
+            prefix = os.path.basename(os.path.normpath(overlay))
+        suffix = ".sys" if prefix.strip("/") == "sys" else None
+        entries.extend(collect_entries(overlay_root, output, prefix, suffix))
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
 
     with open(output, "wb") as out:

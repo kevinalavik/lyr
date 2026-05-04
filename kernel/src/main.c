@@ -27,6 +27,7 @@
 #include <sched/sched.h>
 #include <fs/initrd.h>
 #include <fs/vfs.h>
+#include <drv/driver.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -103,34 +104,195 @@ static void print_banner(void)
 	// kprintf("\n\n");
 }
 
+static char fs_type_char(vfs_mode_t mode)
+{
+	if (VFS_S_ISDIR(mode))
+		return 'd';
+	if (VFS_S_ISCHR(mode))
+		return 'c';
+	if (VFS_S_ISREG(mode))
+		return '-';
+	return '?';
+}
+
+static void fs_mode_string(vfs_mode_t mode, char out[11])
+{
+	out[0] = fs_type_char(mode);
+	out[1] = (mode & VFS_S_IRUSR) ? 'r' : '-';
+	out[2] = (mode & VFS_S_IWUSR) ? 'w' : '-';
+	out[3] = (mode & VFS_S_IXUSR) ? 'x' : '-';
+	out[4] = (mode & VFS_S_IRGRP) ? 'r' : '-';
+	out[5] = (mode & VFS_S_IWGRP) ? 'w' : '-';
+	out[6] = (mode & VFS_S_IXGRP) ? 'x' : '-';
+	out[7] = (mode & VFS_S_IROTH) ? 'r' : '-';
+	out[8] = (mode & VFS_S_IWOTH) ? 'w' : '-';
+	out[9] = (mode & VFS_S_IXOTH) ? 'x' : '-';
+	out[10] = '\0';
+}
+
+static int fs_join_path(const char *parent, const char *name, char *out,
+						size_t out_len)
+{
+	size_t parent_len = strlen(parent);
+	size_t name_len = strlen(name);
+	int need_slash = !(parent_len == 1 && parent[0] == '/');
+	size_t total = parent_len + (need_slash ? 1 : 0) + name_len;
+	if (total + 1 > out_len)
+		return VFS_ERR_NAMETOOLONG;
+
+	memcpy(out, parent, parent_len);
+	size_t pos = parent_len;
+	if (need_slash)
+		out[pos++] = '/';
+	memcpy(out + pos, name, name_len);
+	out[pos + name_len] = '\0';
+	return VFS_OK;
+}
+
+__attribute__((unused)) static void fs_list_recursive(const char *path)
+{
+	vfs_stat_t st;
+	int r = vfs_stat(path, &vfs_root_cred, &st);
+	if (r != VFS_OK) {
+		kprintf("? %s status=%d\n", path, r);
+		return;
+	}
+
+	char mode[11];
+	fs_mode_string(st.mode, mode);
+	kprintf("%-10s %3u %5u:%-5u %10llu %04o %s\n", mode, st.nlink, st.uid,
+			st.gid, st.size, st.mode & VFS_S_PERM, path);
+
+	if (!VFS_S_ISDIR(st.mode))
+		return;
+
+	vfs_node_t *dir = NULL;
+	r = vfs_resolve(path, &vfs_root_cred, &dir);
+	if (r != VFS_OK) {
+		kprintf("! cannot open dir %s status=%d\n", path, r);
+		return;
+	}
+
+	for (size_t i = 0;; i++) {
+		vfs_dirent_t ent;
+		r = vfs_readdir(dir, i, &ent);
+		if (r == VFS_ERR_NOENT)
+			break;
+		if (r != VFS_OK) {
+			kprintf("! readdir %s[%zu] status=%d\n", path, i, r);
+			break;
+		}
+
+		char child_path[256];
+		r = fs_join_path(path, ent.name, child_path, sizeof(child_path));
+		if (r != VFS_OK) {
+			kprintf("! path too long under %s/%s\n", path, ent.name);
+			continue;
+		}
+		fs_list_recursive(child_path);
+	}
+
+	vfs_node_release(dir);
+	kprintf("\n");
+}
+
+#define CAT_FILE(path_)                                                        \
+	do {                                                                       \
+		vfs_file_t *file__ = NULL;                                             \
+		int r__ = vfs_open((path_), VFS_O_RDONLY, 0, &vfs_root_cred, &file__); \
+		if (r__ != VFS_OK) {                                                   \
+			kprintf("cat: failed to open %s status=%d\n", (path_), r__);       \
+			break;                                                             \
+		}                                                                      \
+                                                                               \
+		size_t cap__ = file__->node->size;                                     \
+		if (cap__ == 0 || VFS_S_ISCHR(file__->node->mode))                     \
+			cap__ = 4096;                                                      \
+                                                                               \
+		char *buf__ = kzalloc(cap__ + 1);                                      \
+		if (!buf__) {                                                          \
+			kprintf("cat: failed to allocate buffer for %s\n", (path_));       \
+			vfs_close(file__);                                                 \
+			break;                                                             \
+		}                                                                      \
+                                                                               \
+		size_t done__ = 0;                                                     \
+		r__ = vfs_read(file__, buf__, cap__, &done__);                         \
+		vfs_close(file__);                                                     \
+		if (r__ != VFS_OK) {                                                   \
+			kprintf("cat: failed to read %s status=%d\n", (path_), r__);       \
+			kfree(buf__);                                                      \
+			break;                                                             \
+		}                                                                      \
+                                                                               \
+		buf__[done__] = '\0';                                                  \
+		kprintf("%s", buf__);                                                  \
+		if (done__ == 0 || buf__[done__ - 1] != '\n')                          \
+			kprintf("\n");                                                     \
+		kfree(buf__);                                                          \
+	} while (0)
+
 void test(void *)
 {
 	kprintf("init: Hello, World!\n");
+#if _DEBUG
+	kprintf("init: filesystem tree\n");
+	kprintf("%-10s %3s %11s %10s %4s %s\n", "mode", "lnk", "uid:gid", "size",
+			"perm", "path");
+	fs_list_recursive("/");
+#endif
+
 	kprintf("init: motd\n");
 	/* display motd */
+	CAT_FILE("/etc/motd");
+
+/* cat out all pci devices info */
+#if _DEBUG
 	{
-		vfs_file_t *file = NULL;
-		int r = vfs_open("/etc/motd", VFS_O_RDONLY, 0, &vfs_root_cred, &file);
+		vfs_node_t *dir = NULL;
+		int r = vfs_resolve("/dev/pci", &vfs_root_cred, &dir);
 		if (r != VFS_OK) {
-			kprintf("initrd: failed to open /etc/motd status=%d\n", r);
+			kprintf("pci: failed to open /dev/pci status=%d\n", r);
 			return;
 		}
 
-		char *buf = kzalloc(file->node->size);
-		size_t done = 0;
-		r = vfs_read(file, buf, file->node->size, &done);
-		vfs_close(file);
-		if (r != VFS_OK) {
-			kprintf("initrd: failed to read /etc/motd status=%d\n", r);
-			return;
-		}
+		for (size_t i = 0;; i++) {
+			vfs_dirent_t ent;
+			r = vfs_readdir(dir, i, &ent);
+			if (r == VFS_ERR_NOENT)
+				break;
+			if (r != VFS_OK) {
+				kprintf("pci: readdir /dev/pci[%zu] status=%d\n", i, r);
+				break;
+			}
 
-		buf[done] = '\0';
-		kprintf("\n%s", buf);
-		if (done == 0 || buf[done - 1] != '\n')
+			if (!strcmp(ent.name, "devices"))
+				continue;
+
+			char path[128];
+			r = fs_join_path("/dev/pci", ent.name, path, sizeof(path));
+			if (r != VFS_OK)
+				continue;
+
+			vfs_stat_t st;
+			r = vfs_stat(path, &vfs_root_cred, &st);
+			if (r != VFS_OK || !VFS_S_ISDIR(st.mode))
+				continue;
+
+			char info_path[160];
+			r = fs_join_path(path, "info", info_path, sizeof(info_path));
+			if (r != VFS_OK)
+				continue;
+
+			kprintf("%s:\n", info_path);
+			CAT_FILE(info_path);
 			kprintf("\n");
-		kfree(buf);
+		}
+
+		vfs_node_release(dir);
 	}
+#endif
+	sched_thread_exit(0);
 }
 
 void lyr_entry(void)
@@ -252,6 +414,10 @@ void lyr_entry(void)
 		sched_test();
 		log_info("entry", "Scheduler ok");
 	}
+
+	assert(driver_manager_init() == VFS_OK);
+	log_info("entry", "Driver manager ok");
+	ipc_test();
 
 	/* we are done, now launch init proc */
 	log_info("entry", "lyr-kernel " LYR_VERSION

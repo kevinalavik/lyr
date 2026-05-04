@@ -33,6 +33,7 @@
 
 #define VFS_S_ISREG(m) (((m) & VFS_S_IFMT) == VFS_S_IFREG)
 #define VFS_S_ISDIR(m) (((m) & VFS_S_IFMT) == VFS_S_IFDIR)
+#define VFS_S_ISCHR(m) (((m) & VFS_S_IFMT) == VFS_S_IFCHR)
 
 #define VFS_R_OK 4
 #define VFS_W_OK 2
@@ -75,6 +76,15 @@ typedef struct vfs_file vfs_file_t;
 typedef struct vfs_ops vfs_ops_t;
 
 typedef struct {
+	char name[VFS_NAME_MAX + 1];
+	vfs_mode_t mode;
+	vfs_uid_t uid;
+	vfs_gid_t gid;
+	uint64_t size;
+	uint32_t nlink;
+} vfs_dirent_t;
+
+typedef struct {
 	vfs_uid_t uid;
 	vfs_gid_t gid;
 	vfs_gid_t groups[VFS_SUPP_GROUP_MAX];
@@ -103,6 +113,7 @@ struct vfs_ops {
 				size_t *done);
 	int (*write)(vfs_node_t *node, uint64_t off, const void *buf, size_t len,
 				 size_t *done);
+	int (*readdir)(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 	int (*truncate)(vfs_node_t *node, uint64_t size);
 	int (*get_page)(vfs_node_t *node, uint64_t page_index, int for_write,
 					page_t **out);
@@ -136,12 +147,14 @@ void vfs_node_release(vfs_node_t *node);
 
 void vfs_init(vfs_node_t *root);
 vfs_node_t *vfs_root(void);
+int vfs_mount(const char *path, vfs_node_t *root, const vfs_cred_t *cred);
 int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out);
 int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 			 const vfs_cred_t *cred, vfs_file_t **out);
 int vfs_close(vfs_file_t *file);
 int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done);
 int vfs_write(vfs_file_t *file, const void *buf, size_t len, size_t *done);
+int vfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off);
 int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);
 int vfs_unlink(const char *path, const vfs_cred_t *cred);

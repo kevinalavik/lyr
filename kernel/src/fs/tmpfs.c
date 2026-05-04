@@ -32,6 +32,7 @@ static int tmpfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 					  size_t *done);
 static int tmpfs_write(vfs_node_t *node, uint64_t off, const void *buf,
 					   size_t len, size_t *done);
+static int tmpfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 static int tmpfs_truncate(vfs_node_t *node, uint64_t size);
 static int tmpfs_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 						  page_t **out);
@@ -45,6 +46,7 @@ static const vfs_ops_t tmpfs_ops = {
 	.rmdir = tmpfs_rmdir,
 	.read = tmpfs_read,
 	.write = tmpfs_write,
+	.readdir = tmpfs_readdir,
 	.truncate = tmpfs_truncate,
 	.get_page = tmpfs_get_page,
 	.release = tmpfs_release,
@@ -345,6 +347,33 @@ static int tmpfs_write(vfs_node_t *node, uint64_t off, const void *buf,
 	log_trace("tmpfs", "write node=%p off=%llu len=%zu done=%zu size=%llu",
 			  node, off, len, copied, node->size);
 	return VFS_OK;
+}
+
+static int tmpfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
+{
+	if (!VFS_S_ISDIR(dir_node->mode))
+		return VFS_ERR_NOTDIR;
+	if (!out)
+		return VFS_ERR_INVAL;
+
+	tmpfs_node_t *dir = _to_tmpfs(dir_node);
+	size_t i = 0;
+	for (tmpfs_node_t *child = dir->children; child; child = child->next) {
+		if (i++ != index)
+			continue;
+		size_t len = strlen(child->name);
+		if (len > VFS_NAME_MAX)
+			len = VFS_NAME_MAX;
+		memcpy(out->name, child->name, len);
+		out->name[len] = '\0';
+		out->mode = child->vnode.mode;
+		out->uid = child->vnode.uid;
+		out->gid = child->vnode.gid;
+		out->size = child->vnode.size;
+		out->nlink = child->vnode.nlink;
+		return VFS_OK;
+	}
+	return VFS_ERR_NOENT;
 }
 
 static int tmpfs_truncate(vfs_node_t *node, uint64_t size)

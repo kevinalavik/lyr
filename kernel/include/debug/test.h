@@ -14,6 +14,159 @@
 #include <dev/pit.h>
 #include <fs/vfs.h>
 #include <fs/tmpfs.h>
+#include <ipc/ipc.h>
+
+typedef struct {
+	uint32_t calls;
+	uint32_t notify_calls;
+	uint32_t last_type;
+	size_t last_in_len;
+} ipc_test_state_t;
+
+typedef struct {
+	uint32_t value;
+	char tag[8];
+} ipc_test_payload_t;
+
+static int ipc_test_handler(const ipc_msg_t *msg, void *ctx)
+{
+	ipc_test_state_t *state = ctx;
+	assert(msg);
+	assert(state);
+
+	state->calls++;
+	state->last_type = msg->type;
+	state->last_in_len = msg->in_len;
+
+	if (msg->kind == IPC_MSG_NOTIFY) {
+		state->notify_calls++;
+		return IPC_OK;
+	}
+
+	assert(msg->kind == IPC_MSG_CALL);
+	assert(msg->type == 0xC0DEu);
+	assert(msg->in);
+	assert(msg->in_len == sizeof(ipc_test_payload_t));
+	const ipc_test_payload_t *in = msg->in;
+	assert(in->value == 0x12345678u);
+	assert(memcmp(in->tag, "ipc", 4) == 0);
+
+	if (msg->out) {
+		assert(msg->out_len >= sizeof(ipc_test_payload_t));
+		ipc_test_payload_t *out = msg->out;
+		out->value = 0x87654321u;
+		memcpy(out->tag, "pong", 5);
+		if (msg->actual)
+			*msg->actual = sizeof(*out);
+	}
+
+	return IPC_OK;
+}
+
+static void ipc_test(void)
+{
+	log_debug("ipc_test", "starting");
+
+	ipc_test_state_t state = { 0 };
+	assert(ipc_endpoint_register(NULL, 0, ipc_test_handler, &state) ==
+		   IPC_ERR_INVAL);
+	assert(ipc_endpoint_register("", 0, ipc_test_handler, &state) ==
+		   IPC_ERR_INVAL);
+	assert(ipc_endpoint_register("test.ipc", 1, NULL, &state) ==
+		   IPC_ERR_INVAL);
+	assert(ipc_endpoint_register("test.ipc", 1, ipc_test_handler, &state) ==
+		   IPC_OK);
+	assert(ipc_endpoint_register("test.ipc", 1, ipc_test_handler, &state) ==
+		   IPC_ERR_EXIST);
+	vfs_stat_t st;
+	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) == VFS_OK);
+	assert(VFS_S_ISCHR(st.mode));
+	vfs_file_t *endpoint_file = NULL;
+	assert(vfs_open("/dev/ipc/test.ipc", VFS_O_RDONLY, 0, &vfs_root_cred,
+					&endpoint_file) == VFS_OK);
+	char endpoint_info[64];
+	size_t endpoint_info_len = 0;
+	assert(vfs_read(endpoint_file, endpoint_info, sizeof(endpoint_info) - 1,
+					&endpoint_info_len) == VFS_OK);
+	vfs_close(endpoint_file);
+	endpoint_info[endpoint_info_len] = '\0';
+	assert(strlen(endpoint_info) > 0);
+
+	ipc_test_payload_t in = { .value = 0x12345678u };
+	memcpy(in.tag, "ipc", 4);
+	ipc_test_payload_t out = { 0 };
+	size_t actual = 0;
+	ipc_msg_t msg = {
+		.kind = IPC_MSG_CALL,
+		.type = 0xC0DEu,
+		.in = &in,
+		.in_len = sizeof(in),
+		.out = &out,
+		.out_len = sizeof(out),
+		.actual = &actual,
+	};
+
+	assert(ipc_call("missing.ipc", &msg) == IPC_ERR_NOENT);
+	assert(ipc_call("test.ipc", &msg) == IPC_OK);
+	assert(state.calls == 1);
+	assert(state.last_type == 0xC0DEu);
+	assert(state.last_in_len == sizeof(in));
+	assert(actual == sizeof(out));
+	assert(out.value == 0x87654321u);
+	assert(memcmp(out.tag, "pong", 5) == 0);
+
+	assert(ipc_notify("test.ipc", 0xAA55u, &in, sizeof(in)) == IPC_OK);
+	assert(state.calls == 2);
+	assert(state.notify_calls == 1);
+	assert(state.last_type == 0xAA55u);
+
+	char snapshot[128];
+	assert(ipc_snapshot(snapshot, sizeof(snapshot)) == IPC_OK);
+	assert(strlen(snapshot) > 0);
+
+	ipc_shm_t *created = NULL;
+	assert(ipc_shm_create(NULL, sizeof(in), &created) == IPC_ERR_INVAL);
+	assert(ipc_shm_create("test.ipc.shm", sizeof(in), &created) == IPC_OK);
+	assert(created);
+	assert(created->size == sizeof(in));
+	assert(created->data);
+	memcpy(created->data, &in, sizeof(in));
+	assert(vfs_stat("/dev/shm/test.ipc.shm", &vfs_root_cred, &st) == VFS_OK);
+	assert(VFS_S_ISCHR(st.mode));
+
+	ipc_shm_t *opened = NULL;
+	assert(ipc_shm_open("missing.ipc.shm", &opened) == IPC_ERR_NOENT);
+	assert(ipc_shm_open("test.ipc.shm", &opened) == IPC_OK);
+	assert(opened == created);
+	ipc_test_payload_t *stored = opened->data;
+	assert(stored->value == 0x12345678u);
+	assert(memcmp(stored->tag, "ipc", 4) == 0);
+	vfs_file_t *shm_file = NULL;
+	assert(vfs_open("/dev/shm/test.ipc.shm", VFS_O_RDWR, 0, &vfs_root_cred,
+					&shm_file) == VFS_OK);
+	ipc_test_payload_t via_dev = { .value = 0xAABBCCDDu };
+	memcpy(via_dev.tag, "dev", 4);
+	size_t io_done = 0;
+	assert(vfs_write(shm_file, &via_dev, sizeof(via_dev), &io_done) ==
+		   VFS_OK);
+	assert(io_done == sizeof(via_dev));
+	assert(vfs_seek(shm_file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
+	memset(&via_dev, 0, sizeof(via_dev));
+	assert(vfs_read(shm_file, &via_dev, sizeof(via_dev), &io_done) ==
+		   VFS_OK);
+	vfs_close(shm_file);
+	assert(io_done == sizeof(via_dev));
+	assert(via_dev.value == 0xAABBCCDDu);
+	assert(memcmp(via_dev.tag, "dev", 4) == 0);
+	assert(ipc_shm_unlink("test.ipc.shm") == IPC_OK);
+	assert(vfs_stat("/dev/shm/test.ipc.shm", &vfs_root_cred, &st) ==
+		   VFS_ERR_NOENT);
+	assert(ipc_endpoint_unregister("test.ipc") == IPC_OK);
+	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) ==
+		   VFS_ERR_NOENT);
+
+	log_debug("ipc_test", "all tests passed");
+}
 
 typedef struct {
 	uint32_t calls;

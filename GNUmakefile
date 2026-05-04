@@ -5,7 +5,9 @@ QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd
 INITRD_IMAGE := initrd.cpio
+DRIVERS_ROOT := drivers
 INITRD_FILES := $(filter-out $(INITRD_IMAGE),$(shell find $(INITRD_ROOT) -type f -o -type d 2>/dev/null | LC_ALL=C sort))
+DRIVER_SYS_FILES := $(shell find $(DRIVERS_ROOT)/bin -type f -name '*.sys' 2>/dev/null | LC_ALL=C sort)
 
 HOST_CC := cc
 HOST_CFLAGS := -g -O2 -pipe
@@ -71,11 +73,15 @@ kernel/.deps-obtained:
 kernel: kernel/.deps-obtained
 	$(MAKE) -C kernel
 
+.PHONY: drivers
+drivers: kernel/.deps-obtained
+	$(MAKE) -C drivers
+
 .PHONY: FORCE
 FORCE:
 
-$(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES)
-	python3 utils/mkinitrd.py $(INITRD_ROOT) $@
+$(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers $(DRIVER_SYS_FILES)
+	python3 utils/mkinitrd.py $(INITRD_ROOT) $@ $(DRIVERS_ROOT)/bin:sys
 
 $(IMAGE_NAME).iso: limine/limine kernel $(INITRD_IMAGE)
 	rm -rf iso_root
@@ -110,9 +116,11 @@ $(IMAGE_NAME).hdd: limine/limine kernel
 .PHONY: clean
 clean:
 	$(MAKE) -C kernel clean
+	$(MAKE) -C drivers clean
 	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE)
 
 .PHONY: distclean
 distclean: clean
 	$(MAKE) -C kernel distclean
+	$(MAKE) -C drivers distclean
 	rm -rf limine edk2-ovmf

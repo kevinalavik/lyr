@@ -5,11 +5,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <mm/pfndb.h>
+#include <mm/paging.h>
+#include <mm/vmm.h>
+#include <sync/spinlock.h>
 
 #define SLAB_MIN 8u
 #define SLAB_MAX 2048u
 #define SLAB_ALIGN 8u
 #define NUM_CACHES 9u
+#define LARGE_REGION_BASE 0xffffffffb0000000ULL
 
 #define LARGE_MAGIC 0x4C524748ul
 
@@ -36,6 +40,8 @@ typedef struct {
 } lhdr_t;
 
 static cache_t caches[NUM_CACHES];
+static spinlock_t large_lock = SPINLOCK_INIT;
+static uint64_t next_large_base = LARGE_REGION_BASE;
 
 static inline size_t align_up(size_t v, size_t a)
 {
@@ -166,47 +172,40 @@ static void cache_free(cache_t *c, void *o)
 
 static void *large_alloc(size_t size)
 {
-	uint64_t npages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+	uint64_t total = size + PAGE_SIZE;
+	uint64_t npages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
 
-	uint64_t first_phys = (uint64_t)palloc_single();
-	if (!first_phys)
-		return NULL;
+	spinlock_acquire(&large_lock);
+	uint64_t base = next_large_base;
+	next_large_base += npages * PAGE_SIZE;
+	spinlock_release(&large_lock);
 
-	page_t *head = pfndb_phys_to_page(first_phys);
-	head->flags |= PAGE_LARGE_HEAD;
-
-	for (uint64_t i = 1; i < npages; i++) {
-		uint64_t phys = (uint64_t)palloc_single();
-		if (!phys)
+	for (uint64_t i = 0; i < npages; i++) {
+		page_t *page = palloc_page();
+		if (!page)
 			return NULL;
-
-		page_t *p = pfndb_phys_to_page(phys);
-		p->flags |= PAGE_LARGE_BODY;
+		map_page(kernel_ptable, base + i * PAGE_SIZE, page,
+				 VMM_PRESENT | VMM_WRITABLE | VMM_NX);
+		page_unref(page);
 	}
 
-	return PHYS_TO_VIRT(first_phys);
+	lhdr_t *hdr = (lhdr_t *)base;
+	hdr->magic = LARGE_MAGIC;
+	hdr->npages = npages;
+	return (void *)(base + PAGE_SIZE);
 }
 
 static void large_free(void *ptr)
 {
-	uint64_t phys = VIRT_TO_PHYS(ptr);
-	page_t *head = pfndb_phys_to_page(phys);
-
-	if (!(head->flags & PAGE_LARGE_HEAD))
+	lhdr_t *hdr = (lhdr_t *)((uintptr_t)ptr - PAGE_SIZE);
+	if (hdr->magic != LARGE_MAGIC)
 		return;
 
-	page_t *p = head;
-	while (p->flags & (PAGE_LARGE_HEAD | PAGE_LARGE_BODY)) {
-		page_t *next = p + 1;
-
-		p->flags &= ~(PAGE_LARGE_HEAD | PAGE_LARGE_BODY);
-		page_unref(p);
-
-		if (!(next->flags & PAGE_LARGE_BODY))
-			break;
-
-		p = next;
-	}
+	uint64_t base = (uint64_t)hdr;
+	uint64_t npages = hdr->npages;
+	hdr->magic = 0;
+	for (uint64_t i = 0; i < npages; i++)
+		unmap_page(kernel_ptable, base + i * PAGE_SIZE);
 }
 
 void kheap_init(void)
@@ -262,7 +261,7 @@ void *krealloc(void *ptr, size_t size)
 
 	lhdr_t *hdr = (lhdr_t *)((uintptr_t)ptr - PAGE_SIZE);
 	size_t old = (hdr->magic == LARGE_MAGIC) ?
-					 (size_t)(hdr->npages * PAGE_SIZE) :
+					 (size_t)((hdr->npages - 1) * PAGE_SIZE) :
 					 obj_to_slab(ptr)->obj_sz;
 
 	if (cache_idx(size) == cache_idx(old))

@@ -5,7 +5,14 @@
 
 const vfs_cred_t vfs_root_cred = { .uid = 0, .gid = 0, .umask = 0022 };
 
+typedef struct vfs_mount {
+	vfs_node_t *covered;
+	vfs_node_t *root;
+	struct vfs_mount *next;
+} vfs_mount_t;
+
 static vfs_node_t *root_node = NULL;
+static vfs_mount_t *mounts = NULL;
 
 static const vfs_cred_t *_cred_or_root(const vfs_cred_t *cred)
 {
@@ -80,6 +87,60 @@ vfs_node_t *vfs_root(void)
 	return root_node;
 }
 
+static vfs_node_t *_mounted_root(vfs_node_t *node)
+{
+	for (vfs_mount_t *mnt = mounts; mnt; mnt = mnt->next) {
+		if (mnt->covered == node)
+			return mnt->root;
+	}
+	return NULL;
+}
+
+static vfs_node_t *_follow_mount(vfs_node_t *node)
+{
+	vfs_node_t *mounted = _mounted_root(node);
+	if (!mounted)
+		return node;
+	vfs_node_ref(mounted);
+	vfs_node_release(node);
+	return mounted;
+}
+
+int vfs_mount(const char *path, vfs_node_t *root, const vfs_cred_t *cred)
+{
+	if (!path || !root)
+		return VFS_ERR_INVAL;
+
+	vfs_node_t *covered = NULL;
+	int r = vfs_resolve(path, cred, &covered);
+	if (r != VFS_OK)
+		return r;
+	if (!VFS_S_ISDIR(covered->mode) || !VFS_S_ISDIR(root->mode)) {
+		vfs_node_release(covered);
+		return VFS_ERR_NOTDIR;
+	}
+
+	for (vfs_mount_t *mnt = mounts; mnt; mnt = mnt->next) {
+		if (mnt->covered == covered) {
+			vfs_node_release(covered);
+			return VFS_ERR_EXIST;
+		}
+	}
+
+	vfs_mount_t *mnt = kzalloc(sizeof(*mnt));
+	if (!mnt) {
+		vfs_node_release(covered);
+		return VFS_ERR_NOMEM;
+	}
+	mnt->covered = covered;
+	vfs_node_ref(root);
+	mnt->root = root;
+	mnt->next = mounts;
+	mounts = mnt;
+	log_info("vfs", "mounted node=%p on %s covered=%p", root, path, covered);
+	return VFS_OK;
+}
+
 int vfs_access(vfs_node_t *node, const vfs_cred_t *cred, int mask)
 {
 	cred = _cred_or_root(cred);
@@ -127,6 +188,7 @@ int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
 
 	vfs_node_t *cur = root_node;
 	vfs_node_ref(cur);
+	cur = _follow_mount(cur);
 
 	const char *p = _skip_slashes(path);
 	if (*p == '\0') {
@@ -161,6 +223,7 @@ int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
 			return r;
 
 		cur = next;
+		cur = _follow_mount(cur);
 		p = _skip_slashes(p);
 	}
 
@@ -367,6 +430,18 @@ int vfs_write(vfs_file_t *file, const void *buf, size_t len, size_t *done)
 	log_trace("vfs", "write node=%p off=%llu len=%zu done=%zu status=%d",
 			  file->node, off, len, n, r);
 	return r;
+}
+
+int vfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out)
+{
+	if (!dir || !out)
+		return VFS_ERR_INVAL;
+	if (!VFS_S_ISDIR(dir->mode))
+		return VFS_ERR_NOTDIR;
+	if (!dir->ops || !dir->ops->readdir)
+		return VFS_ERR_NOSYS;
+	memset(out, 0, sizeof(*out));
+	return dir->ops->readdir(dir, index, out);
 }
 
 int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off)
