@@ -229,32 +229,36 @@ __attribute__((unused)) static void fs_list_recursive(const char *path)
                                                                                \
 		buf__[done__] = '\0';                                                  \
 		kprintf("%s", buf__);                                                  \
-		if (done__ == 0 || buf__[done__ - 1] != '\n')                          \
-			kprintf("\n");                                                     \
 		kfree(buf__);                                                          \
 	} while (0)
 
 void test(void *)
 {
-	kprintf("init: Hello, World!\n");
+#define ANSI_GRAY "\x1b[38;2;120;120;120m"
+#define ANSI_RESET "\x1b[0m"
+#define INIT_LOG(fmt, ...) \
+	kprintf(ANSI_GRAY "init: " fmt ANSI_RESET, ##__VA_ARGS__)
+
+	CAT_FILE("/etc/banner");
+	kprintf("\n");
+
+	INIT_LOG("Hello, World!\n");
+	INIT_LOG("motd\n");
+	CAT_FILE("/etc/motd");
+
 #if _DEBUG
-	kprintf("init: filesystem tree\n");
+	INIT_LOG("filesystem tree\n");
 	kprintf("%-10s %3s %11s %10s %4s %s\n", "mode", "lnk", "uid:gid", "size",
 			"perm", "path");
 	fs_list_recursive("/");
 #endif
 
-	kprintf("init: motd\n");
-	/* display motd */
-	CAT_FILE("/etc/motd");
-
-/* cat out all pci devices info */
 #if _DEBUG
 	{
 		vfs_node_t *dir = NULL;
 		int r = vfs_resolve("/dev/pci", &vfs_root_cred, &dir);
 		if (r != VFS_OK) {
-			kprintf("pci: failed to open /dev/pci status=%d\n", r);
+			INIT_LOG("pci: failed to open /dev/pci status=%d\n", r);
 			return;
 		}
 
@@ -264,7 +268,7 @@ void test(void *)
 			if (r == VFS_ERR_NOENT)
 				break;
 			if (r != VFS_OK) {
-				kprintf("pci: readdir /dev/pci[%zu] status=%d\n", i, r);
+				INIT_LOG("pci: readdir /dev/pci[%zu] status=%d\n", i, r);
 				break;
 			}
 
@@ -286,7 +290,7 @@ void test(void *)
 			if (r != VFS_OK)
 				continue;
 
-			kprintf("%s:\n", info_path);
+			INIT_LOG("%s:\n", info_path);
 			CAT_FILE(info_path);
 			kprintf("\n");
 		}
@@ -294,6 +298,8 @@ void test(void *)
 		vfs_node_release(dir);
 	}
 #endif
+
+	INIT_LOG("no shell, exiting.\n");
 	sched_thread_exit(0);
 }
 
@@ -389,8 +395,9 @@ void lyr_entry(void)
 	/* ACPI */
 	LIMINE_REQUIRE(rsdp_request);
 	acpi_init(rsdp_request.response->address);
-#if _DEBUG
 	acpi_dump_tables();
+	log_info("entry", "ACPI ok");
+#if _DEBUG
 	bgrt_init(fb); /* fun thing to test */
 #endif
 	madt_init();

@@ -16,10 +16,10 @@
 #define _LYRTERM_LINE_PADDING_X 0
 #define _LYRTERM_LINE_WIDTH (_LYRTERM_FONT_WIDTH + _LYRTERM_LINE_PADDING_X)
 
-#define _LYRTERM_MARGIN_X 10
-#define _LYRTERM_MARGIN_Y 10
+#define _LYRTERM_MARGIN_X 0
+#define _LYRTERM_MARGIN_Y 0
 
-#define ANSI_MAX_PARAMS 8
+#define ANSI_MAX_PARAMS 16
 #define LYRTERM_Q_SIZE 8192
 #define LYRTERM_DRAIN_BUDGET 256
 
@@ -140,6 +140,21 @@ static inline uint32_t pack_color(uint32_t rgb)
 
 	return (r << red_mask_shift) | (g << green_mask_shift) |
 		   (b << blue_mask_shift);
+}
+
+static inline uint8_t clamp_u8(int v)
+{
+	if (v < 0)
+		return 0;
+	if (v > 255)
+		return 255;
+	return (uint8_t)v;
+}
+
+static inline uint32_t rgb_color(int r, int g, int b)
+{
+	return pack_color(((uint32_t)clamp_u8(r) << 16) |
+					  ((uint32_t)clamp_u8(g) << 8) | ((uint32_t)clamp_u8(b)));
 }
 
 static inline void write_pixel(uint32_t x, uint32_t y, uint32_t packed)
@@ -353,6 +368,20 @@ static void ansi_handle_sgr(int *params, int nparams)
 			current_fg = pack_color(ansi_colors_bright[p - 90]);
 		} else if (p >= 100 && p <= 107) {
 			current_bg = pack_color(ansi_colors_bright[p - 100]);
+		} else if ((p == 38 || p == 48) && i + 1 < nparams) {
+			bool is_fg = p == 38;
+			int mode = params[++i];
+
+			if (mode == 2 && i + 3 < nparams) {
+				int r = params[++i];
+				int g = params[++i];
+				int b = params[++i];
+
+				if (is_fg)
+					current_fg = rgb_color(r, g, b);
+				else
+					current_bg = rgb_color(r, g, b);
+			}
 		}
 	}
 }
