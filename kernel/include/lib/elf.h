@@ -72,8 +72,7 @@ typedef struct {
 } elf_image_t;
 
 typedef void *(*elf_alloc_section_t)(uint64_t size, uint64_t align, void *ctx);
-typedef int (*elf_resolve_symbol_t)(const char *name, uint64_t *out,
-									void *ctx);
+typedef int (*elf_resolve_symbol_t)(const char *name, uint64_t *out, void *ctx);
 
 int elf_load_relocatable(elf_image_t *image, uint8_t *file, size_t file_size,
 						 elf_alloc_section_t alloc, void *alloc_ctx,

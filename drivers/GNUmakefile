@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-DRIVERS := pci dummy
+DRIVERS := pci
 OUTPUT_DIR := bin
 OBJ_DIR := obj
 

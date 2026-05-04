@@ -16,6 +16,7 @@
 #define SHF_ALLOC 0x2
 #define SHT_SYMTAB 2
 #define SHT_RELA 4
+#define SHT_NOBITS 8
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
 #define R_X86_64_PLT32 4
@@ -72,11 +73,13 @@ static int elf_load_sections(elf_image_t *image, const elf64_ehdr_t *ehdr,
 		uint8_t *mem = alloc ? alloc(sh->sh_size, align, alloc_ctx) : NULL;
 		if (!mem)
 			return VFS_ERR_NOMEM;
-		if (sh->sh_offset &&
-			!range_ok(image->file_size, sh->sh_offset, sh->sh_size))
-			return VFS_ERR_INVAL;
-		if (sh->sh_offset)
+		if (sh->sh_type == SHT_NOBITS) {
+			memset(mem, 0, (size_t)sh->sh_size);
+		} else {
+			if (!range_ok(image->file_size, sh->sh_offset, sh->sh_size))
+				return VFS_ERR_INVAL;
 			memcpy(mem, image->file + sh->sh_offset, (size_t)sh->sh_size);
+		}
 		image->sections[i] = mem;
 	}
 	return VFS_OK;
@@ -124,8 +127,8 @@ int elf_symbol_value(const elf_image_t *image, size_t index, uint64_t *out,
 }
 
 static int elf_apply_rela(elf_image_t *image, const elf64_rela_t *rela,
-						  uint8_t *target,
-						  elf_resolve_symbol_t resolve, void *resolve_ctx)
+						  uint8_t *target, elf_resolve_symbol_t resolve,
+						  void *resolve_ctx)
 {
 	uint64_t s = 0;
 	int r = elf_symbol_value(image, (size_t)ELF64_R_SYM(rela->r_info), &s,
@@ -176,14 +179,14 @@ static int elf_apply_relocations(elf_image_t *image,
 		size_t count = (size_t)(sh->sh_size / sh->sh_entsize);
 		uint8_t *target = image->sections[sh->sh_info];
 		for (size_t j = 0; j < count; j++) {
-			int r = elf_apply_rela(image, &relas[j], target, resolve,
-								   resolve_ctx);
+			int r =
+				elf_apply_rela(image, &relas[j], target, resolve, resolve_ctx);
 			if (r != VFS_OK) {
-				log_err("elf", "relocation failed symbol=%s status=%d",
-						elf_symbol_name(
-							image,
-							&image->symtab[ELF64_R_SYM(relas[j].r_info)]),
-						r);
+				log_err(
+					"elf", "relocation failed symbol=%s status=%d",
+					elf_symbol_name(
+						image, &image->symtab[ELF64_R_SYM(relas[j].r_info)]),
+					r);
 				return r;
 			}
 		}

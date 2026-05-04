@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot
+QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot 
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd

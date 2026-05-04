@@ -194,8 +194,8 @@ static const char *skip_dev_prefix(const char *path)
 {
 	if (!path)
 		return NULL;
-	if (path[0] == '/' && path[1] == 'd' && path[2] == 'e' &&
-		path[3] == 'v' && (path[4] == '/' || path[4] == '\0'))
+	if (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'v' &&
+		(path[4] == '/' || path[4] == '\0'))
 		return path + 4;
 	return path;
 }
@@ -416,8 +416,8 @@ int devfs_register_chr(const char *path, vfs_mode_t mode, devfs_read_t read,
 		return VFS_ERR_EXIST;
 
 	devfs_node_t *node = NULL;
-	r = create_child(parent, name, name_len,
-					 VFS_S_IFCHR | (mode & VFS_S_PERM), &node);
+	r = create_child(parent, name, name_len, VFS_S_IFCHR | (mode & VFS_S_PERM),
+					 &node);
 	if (r != VFS_OK)
 		return r;
 	node->read = read;

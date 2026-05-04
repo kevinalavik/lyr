@@ -72,8 +72,7 @@ static void ipc_test(void)
 		   IPC_ERR_INVAL);
 	assert(ipc_endpoint_register("", 0, ipc_test_handler, &state) ==
 		   IPC_ERR_INVAL);
-	assert(ipc_endpoint_register("test.ipc", 1, NULL, &state) ==
-		   IPC_ERR_INVAL);
+	assert(ipc_endpoint_register("test.ipc", 1, NULL, &state) == IPC_ERR_INVAL);
 	assert(ipc_endpoint_register("test.ipc", 1, ipc_test_handler, &state) ==
 		   IPC_OK);
 	assert(ipc_endpoint_register("test.ipc", 1, ipc_test_handler, &state) ==
@@ -147,13 +146,11 @@ static void ipc_test(void)
 	ipc_test_payload_t via_dev = { .value = 0xAABBCCDDu };
 	memcpy(via_dev.tag, "dev", 4);
 	size_t io_done = 0;
-	assert(vfs_write(shm_file, &via_dev, sizeof(via_dev), &io_done) ==
-		   VFS_OK);
+	assert(vfs_write(shm_file, &via_dev, sizeof(via_dev), &io_done) == VFS_OK);
 	assert(io_done == sizeof(via_dev));
 	assert(vfs_seek(shm_file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
 	memset(&via_dev, 0, sizeof(via_dev));
-	assert(vfs_read(shm_file, &via_dev, sizeof(via_dev), &io_done) ==
-		   VFS_OK);
+	assert(vfs_read(shm_file, &via_dev, sizeof(via_dev), &io_done) == VFS_OK);
 	vfs_close(shm_file);
 	assert(io_done == sizeof(via_dev));
 	assert(via_dev.value == 0xAABBCCDDu);
@@ -162,8 +159,7 @@ static void ipc_test(void)
 	assert(vfs_stat("/dev/shm/test.ipc.shm", &vfs_root_cred, &st) ==
 		   VFS_ERR_NOENT);
 	assert(ipc_endpoint_unregister("test.ipc") == IPC_OK);
-	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) ==
-		   VFS_ERR_NOENT);
+	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) == VFS_ERR_NOENT);
 
 	log_debug("ipc_test", "all tests passed");
 }
@@ -1013,11 +1009,6 @@ static void vmm_test(vas_t *vas)
 static void vfs_tmpfs_test(vas_t *vas)
 {
 	log_debug("vfs_tmpfs_test", "starting");
-
-	vfs_node_t *root = tmpfs_create_root(0755, 0, 0);
-	assert(root);
-	vfs_init(root);
-	assert(vfs_root() == root);
 
 	vfs_cred_t user = { .uid = 1000, .gid = 1000, .umask = 0022 };
 	vfs_cred_t other = { .uid = 2000, .gid = 2000, .umask = 0022 };

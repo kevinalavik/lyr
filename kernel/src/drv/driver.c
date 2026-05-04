@@ -50,11 +50,12 @@ static const kernel_symbol_t kernel_symbols[] = {
 	{ "vfs_close", (uint64_t)vfs_close },
 	{ "vfs_open", (uint64_t)vfs_open },
 	{ "vfs_read", (uint64_t)vfs_read },
+	{ "kzalloc", (uint64_t)kzalloc },
+	{ "kfree", (uint64_t)kfree },
 };
 
 static const char *boot_driver_paths[] = {
 	"/sys/pci.sys",
-	"/sys/dummy.sys",
 };
 
 static spinlock_t driver_lock = SPINLOCK_INIT;
@@ -320,14 +321,7 @@ static int driver_load_module(const char *path)
 
 int driver_manager_init(void)
 {
-	extern int ipc_init(void);
-	int r = devfs_init();
-	if (r != VFS_OK)
-		return r;
-	r = ipc_init();
-	if (r != VFS_OK)
-		return r;
-	r = vfs_mkdir("/run", 0755, &vfs_root_cred);
+	int r = vfs_mkdir("/run", 0755, &vfs_root_cred);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 	r = vfs_mkdir("/run/drivers", 0755, &vfs_root_cred);

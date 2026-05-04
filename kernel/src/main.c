@@ -28,6 +28,8 @@
 #include <fs/initrd.h>
 #include <fs/vfs.h>
 #include <drv/driver.h>
+#include <fs/devfs.h>
+#include <ipc/ipc.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -315,7 +317,7 @@ void lyr_entry(void)
 	struct limine_framebuffer *fb =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_dark);
+	lyrterm_apply_theme(&lyrterm_theme_dracula);
 	lyrterm_init(fb);
 
 	/* etc requests */
@@ -351,8 +353,8 @@ void lyr_entry(void)
 #endif
 
 	pmm_init();
-	log_info("entry", "PMM ok");
 	pmm_test();
+	log_info("entry", "PMM ok");
 
 	/* paging */
 	LIMINE_REQUIRE(kernel_address_request);
@@ -362,17 +364,25 @@ void lyr_entry(void)
 	paging_init();
 	assert(kernel_ptable != NULL);
 	paging_test();
+	log_info("entry", "Paging ok");
 
 	/* heap / VMM */
 	kheap_init();
-	log_info("entry", "Heap ok");
 	heap_test();
+	log_info("entry", "Heap ok");
 
 	_lyr_kernel_vas = vas_adopt(kernel_ptable);
 	log_trace("entry", "switched to kernel page table");
 	vas_switch(_lyr_kernel_vas);
-	log_info("entry", "VMM ok");
 	vmm_test(_lyr_kernel_vas);
+	log_info("entry", "VMM ok");
+
+	vfs_node_t *root = tmpfs_create_root(0755, 0, 0);
+	assert(root);
+	vfs_init(root);
+	devfs_init();
+	assert(vfs_root() == root);
+	log_info("entry", "VFS ok");
 	vfs_tmpfs_test(_lyr_kernel_vas);
 	assert(initrd_load_from_limine(module_request.response) == VFS_OK);
 
@@ -415,9 +425,12 @@ void lyr_entry(void)
 		log_info("entry", "Scheduler ok");
 	}
 
+	ipc_init();
+	ipc_test();
+	log_info("entry", "IPC ok");
+
 	assert(driver_manager_init() == VFS_OK);
 	log_info("entry", "Driver manager ok");
-	ipc_test();
 
 	/* we are done, now launch init proc */
 	log_info("entry", "lyr-kernel " LYR_VERSION
