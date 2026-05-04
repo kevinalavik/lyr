@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-DRIVERS := pci
+DRIVERS := pci e1000
 OUTPUT_DIR := bin
 OBJ_DIR := obj
 

@@ -23,6 +23,7 @@
 #include <sys/acpi/madt.h>
 #include <sys/apic.h>
 #include <dev/pit.h>
+#include <dev/device.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
 #include <fs/initrd.h>
@@ -30,6 +31,7 @@
 #include <drv/driver.h>
 #include <fs/devfs.h>
 #include <ipc/ipc.h>
+#include <net/net.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -221,6 +223,8 @@ void test(void *)
 	INIT_LOG("Hello, World!\n");
 	INIT_LOG("motd\n");
 	CAT_FILE("/etc/motd");
+	INIT_LOG("netdevs\n");
+	CAT_FILE("/dev/net/devices");
 
 #if _DEBUG
 	INIT_LOG("filesystem tree\n");
@@ -274,6 +278,54 @@ void test(void *)
 		vfs_node_release(dir);
 	}
 #endif
+
+	{
+		uint32_t target = net_ipv4(8, 8, 8, 8);
+		const uint16_t ident = 0x4c59;
+		const uint16_t count = 4;
+		uint16_t sent = 0;
+		uint16_t received = 0;
+		uint64_t min_ms = (uint64_t)-1;
+		uint64_t max_ms = 0;
+		uint64_t total_ms = 0;
+		char target_ip[24];
+
+		net_ipv4_format(target, target_ip, sizeof(target_ip));
+		INIT_LOG("PING %s: 40 data bytes\n", target_ip);
+		for (uint16_t seq = 1; seq <= count; seq++) {
+			net_ping_result_t reply;
+			sent++;
+			int r = net_ping_echo(target, ident, seq, 1500, &reply);
+			if (r == VFS_OK) {
+				received++;
+				if (reply.time_ms < min_ms)
+					min_ms = reply.time_ms;
+				if (reply.time_ms > max_ms)
+					max_ms = reply.time_ms;
+				total_ms += reply.time_ms;
+				char reply_ip[24];
+				net_ipv4_format(reply.src_ip, reply_ip, sizeof(reply_ip));
+				INIT_LOG("%u bytes from %s: icmp_seq=%u ttl=%u time=%llums\n",
+						 reply.bytes, reply_ip, reply.seq, reply.ttl,
+						 (unsigned long long)reply.time_ms);
+			} else {
+				INIT_LOG("Request timeout for icmp_seq %u (status=%d)\n", seq,
+						 r);
+			}
+		}
+
+		uint16_t lost = sent - received;
+		uint16_t loss = sent ? (uint16_t)((lost * 100) / sent) : 0;
+		INIT_LOG("--- %s ping statistics ---\n", target_ip);
+		INIT_LOG("%u packets transmitted, %u received, %u%% packet loss\n",
+				 sent, received, loss);
+		if (received) {
+			INIT_LOG("round-trip min/avg/max = %llu/%llu/%llums\n",
+					 (unsigned long long)min_ms,
+					 (unsigned long long)(total_ms / received),
+					 (unsigned long long)max_ms);
+		}
+	}
 
 	INIT_LOG("no shell, exiting.\n");
 	sched_thread_exit(0);
@@ -367,6 +419,11 @@ void lyr_entry(void)
 	log_info("entry", "VFS ok");
 	vfs_tmpfs_test(_lyr_kernel_vas);
 	assert(initrd_load_from_limine(module_request.response) == VFS_OK);
+
+	assert(device_system_init() == VFS_OK);
+	log_info("entry", "Device system ok");
+	assert(net_init() == VFS_OK);
+	log_info("entry", "Network core ok");
 
 	/* ACPI */
 	LIMINE_REQUIRE(rsdp_request);

@@ -1,0 +1,51 @@
+#ifndef _LYR_NET_NET_H
+#define _LYR_NET_NET_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define NETDEV_NAME_MAX 15
+#define NET_ETH_ALEN 6
+#define NET_MTU 1500
+
+typedef struct netdev netdev_t;
+
+typedef struct {
+	uint32_t src_ip;
+	uint16_t seq;
+	uint16_t bytes;
+	uint8_t ttl;
+	uint64_t time_ms;
+} net_ping_result_t;
+
+typedef int (*netdev_send_t)(netdev_t *dev, const void *frame, size_t len);
+typedef int (*netdev_poll_t)(netdev_t *dev);
+
+struct netdev {
+	char name[NETDEV_NAME_MAX + 1];
+	uint8_t mac[NET_ETH_ALEN];
+	uint32_t ipv4_addr;
+	uint32_t ipv4_gateway;
+	uint32_t ipv4_netmask;
+	uint32_t dhcp_server;
+	uint16_t mtu;
+	int dhcp_configured;
+	netdev_send_t send;
+	netdev_poll_t poll;
+	void *driver_data;
+	netdev_t *next;
+};
+
+int net_init(void);
+int netdev_register(netdev_t *dev);
+void net_receive_frame(netdev_t *dev, const void *frame, size_t len);
+int net_dhcp_configure(uint64_t timeout_ms);
+int net_ping_echo(uint32_t dst_ip, uint16_t ident, uint16_t seq,
+				  uint64_t timeout_ms, net_ping_result_t *result);
+int net_ping(uint32_t dst_ip, uint16_t ident, uint16_t seq, uint64_t timeout_ms);
+uint32_t net_ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
+void net_ipv4_format(uint32_t ip, char *out, size_t len);
+uint32_t net_default_ipv4(void);
+uint32_t net_default_gateway(void);
+
+#endif /* _LYR_NET_NET_H */

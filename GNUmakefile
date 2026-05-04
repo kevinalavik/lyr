@@ -1,6 +1,8 @@
 .SUFFIXES:
 
-QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot 
+TAP_IF ?= tap0
+QEMU_NET_USER := -device e1000,netdev=net0 -netdev user,id=net0
+QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot $(QEMU_NET_USER)
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd
@@ -28,6 +30,12 @@ run: $(IMAGE_NAME).iso
 		-cdrom $(IMAGE_NAME).iso \
 		-boot d \
 		$(QEMUFLAGS)
+
+# to fix public IPs not working
+.PHONY: enable-usernet-icmp
+enable-usernet-icmp:
+	gid=$$(id -g); \
+	printf "%s %s\n" "$$gid" "$$gid" | sudo tee /proc/sys/net/ipv4/ping_group_range
 
 .PHONY: run-uefi
 run-uefi: edk2-ovmf $(IMAGE_NAME).iso

@@ -1,5 +1,6 @@
 #include <drv/driver.h>
 #include <debug/log.h>
+#include <dev/device.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
 #include <ipc/ipc.h>
@@ -11,6 +12,7 @@
 #include <mm/paging.h>
 #include <mm/pfndb.h>
 #include <mm/pmm.h>
+#include <net/net.h>
 #include <mm/vmm.h>
 #include <sched/sched.h>
 #include <sync/spinlock.h>
@@ -36,16 +38,25 @@ extern int npf_snprintf_(char *buffer, size_t bufsz, const char *format, ...);
 static const kernel_symbol_t kernel_symbols[] = {
 	{ "devfs_mkdir", (uint64_t)devfs_mkdir },
 	{ "devfs_register_chr", (uint64_t)devfs_register_chr },
+	{ "device_handler_register", (uint64_t)device_handler_register },
+	{ "device_register", (uint64_t)device_register },
 	{ "driver_log", (uint64_t)driver_log },
+	{ "get_phys", (uint64_t)get_phys },
 	{ "ipc_call", (uint64_t)ipc_call },
 	{ "ipc_endpoint_register", (uint64_t)ipc_endpoint_register },
 	{ "ipc_notify", (uint64_t)ipc_notify },
 	{ "ipc_shm_create", (uint64_t)ipc_shm_create },
 	{ "ipc_shm_open", (uint64_t)ipc_shm_open },
 	{ "kprintf", (uint64_t)kprintf },
+	{ "kernel_ptable", (uint64_t)&kernel_ptable },
+	{ "_lyr_hhdm_offset", (uint64_t)&_lyr_hhdm_offset },
+	{ "map_mmio", (uint64_t)map_mmio },
 	{ "memcpy", (uint64_t)memcpy },
 	{ "memset", (uint64_t)memset },
+	{ "net_receive_frame", (uint64_t)net_receive_frame },
+	{ "netdev_register", (uint64_t)netdev_register },
 	{ "npf_snprintf_", (uint64_t)npf_snprintf_ },
+	{ "palloc_single", (uint64_t)palloc_single },
 	{ "strlen", (uint64_t)strlen },
 	{ "vfs_close", (uint64_t)vfs_close },
 	{ "vfs_open", (uint64_t)vfs_open },
@@ -56,6 +67,7 @@ static const kernel_symbol_t kernel_symbols[] = {
 
 static const char *boot_driver_paths[] = {
 	"/sys/pci.sys",
+	"/sys/e1000.sys",
 };
 
 static spinlock_t driver_lock = SPINLOCK_INIT;

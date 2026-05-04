@@ -1,4 +1,5 @@
 #include <cpu/instr.h>
+#include <dev/device.h>
 #include <drv/driver.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
@@ -423,6 +424,25 @@ static int pci_publish_device(const pci_device_info_t *dev)
 							  (void *)dev);
 }
 
+static int pci_register_kernel_device(const pci_device_info_t *src)
+{
+	device_t dev;
+	memset(&dev, 0, sizeof(dev));
+	npf_snprintf(dev.name, sizeof(dev.name), "pci%02x%02x%u", src->bus,
+				 src->slot, src->function);
+	dev.bus_type = DEVICE_BUS_PCI;
+	dev.pci.bus = src->bus;
+	dev.pci.slot = src->slot;
+	dev.pci.function = src->function;
+	dev.pci.vendor_id = src->vendor_id;
+	dev.pci.device_id = src->device_id;
+	dev.pci.class_code = src->class_code;
+	dev.pci.subclass = src->subclass;
+	dev.pci.prog_if = src->prog_if;
+	dev.pci.revision = src->revision;
+	return device_register(&dev);
+}
+
 static void pci_log_devices(driver_t *driver)
 {
 	char logbuf[256];
@@ -478,6 +498,11 @@ static int pci_main(driver_t *driver)
 			driver_log(driver, "err", "failed to publish PCI device");
 			return r;
 		}
+		r = pci_register_kernel_device(&pci_devices.devices[i]);
+		if (r != 0 && r != VFS_ERR_EXIST) {
+			driver_log(driver, "err", "failed to register PCI kernel device");
+			return r;
+		}
 	}
 
 	return 0;
@@ -485,6 +510,7 @@ static int pci_main(driver_t *driver)
 
 static const char *const pci_imports[] = {
 	"devfs_mkdir",	 "devfs_register_chr",
+	"device_register",
 	"driver_log",	 "ipc_endpoint_register",
 	"kfree",		 "kzalloc",
 	"memcpy",		 "memset",
