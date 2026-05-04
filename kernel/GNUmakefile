@@ -71,13 +71,15 @@ override CFLAGS += \
     -mno-red-zone \
     -mcmodel=kernel \
     -Wno-unused-variable \
-    -Wno-unused-parameter
+    -Wno-unused-parameter \
+    -Wno-unused-but-set-variable
 
 override CPPFLAGS := \
     -I include \
     -I limine-protocol/include \
     -isystem freestnd-c-hdrs/include \
     -DLYR_VERSION=\"$(VERSION)\" \
+    -DLYR_KERNEL \
     $(CPPFLAGS) \
     -MMD \
     -MP

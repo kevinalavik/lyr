@@ -12,9 +12,14 @@
 #include <cpu/instr.h>
 #include <dev/async.h>
 #include <dev/pit.h>
+#include <dev/block.h>
 #include <fs/vfs.h>
 #include <fs/tmpfs.h>
+#include <fs/ext2.h>
 #include <ipc/ipc.h>
+#include <net/net.h>
+#include <util/kprintf.h>
+#include <sys/syscall.h>
 
 typedef struct {
 	uint32_t calls;
@@ -1268,9 +1273,10 @@ static void sched_test(void)
 		*user_counter = 0;
 
 		uint8_t program[] = {
-			0x48, 0xB8, 0,	  0,	0, 0, 0, 0, 0, 0, /* mov rax, data_va */
+			0x48, 0xB8, 0,	  0,		  0, 0, 0,
+			0,	  0,	0, /* mov rax, data_va */
 			0xF0, 0x48, 0xFF, 0x00, /* lock inc qword [rax] */
-			0x48, 0xC7, 0xC0, 0x3C, 0, 0, 0, /* mov rax, 60 */
+			0x48, 0xC7, 0xC0, (SYS_EXIT), 0, 0, 0, /* mov rax, SYS_EXIT */
 			0x48, 0x31, 0xFF, /* xor rdi, rdi */
 			0xCD, 0x80, /* int 0x80 */
 			0xEB, 0xFE, /* jmp $ */
@@ -1301,5 +1307,179 @@ static void sched_test(void)
 
 	log_debug("sched_test", "all tests passed");
 }
+
+#if _DEBUG
+
+#define INIT_SMOKE_LOG(fmt, ...) \
+	kprintf("\x1b[38;2;120;120;120minit-test: " fmt "\x1b[0m", ##__VA_ARGS__)
+
+static int init_smoke_join_path(const char *parent, const char *name, char *out,
+								size_t out_len)
+{
+	size_t parent_len = strlen(parent);
+	size_t name_len = strlen(name);
+	int need_slash = !(parent_len == 1 && parent[0] == '/');
+	size_t total = parent_len + (need_slash ? 1 : 0) + name_len;
+	if (total + 1 > out_len)
+		return VFS_ERR_NAMETOOLONG;
+
+	memcpy(out, parent, parent_len);
+	size_t pos = parent_len;
+	if (need_slash)
+		out[pos++] = '/';
+	memcpy(out + pos, name, name_len);
+	out[pos + name_len] = '\0';
+	return VFS_OK;
+}
+
+static char init_smoke_type_char(vfs_mode_t mode)
+{
+	if (VFS_S_ISDIR(mode))
+		return 'd';
+	if (VFS_S_ISCHR(mode))
+		return 'c';
+	if (VFS_S_ISREG(mode))
+		return '-';
+	return '?';
+}
+
+static void init_smoke_mode_string(vfs_mode_t mode, char out[11])
+{
+	out[0] = init_smoke_type_char(mode);
+	out[1] = (mode & VFS_S_IRUSR) ? 'r' : '-';
+	out[2] = (mode & VFS_S_IWUSR) ? 'w' : '-';
+	out[3] = (mode & VFS_S_IXUSR) ? 'x' : '-';
+	out[4] = (mode & VFS_S_IRGRP) ? 'r' : '-';
+	out[5] = (mode & VFS_S_IWGRP) ? 'w' : '-';
+	out[6] = (mode & VFS_S_IXGRP) ? 'x' : '-';
+	out[7] = (mode & VFS_S_IROTH) ? 'r' : '-';
+	out[8] = (mode & VFS_S_IWOTH) ? 'w' : '-';
+	out[9] = (mode & VFS_S_IXOTH) ? 'x' : '-';
+	out[10] = '\0';
+}
+
+static void init_smoke_list_recursive(const char *path)
+{
+	vfs_stat_t st;
+	int r = vfs_stat(path, &vfs_root_cred, &st);
+	if (r != VFS_OK) {
+		kprintf("? %s status=%s(%d)\n", path, vfs_err_name(r), r);
+		return;
+	}
+
+	char mode[11];
+	init_smoke_mode_string(st.mode, mode);
+	kprintf("%-10s %3u %5u:%-5u %10llu %04o %s\n", mode, st.nlink, st.uid,
+			st.gid, st.size, st.mode & VFS_S_PERM, path);
+
+	if (!VFS_S_ISDIR(st.mode))
+		return;
+
+	vfs_node_t *dir = NULL;
+	r = vfs_resolve(path, &vfs_root_cred, &dir);
+	if (r != VFS_OK)
+		return;
+
+	for (size_t i = 0;; i++) {
+		vfs_dirent_t ent;
+		r = vfs_readdir(dir, i, &ent);
+		if (r == VFS_ERR_NOENT)
+			break;
+		if (r != VFS_OK)
+			break;
+		if (strcmp(ent.name, ".") == 0 || strcmp(ent.name, "..") == 0)
+			continue;
+
+		char child_path[256];
+		r = init_smoke_join_path(path, ent.name, child_path,
+								 sizeof(child_path));
+		if (r == VFS_OK)
+			init_smoke_list_recursive(child_path);
+	}
+
+	vfs_node_release(dir);
+}
+
+static void init_smoke_cat(const char *path)
+{
+	vfs_file_t *file = NULL;
+	int r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &file);
+	if (r != VFS_OK) {
+		INIT_SMOKE_LOG("cat %s failed status=%s(%d)\n", path, vfs_err_name(r),
+					   r);
+		return;
+	}
+
+	size_t cap = file->node->size ? file->node->size : 4096;
+	char *buf = kzalloc(cap + 1);
+	if (!buf) {
+		vfs_close(file);
+		return;
+	}
+
+	size_t done = 0;
+	r = vfs_read(file, buf, cap, &done);
+	vfs_close(file);
+	if (r == VFS_OK) {
+		buf[done] = '\0';
+		kprintf("%s", buf);
+	}
+	kfree(buf);
+}
+
+static void init_smoke_print_ip_addr(void)
+{
+	size_t idx = 1;
+	for (netdev_t *dev = net_first_dev(); dev; dev = dev->next, idx++) {
+		uint32_t broadcast = dev->ipv4_addr | ~dev->ipv4_netmask;
+		char ip[24];
+		char brd[24];
+		net_ipv4_format(dev->ipv4_addr, ip, sizeof(ip));
+		net_ipv4_format(broadcast, brd, sizeof(brd));
+
+		kprintf("%zu: %s: <%s,BROADCAST,MULTICAST> mtu %u\n", idx, dev->name,
+				dev->link_up ? "UP,LOWER_UP" : "DOWN", dev->mtu);
+		if (dev->ipv4_addr)
+			kprintf("    inet %s brd %s scope global %s\n", ip, brd, dev->name);
+	}
+}
+
+static void init_smoke_mount_disk(void)
+{
+	block_device_t *disk = block_find("nvme0n1");
+	if (!disk) {
+		INIT_SMOKE_LOG("mount /dev/nvme0n1 on /mnt: no block device\n");
+		return;
+	}
+	int r = ext2_mount(disk, "/mnt");
+	INIT_SMOKE_LOG("mount /dev/nvme0n1 on /mnt type ext2 status=%s(%d)\n",
+				   vfs_err_name(r), r);
+}
+
+static void init_smoke_test(void)
+{
+	INIT_SMOKE_LOG("banner\n");
+	init_smoke_cat("/etc/banner");
+	kprintf("\n");
+
+	INIT_SMOKE_LOG("motd\n");
+	init_smoke_cat("/etc/motd");
+
+	INIT_SMOKE_LOG("block devices\n");
+	init_smoke_mount_disk();
+	init_smoke_cat("/dev/mounts");
+
+	INIT_SMOKE_LOG("netdevs\n");
+	init_smoke_cat("/dev/net/devices");
+	init_smoke_cat("/dev/net/routes");
+	init_smoke_print_ip_addr();
+
+	INIT_SMOKE_LOG("filesystem tree\n");
+	kprintf("%-10s %3s %11s %10s %4s %s\n", "mode", "lnk", "uid:gid", "size",
+			"perm", "path");
+	init_smoke_list_recursive("/");
+}
+
+#endif
 
 #endif // _LYR_DEBUG_TEST_H

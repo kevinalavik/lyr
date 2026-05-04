@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct vas vas_t;
+
 #define ELF_EI_NIDENT 16
 #define ELF_SHN_UNDEF 0
 
@@ -61,6 +63,17 @@ typedef struct {
 } elf64_rela_t;
 
 typedef struct {
+	elf64_word_t p_type;
+	elf64_word_t p_flags;
+	elf64_off_t p_offset;
+	elf64_addr_t p_vaddr;
+	elf64_addr_t p_paddr;
+	elf64_xword_t p_filesz;
+	elf64_xword_t p_memsz;
+	elf64_xword_t p_align;
+} elf64_phdr_t;
+
+typedef struct {
 	uint8_t *file;
 	size_t file_size;
 	void **sections;
@@ -85,5 +98,6 @@ int elf_find_symbol_value(const elf_image_t *image, const char *name,
 						  void *resolve_ctx);
 int elf_find_defined_symbol_value(const elf_image_t *image, const char *name,
 								  uint64_t *out);
+int elf_load_user_executable(vas_t *vas, const char *path, uint64_t *entry_out);
 
 #endif /* _LYR_LIB_ELF_H */

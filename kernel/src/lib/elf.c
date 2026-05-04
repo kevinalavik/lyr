@@ -1,9 +1,13 @@
 #include <lib/elf.h>
 #include <debug/log.h>
 #include <fs/vfs.h>
+#include <lib/align.h>
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <mm/page.h>
+#include <mm/paging.h>
+#include <mm/pfndb.h>
+#include <mm/vmm.h>
 
 #define ELFMAG0 0x7f
 #define ELFMAG1 'E'
@@ -12,7 +16,11 @@
 #define ELFCLASS64 2
 #define ELFDATA2LSB 1
 #define ET_REL 1
+#define ET_EXEC 2
 #define EM_X86_64 62
+#define PT_LOAD 1
+#define PF_X 0x1
+#define PF_W 0x2
 #define SHF_ALLOC 0x2
 #define SHT_SYMTAB 2
 #define SHT_RELA 4
@@ -51,6 +59,23 @@ static int elf_validate(const elf64_ehdr_t *ehdr, size_t file_size)
 	if (ehdr->e_shentsize != sizeof(elf64_shdr_t) || ehdr->e_shnum == 0 ||
 		!range_ok(file_size, ehdr->e_shoff,
 				  (uint64_t)ehdr->e_shentsize * ehdr->e_shnum))
+		return VFS_ERR_INVAL;
+	return VFS_OK;
+}
+
+static int elf_validate_executable(const elf64_ehdr_t *ehdr, size_t file_size)
+{
+	if (file_size < sizeof(*ehdr))
+		return VFS_ERR_INVAL;
+	if (ehdr->e_ident[0] != ELFMAG0 || ehdr->e_ident[1] != ELFMAG1 ||
+		ehdr->e_ident[2] != ELFMAG2 || ehdr->e_ident[3] != ELFMAG3 ||
+		ehdr->e_ident[4] != ELFCLASS64 || ehdr->e_ident[5] != ELFDATA2LSB)
+		return VFS_ERR_INVAL;
+	if (ehdr->e_type != ET_EXEC || ehdr->e_machine != EM_X86_64)
+		return VFS_ERR_INVAL;
+	if (ehdr->e_phentsize != sizeof(elf64_phdr_t) || ehdr->e_phnum == 0 ||
+		!range_ok(file_size, ehdr->e_phoff,
+				  (uint64_t)ehdr->e_phentsize * ehdr->e_phnum))
 		return VFS_ERR_INVAL;
 	return VFS_OK;
 }
@@ -244,4 +269,103 @@ int elf_find_defined_symbol_value(const elf_image_t *image, const char *name,
 		return elf_symbol_value(image, i, out, NULL, NULL);
 	}
 	return VFS_ERR_NOENT;
+}
+
+static int elf_load_segment(vas_t *vas, const uint8_t *file, size_t file_size,
+							const elf64_phdr_t *ph)
+{
+	if (ph->p_memsz < ph->p_filesz ||
+		!range_ok(file_size, ph->p_offset, ph->p_filesz))
+		return VFS_ERR_INVAL;
+	if (ph->p_memsz == 0)
+		return VFS_OK;
+
+	uint64_t seg_end = ph->p_vaddr + ph->p_memsz;
+	if (seg_end < ph->p_vaddr || ph->p_vaddr < VAS_USER_START ||
+		seg_end > VAS_USER_END)
+		return VFS_ERR_INVAL;
+
+	uint64_t map_start = ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE);
+	uint64_t map_end = ALIGN_UP(seg_end, PAGE_SIZE);
+	uint64_t map_len = map_end - map_start;
+	uint64_t flags = VMM_PRESENT | VMM_USER | VAD_FIXED;
+	if (ph->p_flags & PF_W)
+		flags |= VMM_WRITABLE;
+	if (!(ph->p_flags & PF_X))
+		flags |= VMM_NX;
+
+	uint64_t mapped = vas_map_anon(vas, map_start, map_len, flags);
+	if (mapped != map_start)
+		return VFS_ERR_NOMEM;
+
+	size_t copied = 0;
+	while (copied < ph->p_filesz) {
+		uint64_t va = ph->p_vaddr + copied;
+		uint64_t phys = get_phys(vas->pml4, va);
+		if (!phys)
+			return VFS_ERR_INVAL;
+
+		size_t page_off = (size_t)(va & (PAGE_SIZE - 1));
+		size_t chunk = PAGE_SIZE - page_off;
+		if (chunk > ph->p_filesz - copied)
+			chunk = ph->p_filesz - copied;
+
+		void *dst = PHYS_TO_VIRT(phys);
+		memcpy(dst, file + ph->p_offset + copied, chunk);
+		copied += chunk;
+	}
+
+	return VFS_OK;
+}
+
+int elf_load_user_executable(vas_t *vas, const char *path, uint64_t *entry_out)
+{
+	if (!vas || !path || !entry_out)
+		return VFS_ERR_INVAL;
+
+	vfs_stat_t st;
+	int r = vfs_stat(path, &vfs_root_cred, &st);
+	if (r != VFS_OK)
+		return r;
+	if (!VFS_S_ISREG(st.mode) || st.size == 0 || st.size > SIZE_MAX)
+		return VFS_ERR_INVAL;
+
+	vfs_file_t *fp = NULL;
+	r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &fp);
+	if (r != VFS_OK)
+		return r;
+
+	uint8_t *file = kzalloc((size_t)st.size);
+	if (!file) {
+		vfs_close(fp);
+		return VFS_ERR_NOMEM;
+	}
+
+	size_t done = 0;
+	r = vfs_read(fp, file, (size_t)st.size, &done);
+	vfs_close(fp);
+	if (r != VFS_OK || done != (size_t)st.size) {
+		kfree(file);
+		return r == VFS_OK ? VFS_ERR_INVAL : r;
+	}
+
+	const elf64_ehdr_t *ehdr = (const elf64_ehdr_t *)file;
+	r = elf_validate_executable(ehdr, (size_t)st.size);
+	if (r == VFS_OK) {
+		const elf64_phdr_t *phdrs =
+			(const elf64_phdr_t *)(file + ehdr->e_phoff);
+		for (size_t i = 0; i < ehdr->e_phnum; i++) {
+			if (phdrs[i].p_type != PT_LOAD)
+				continue;
+			r = elf_load_segment(vas, file, (size_t)st.size, &phdrs[i]);
+			if (r != VFS_OK)
+				break;
+		}
+	}
+
+	if (r == VFS_OK)
+		*entry_out = ehdr->e_entry;
+
+	kfree(file);
+	return r;
 }

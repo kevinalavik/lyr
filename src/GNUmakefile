@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-DRIVERS := pci nvme e1000 websrv
+APPS := $(patsubst %/main.c,%,$(wildcard */main.c))
 OUTPUT_DIR := bin
 OBJ_DIR := obj
 
@@ -55,35 +55,46 @@ override CFLAGS += \
     -mno-sse \
     -mno-sse2 \
     -mno-red-zone \
-    -mcmodel=kernel \
-    -Wno-unused-variable \
-    -Wno-unused-parameter \
-    -Wno-unused-but-set-variable \
-    -Wno-maybe-uninitialized # probably stupid
+    -mcmodel=small \
+    -Wno-unused-parameter
 
 override CPPFLAGS := \
-    -I ../kernel/include \
+    -I include \
+    -I ../kernel/include/sys \
     -isystem ../kernel/freestnd-c-hdrs/include \
     $(CPPFLAGS) \
     -MMD \
     -MP
 
-SYS := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .sys,$(DRIVERS)))
-OBJ := $(addprefix $(OBJ_DIR)/,$(addsuffix /main.c.o,$(DRIVERS)))
-DEPS := $(OBJ:.o=.d)
+override LDFLAGS += \
+    -m elf_x86_64 \
+    -nostdlib \
+    -static \
+    -z max-page-size=0x1000 \
+    --gc-sections \
+    -T linker.ld
+
+BIN := $(addprefix $(OUTPUT_DIR)/,$(APPS))
+CRT0_OBJ := $(OBJ_DIR)/crt0.S.o
+APP_OBJ := $(addprefix $(OBJ_DIR)/,$(addsuffix /main.c.o,$(APPS)))
+DEPS := $(APP_OBJ:.o=.d) $(CRT0_OBJ:.o=.d)
 
 .PHONY: all
-all: $(SYS)
+all: $(BIN)
 
 -include $(DEPS)
 
-.SECONDARY: $(OBJ)
+.SECONDARY: $(CRT0_OBJ) $(APP_OBJ)
 
-$(OUTPUT_DIR)/%.sys: $(OBJ_DIR)/%/main.c.o GNUmakefile
+$(OUTPUT_DIR)/%: $(CRT0_OBJ) $(OBJ_DIR)/%/main.c.o GNUmakefile linker.ld
 	mkdir -p "$(dir $@)"
-	$(LD) -r $< -o $@
+	$(LD) $(LDFLAGS) $(CRT0_OBJ) $(OBJ_DIR)/$*/main.c.o -o $@
 
-$(OBJ_DIR)/%/main.c.o: %/main.c GNUmakefile
+$(OBJ_DIR)/%.c.o: %.c GNUmakefile
+	mkdir -p "$(dir $@)"
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/%.S.o: %.S GNUmakefile
 	mkdir -p "$(dir $@)"
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 

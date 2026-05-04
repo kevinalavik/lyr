@@ -13,9 +13,11 @@
 
 #define SCHED_TIMER_HZ 1000
 #define SCHED_KERNEL_STACK_SIZE (64 * 1024ULL)
+#define SCHED_FILE_MAX 16
 
 typedef int32_t pid_t;
 typedef int32_t tid_t;
+typedef struct vfs_file vfs_file_t;
 
 typedef enum {
 	TCB_READY = 0,
@@ -41,6 +43,7 @@ typedef struct pcb {
 	spinlock_t lock;
 	struct tcb *threads;
 	atomic_uint thread_count;
+	vfs_file_t *files[SCHED_FILE_MAX];
 	struct pcb *next;
 } pcb_t;
 
@@ -84,7 +87,7 @@ void sched_enter_user(uint64_t rip, uint64_t user_rsp)
 	__attribute__((noreturn));
 
 interrupt_frame_t *sched_tick(interrupt_frame_t *frame);
-interrupt_frame_t *sched_syscall(interrupt_frame_t *frame);
+interrupt_frame_t *sched_syscall_exit(interrupt_frame_t *frame, int status);
 void sched_thread_exit(int status) __attribute__((noreturn));
 void sched_exit(void) __attribute__((noreturn));
 

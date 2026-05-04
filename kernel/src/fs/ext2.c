@@ -156,8 +156,8 @@ static int publish_mounts(void)
 {
 	if (mounts_published)
 		return VFS_OK;
-	int r = devfs_register_chr("/dev/mounts", 0444, ext2_mounts_read, NULL,
-							   NULL);
+	int r =
+		devfs_register_chr("/dev/mounts", 0444, ext2_mounts_read, NULL, NULL);
 	if (r == VFS_OK || r == VFS_ERR_EXIST) {
 		mounts_published = 1;
 		return VFS_OK;
@@ -293,8 +293,8 @@ static int alloc_block(ext2_fs_t *fs, uint32_t *out)
 							 fs->sb.blocks_per_group, &bit);
 		if (r != VFS_OK)
 			continue;
-		uint32_t block = group * fs->sb.blocks_per_group + bit +
-						 fs->sb.first_data_block;
+		uint32_t block =
+			group * fs->sb.blocks_per_group + bit + fs->sb.first_data_block;
 		if (block >= fs->sb.blocks_count)
 			return VFS_ERR_INVAL;
 		fs->groups[group].free_blocks_count--;
@@ -531,8 +531,7 @@ static int ext2_write(vfs_node_t *vnode, uint64_t off, const void *buf,
 	return VFS_OK;
 }
 
-static int read_dir_chunk(ext2_node_t *dir, uint64_t off, void *buf,
-						  size_t len)
+static int read_dir_chunk(ext2_node_t *dir, uint64_t off, void *buf, size_t len)
 {
 	size_t done = 0;
 	if (!VFS_S_ISDIR(dir->vnode.mode))
@@ -751,8 +750,7 @@ static int ext2_create(vfs_node_t *vdir, const char *name, size_t len,
 }
 
 static int ext2_mkdir(vfs_node_t *vdir, const char *name, size_t len,
-					  vfs_mode_t mode, const vfs_cred_t *cred,
-					  vfs_node_t **out)
+					  vfs_mode_t mode, const vfs_cred_t *cred, vfs_node_t **out)
 {
 	if (!VFS_S_ISDIR(vdir->mode))
 		return VFS_ERR_NOTDIR;
@@ -998,7 +996,7 @@ int ext2_mount(block_device_t *dev, const char *path)
 	mounts = fs;
 	mount_count++;
 	publish_mounts();
-	log_info("ext2", "mounted %s on %s block_size=%u groups=%u", dev->name,
-			 fs->mount_path, fs->block_size, fs->group_count);
+	log_debug("ext2", "mounted %s on %s block_size=%u groups=%u", dev->name,
+			  fs->mount_path, fs->block_size, fs->group_count);
 	return VFS_OK;
 }

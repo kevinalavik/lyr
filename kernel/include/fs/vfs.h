@@ -150,6 +150,8 @@ void vfs_node_release(vfs_node_t *node);
 
 void vfs_init(vfs_node_t *root);
 vfs_node_t *vfs_root(void);
+int vfs_chroot(const char *path, const vfs_cred_t *cred);
+int vfs_change_root(const char *path, const vfs_cred_t *cred);
 int vfs_mount(const char *path, vfs_node_t *root, const vfs_cred_t *cred);
 int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out);
 int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,

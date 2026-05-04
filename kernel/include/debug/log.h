@@ -6,6 +6,7 @@
 
 #define _TRACE 0
 #define _DEBUG 0
+#define _INFO 1
 
 #ifndef LOG_USE_COLOR
 #define LOG_USE_COLOR 1
@@ -50,8 +51,12 @@
 #define log_debug(subsys, fmt, ...) (void)0
 #endif
 
+#if _INFO == 1
 #define log_info(subsys, fmt, ...) \
 	__log(LOG_INFO, LOG_CLR_INFO, subsys, fmt, ##__VA_ARGS__)
+#else
+#define log_info(subsys, fmt, ...) (void)0
+#endif
 
 #define log_warn(subsys, fmt, ...) \
 	__log(LOG_WARN, LOG_CLR_WARN, subsys, fmt, ##__VA_ARGS__)

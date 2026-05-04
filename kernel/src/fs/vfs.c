@@ -44,6 +44,7 @@ const char *vfs_err_name(int err)
 typedef struct vfs_mount {
 	vfs_node_t *covered;
 	vfs_node_t *root;
+	char path[512];
 	struct vfs_mount *next;
 } vfs_mount_t;
 
@@ -114,8 +115,8 @@ void vfs_node_release(vfs_node_t *node)
 void vfs_init(vfs_node_t *root)
 {
 	root_node = root;
-	log_info("vfs", "root initialized node=%p mode=0%o", root,
-			 root ? root->mode : 0);
+	log_debug("vfs", "root initialized node=%p mode=0%o", root,
+			  root ? root->mode : 0);
 }
 
 vfs_node_t *vfs_root(void)
@@ -123,8 +124,77 @@ vfs_node_t *vfs_root(void)
 	return root_node;
 }
 
-static vfs_node_t *_mounted_root(vfs_node_t *node)
+int vfs_chroot(const char *path, const vfs_cred_t *cred)
 {
+	vfs_node_t *new_root = NULL;
+	int r = vfs_resolve(path, cred, &new_root);
+	if (r != VFS_OK)
+		return r;
+	if (!VFS_S_ISDIR(new_root->mode)) {
+		vfs_node_release(new_root);
+		return VFS_ERR_NOTDIR;
+	}
+
+	root_node = new_root;
+	log_debug("vfs", "changed root to %s node=%p", path, new_root);
+	return VFS_OK;
+}
+
+int vfs_change_root(const char *path, const vfs_cred_t *cred)
+{
+	vfs_node_t *new_root = NULL;
+	int r = vfs_resolve(path, cred, &new_root);
+	if (r != VFS_OK)
+		return r;
+	if (!VFS_S_ISDIR(new_root->mode)) {
+		vfs_node_release(new_root);
+		return VFS_ERR_NOTDIR;
+	}
+
+	/*
+	 * After switching away from the initramfs/tmpfs root, stale absolute mount
+	 * paths such as /dev must not remain in the global mount table.  Otherwise
+	 * a later userspace mount("dev", "/dev", "devfs", ...) resolves /dev
+	 * through the old initramfs mount instead of the /dev directory in the new
+	 * root.
+	 *
+	 * The new root vnode has its own reference from vfs_resolve().  Drop all old
+	 * mount records, including the /newroot mount record, but do not release
+	 * new_root through root_node until some later chroot/change_root replaces it.
+	 */
+	root_node = new_root;
+
+	vfs_mount_t *mnt = mounts;
+	mounts = NULL;
+	while (mnt) {
+		vfs_mount_t *next = mnt->next;
+		vfs_node_release(mnt->covered);
+		vfs_node_release(mnt->root);
+		kfree(mnt);
+		mnt = next;
+	}
+
+	log_debug("vfs", "changed root to %s node=%p", path, new_root);
+	return VFS_OK;
+}
+
+static int _path_eq(const char *a, const char *b)
+{
+	return a && b && strcmp(a, b) == 0;
+}
+
+static vfs_node_t *_mounted_root(vfs_node_t *node, const char *path)
+{
+	/*
+	 * Prefer path matching.  Disk filesystems may allocate a fresh vnode for the
+	 * same directory on each lookup, so pointer equality alone misses mounts such
+	 * as /dev after change_root.  The newest mount is first in the list, which
+	 * gives the expected result when /dev is remounted in the real root.
+	 */
+	for (vfs_mount_t *mnt = mounts; mnt; mnt = mnt->next) {
+		if (_path_eq(mnt->path, path))
+			return mnt->root;
+	}
 	for (vfs_mount_t *mnt = mounts; mnt; mnt = mnt->next) {
 		if (mnt->covered == node)
 			return mnt->root;
@@ -132,14 +202,35 @@ static vfs_node_t *_mounted_root(vfs_node_t *node)
 	return NULL;
 }
 
-static vfs_node_t *_follow_mount(vfs_node_t *node)
+static vfs_node_t *_follow_mount_at(vfs_node_t *node, const char *path)
 {
-	vfs_node_t *mounted = _mounted_root(node);
+	vfs_node_t *mounted = _mounted_root(node, path);
 	if (!mounted)
 		return node;
 	vfs_node_ref(mounted);
 	vfs_node_release(node);
 	return mounted;
+}
+
+static int _append_component(char *path, size_t cap, const char *name,
+							 size_t len)
+{
+	if (!path || !name || cap == 0)
+		return VFS_ERR_INVAL;
+	size_t cur = strlen(path);
+	if (cur == 0)
+		return VFS_ERR_INVAL;
+	if (!(cur == 1 && path[0] == '/')) {
+		if (cur + 1 >= cap)
+			return VFS_ERR_NAMETOOLONG;
+		path[cur++] = '/';
+		path[cur] = '\0';
+	}
+	if (cur + len >= cap)
+		return VFS_ERR_NAMETOOLONG;
+	memcpy(path + cur, name, len);
+	path[cur + len] = '\0';
+	return VFS_OK;
 }
 
 int vfs_mount(const char *path, vfs_node_t *root, const vfs_cred_t *cred)
@@ -169,11 +260,18 @@ int vfs_mount(const char *path, vfs_node_t *root, const vfs_cred_t *cred)
 		return VFS_ERR_NOMEM;
 	}
 	mnt->covered = covered;
+	size_t mnt_path_len = strlen(path);
+	if (mnt_path_len >= sizeof(mnt->path)) {
+		vfs_node_release(covered);
+		kfree(mnt);
+		return VFS_ERR_NAMETOOLONG;
+	}
+	memcpy(mnt->path, path, mnt_path_len + 1);
 	vfs_node_ref(root);
 	mnt->root = root;
 	mnt->next = mounts;
 	mounts = mnt;
-	log_info("vfs", "mounted node=%p on %s covered=%p", root, path, covered);
+	log_debug("vfs", "mounted node=%p on %s covered=%p", root, path, covered);
 	return VFS_OK;
 }
 
@@ -224,7 +322,10 @@ int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
 
 	vfs_node_t *cur = root_node;
 	vfs_node_ref(cur);
-	cur = _follow_mount(cur);
+	char cur_path[512];
+	cur_path[0] = '/';
+	cur_path[1] = '\0';
+	cur = _follow_mount_at(cur, cur_path);
 
 	const char *p = _skip_slashes(path);
 	if (*p == '\0') {
@@ -258,8 +359,13 @@ int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
 		if (r != VFS_OK)
 			return r;
 
+		int pr = _append_component(cur_path, sizeof(cur_path), start, len);
+		if (pr != VFS_OK) {
+			vfs_node_release(next);
+			return pr;
+		}
 		cur = next;
-		cur = _follow_mount(cur);
+		cur = _follow_mount_at(cur, cur_path);
 		p = _skip_slashes(p);
 	}
 
@@ -437,8 +543,8 @@ int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done)
 		file->offset += n;
 	if (done)
 		*done = n;
-	log_trace("vfs", "read node=%p len=%zu done=%zu status=%s(%d)",
-			  file->node, len, n, vfs_err_name(r), r);
+	log_trace("vfs", "read node=%p len=%zu done=%zu status=%s(%d)", file->node,
+			  len, n, vfs_err_name(r), r);
 	return r;
 }
 

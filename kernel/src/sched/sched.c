@@ -4,6 +4,7 @@
 #include <debug/assert.h>
 #include <debug/log.h>
 #include <debug/panic.h>
+#include <fs/vfs.h>
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <mm/page.h>
@@ -412,6 +413,13 @@ static void process_destroy(pcb_t *process)
 	if (process->owns_vas && process->vas)
 		vas_destroy(process->vas);
 
+	for (size_t i = 0; i < SCHED_FILE_MAX; i++) {
+		if (!process->files[i])
+			continue;
+		vfs_close(process->files[i]);
+		process->files[i] = NULL;
+	}
+
 	id_free(&pid_pool, pid);
 	kfree(process);
 	log_debug("sched", "destroyed process pid=%d name=%s", pid, name);
@@ -796,7 +804,7 @@ interrupt_frame_t *sched_tick(interrupt_frame_t *frame)
 	return next_frame;
 }
 
-interrupt_frame_t *sched_syscall(interrupt_frame_t *frame)
+interrupt_frame_t *sched_syscall_exit(interrupt_frame_t *frame, int status)
 {
 	if (!sched_is_initialized() || !frame)
 		return frame;
@@ -805,14 +813,8 @@ interrupt_frame_t *sched_syscall(interrupt_frame_t *frame)
 	if (!cpu)
 		return frame;
 
-	if (frame->rax != 60) {
-		log_warn("sched", "unhandled syscall rax=%llu from tid=%d", frame->rax,
-				 cpu->current_thread ? cpu->current_thread->tid : -1);
-		return frame;
-	}
-
 	spinlock_acquire(&cpu->runq_lock);
-	thread_finish_current_locked(cpu, frame, (int)frame->rdi, " via int80");
+	thread_finish_current_locked(cpu, frame, status, " via int80");
 
 	interrupt_frame_t *next_frame = schedule_locked(cpu, frame, false);
 	spinlock_release(&cpu->runq_lock);

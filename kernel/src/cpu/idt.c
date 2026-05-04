@@ -3,6 +3,7 @@
 #include <debug/assert.h>
 #include <debug/panic.h>
 #include <stddef.h>
+#include <sys/syscall.h>
 #include <sys/apic.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
@@ -135,7 +136,7 @@ interrupt_frame_t *isr_common_handler(interrupt_frame_t *frame)
 		return frame;
 
 	if (frame->vector == 0x80)
-		return sched_syscall(frame);
+		return syscall_dispatch(frame);
 
 	if (frame->vector == APIC_TIMER_VECTOR) {
 		interrupt_frame_t *next = sched_tick(frame);

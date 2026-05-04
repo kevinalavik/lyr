@@ -8,7 +8,7 @@
 
 struct vfs_node;
 
-#define VAD_PROT_MASK 0x0000000000000FFFull
+#define VAD_PROT_MASK (0x0000000000000FFFull | VMM_NX)
 #define VAD_ANONYMOUS (1ULL << 12) /* backed by zero-filled PMM pages */
 #define VAD_FIXED (1ULL << 13) /* address was caller-specified     */
 #define VAD_MAPPED (1ULL << 14) /* pages already faulted/committed  */

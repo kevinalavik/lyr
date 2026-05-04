@@ -50,6 +50,17 @@ def collect_entries(root, output, prefix="", suffix=None):
     output = os.path.abspath(output)
     prefix = prefix.strip("/")
 
+    if os.path.isfile(root):
+        rel = prefix if prefix else os.path.basename(root)
+        if suffix and not rel.endswith(suffix):
+            return entries
+        st = os.lstat(root)
+        with open(root, "rb") as f:
+            data = f.read()
+        mode = stat.S_IFREG | stat.S_IMODE(st.st_mode)
+        entries.append((rel, mode, 0, 0, 1, data))
+        return entries
+
     for current, dirs, files in os.walk(root):
         dirs.sort()
         files.sort()

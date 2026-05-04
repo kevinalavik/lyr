@@ -290,12 +290,18 @@ static int devfs_mkdir_op(vfs_node_t *dir, const char *name, size_t len,
 
 static int devfs_unlink_op(vfs_node_t *dir, const char *name, size_t len)
 {
-	return remove_child(to_devfs(dir), name, len, 0);
+	(void)dir;
+	(void)name;
+	(void)len;
+	return VFS_ERR_PERM;
 }
 
 static int devfs_rmdir_op(vfs_node_t *dir, const char *name, size_t len)
 {
-	return remove_child(to_devfs(dir), name, len, 1);
+	(void)dir;
+	(void)name;
+	(void)len;
+	return VFS_ERR_PERM;
 }
 
 static int devfs_read_op(vfs_node_t *node, uint64_t off, void *buf, size_t len,
@@ -364,6 +370,17 @@ static void devfs_release(vfs_node_t *node)
 	kfree(dn);
 }
 
+int devfs_mount(const char *target)
+{
+	if (!devfs_root_node || !target)
+		return VFS_ERR_INVAL;
+
+	int r = vfs_mount(target, &devfs_root_node->vnode, &vfs_root_cred);
+	if (r == VFS_OK)
+		log_debug("devfs", "mounted on %s", target);
+	return r;
+}
+
 int devfs_init(void)
 {
 	if (devfs_root_node)
@@ -378,13 +395,12 @@ int devfs_init(void)
 		return VFS_ERR_NOMEM;
 	devfs_root_node->parent = devfs_root_node;
 
-	r = vfs_mount("/dev", &devfs_root_node->vnode, &vfs_root_cred);
+	r = devfs_mount("/dev");
 	if (r != VFS_OK)
 		return r;
 	devfs_register_chr("/dev/null", 0666, null_read, null_write, NULL);
 	devfs_register_chr("/dev/zero", 0666, zero_read, null_write, NULL);
 	devfs_register_chr("/dev/kmsg", 0220, NULL, kmsg_write, NULL);
-	log_info("devfs", "mounted on /dev");
 	return VFS_OK;
 }
 

@@ -105,7 +105,7 @@ void lyr_entry(void)
 	struct limine_framebuffer *fb =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_dracula);
+	lyrterm_apply_theme(&lyrterm_theme_dark);
 	lyrterm_init(fb);
 
 	/* etc requests */
@@ -166,9 +166,11 @@ void lyr_entry(void)
 	log_info("entry", "VMM ok");
 
 	vfs_node_t *root = tmpfs_create_root(0755, 0, 0);
+	log_info("entry", "tmpfs ok");
 	assert(root);
 	vfs_init(root);
 	devfs_init();
+	log_info("entry", "devfs ok");
 	assert(vfs_root() == root);
 	log_info("entry", "VFS ok");
 	vfs_tmpfs_test(_lyr_kernel_vas);
@@ -228,12 +230,14 @@ void lyr_entry(void)
 	assert(driver_manager_init() == VFS_OK);
 	log_info("entry", "Driver manager ok");
 
+#if _DEBUG
+	init_smoke_test();
+#endif
+
 	/* we are done, now launch init proc */
 	log_info("entry", "lyr-kernel " LYR_VERSION
 					  " done initializing, launching init proc");
 
-	pcb_t *p = sched_process_create("init", _lyr_kernel_vas);
-	assert(p);
-	sched_create_thread(p, "init", init_proc_entry, NULL);
+	assert(init_spawn("/early-init") == VFS_OK);
 	sched_exit(); /* finished */
 }

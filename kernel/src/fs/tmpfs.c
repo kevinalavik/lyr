@@ -171,8 +171,8 @@ vfs_node_t *tmpfs_create_root(vfs_mode_t mode, vfs_uid_t uid, vfs_gid_t gid)
 	if (!root)
 		return NULL;
 	root->parent = root;
-	log_info("tmpfs", "created root mode=0%o uid=%u gid=%u", root->vnode.mode,
-			 uid, gid);
+	log_debug("tmpfs", "created root mode=0%o uid=%u gid=%u", root->vnode.mode,
+			  uid, gid);
 	return &root->vnode;
 }
 
