@@ -7,16 +7,9 @@
 #include <mm/paging.h>
 #include <mm/vmm.h>
 #include <sched/sched.h>
-#include <cpu/instr.h>
 
 #define INIT_STACK_TOP 0x00007ffffff000ULL
 #define INIT_STACK_SIZE (16 * PAGE_SIZE)
-
-static void init_thread_placeholder(void *arg)
-{
-	(void)arg;
-	sched_exit();
-}
 
 int init_spawn(const char *path)
 {
@@ -53,11 +46,10 @@ int init_spawn(const char *path)
 	}
 
 	tcb_t *thread =
-		sched_create_thread(process, "init", init_thread_placeholder, NULL);
+		sched_create_user_thread(process, "init", entry, INIT_STACK_TOP - 16);
 	if (!thread)
 		return VFS_ERR_NOMEM;
 
-	sched_prepare_user(thread, entry, INIT_STACK_TOP - 16);
 	log_debug("init", "spawned %s entry=0x%llx stack=0x%llx", path, entry,
 			  INIT_STACK_TOP);
 	return VFS_OK;

@@ -697,6 +697,39 @@ tcb_t *sched_create_thread_on_cpu(pcb_t *process, const char *name,
 	return thread;
 }
 
+tcb_t *sched_create_user_thread(pcb_t *process, const char *name,
+								uint64_t rip, uint64_t user_rsp)
+{
+	if (!sched_is_initialized() || !process || !rip || !user_rsp ||
+		atomic_load_explicit(&process->dying, memory_order_acquire))
+		return NULL;
+
+	cpu_local_t *cpu = least_loaded_cpu();
+	if (!cpu)
+		return NULL;
+
+	uint64_t flags = irq_save();
+	tcb_t *thread = thread_alloc(process, name, NULL, NULL, false);
+	if (!thread) {
+		irq_restore(flags);
+		return NULL;
+	}
+
+	frame_init_user(thread, rip, user_rsp);
+
+	spinlock_acquire(&cpu->runq_lock);
+	runq_push_locked(cpu, thread);
+	atomic_fetch_add_explicit(&cpu->sched_load, 1, memory_order_release);
+	spinlock_release(&cpu->runq_lock);
+	irq_restore(flags);
+
+	log_trace("sched",
+			  "created user tid=%d pid=%d (%s) on cpu%u rip=0x%llx rsp=0x%llx load=%u",
+			  thread->tid, process->pid, thread->name, cpu->cpu_index, rip,
+			  user_rsp, atomic_load(&cpu->sched_load));
+	return thread;
+}
+
 tcb_t *sched_current(void)
 {
 	cpu_local_t *cpu = get_cpu_local();

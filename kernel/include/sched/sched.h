@@ -77,6 +77,8 @@ tcb_t *sched_create_thread(pcb_t *process, const char *name,
 tcb_t *sched_create_thread_on_cpu(pcb_t *process, const char *name,
 								  thread_entry_t entry, void *arg,
 								  cpu_local_t *cpu);
+tcb_t *sched_create_user_thread(pcb_t *process, const char *name,
+								uint64_t rip, uint64_t user_rsp);
 
 tcb_t *sched_current(void);
 bool sched_process_exists(pid_t pid);
