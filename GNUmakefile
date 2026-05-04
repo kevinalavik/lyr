@@ -1,7 +1,7 @@
 .SUFFIXES:
 
 TAP_IF ?= tap0
-QEMU_NET_USER := -device e1000,netdev=net0 -netdev user,id=net0
+QEMU_NET_USER := -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::8080-:80
 QEMUFLAGS := -m 2G -smp 4 -serial stdio -no-shutdown -no-reboot $(QEMU_NET_USER)
 
 override IMAGE_NAME := lyr

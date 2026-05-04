@@ -147,3 +147,39 @@ int strcmp(const char *a, const char *b)
 
 	return (unsigned char)*a - (unsigned char)*b;
 }
+
+int strncmp(const char *a, const char *b, size_t n)
+{
+	if (n == 0)
+		return 0;
+
+	while (n-- && *a && (*a == *b)) {
+		if (n == 0)
+			return 0;
+		a++;
+		b++;
+	}
+
+	return (unsigned char)*a - (unsigned char)*b;
+}
+
+char *strstr(const char *haystack, const char *needle)
+{
+	if (!*needle)
+		return (char *)haystack;
+
+	for (; *haystack; haystack++) {
+		const char *h = haystack;
+		const char *n = needle;
+
+		while (*h && *n && *h == *n) {
+			h++;
+			n++;
+		}
+
+		if (!*n)
+			return (char *)haystack;
+	}
+
+	return NULL;
+}

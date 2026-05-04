@@ -159,9 +159,8 @@ void net_dhcp_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
 	dhcp_ready = 1;
 }
 
-int net_dhcp_configure(uint64_t timeout_ms)
+int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 {
-	netdev_t *dev = net_default_dev();
 	if (!dev)
 		return VFS_ERR_NOENT;
 
@@ -210,4 +209,9 @@ int net_dhcp_configure(uint64_t timeout_ms)
 	log_info("net", "%s DHCP lease ip=%s gateway=%s server=%s", dev->name, ip,
 			 gw, srv);
 	return VFS_OK;
+}
+
+int net_dhcp_configure(uint64_t timeout_ms)
+{
+	return net_dhcp_configure_dev(net_default_dev(), timeout_ms);
 }

@@ -10,11 +10,14 @@ static int ping_ready;
 static uint16_t ping_ident;
 static uint16_t ping_seq;
 static uint32_t ping_src;
+static netdev_t *ping_dev;
 static uint64_t ping_started_tick;
 static net_ping_result_t ping_result;
 
-static int send_icmp_echo(netdev_t *dev, const uint8_t dst_mac[6],
-						  uint32_t dst_ip, uint16_t ident, uint16_t seq)
+static int send_icmp_echo_packet(netdev_t *dev, const uint8_t dst_mac[6],
+								 uint32_t src_ip, uint32_t dst_ip,
+								 uint8_t type, uint16_t ident, uint16_t seq,
+								 const uint8_t payload[32])
 {
 	uint8_t frame[sizeof(eth_hdr_t) + sizeof(ipv4_hdr_t) + sizeof(icmp_echo_t)];
 	eth_hdr_t *eth = (eth_hdr_t *)frame;
@@ -31,19 +34,30 @@ static int send_icmp_echo(netdev_t *dev, const uint8_t dst_mac[6],
 	ip->id = htons(ident);
 	ip->ttl = 64;
 	ip->proto = IP_PROTO_ICMP;
-	ip->src = htonl(dev->ipv4_addr);
+	ip->src = htonl(src_ip);
 	ip->dst = htonl(dst_ip);
 	ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
 
 	memset(icmp, 0, sizeof(*icmp));
-	icmp->type = ICMP_ECHO_REQUEST;
+	icmp->type = type;
 	icmp->ident = htons(ident);
 	icmp->seq = htons(seq);
-	for (size_t i = 0; i < sizeof(icmp->payload); i++)
-		icmp->payload[i] = (uint8_t)i;
+	if (payload) {
+		memcpy(icmp->payload, payload, sizeof(icmp->payload));
+	} else {
+		for (size_t i = 0; i < sizeof(icmp->payload); i++)
+			icmp->payload[i] = (uint8_t)i;
+	}
 	icmp->checksum = htons(net_checksum(icmp, sizeof(*icmp)));
 
 	return dev->send(dev, frame, sizeof(frame));
+}
+
+static int send_icmp_echo(netdev_t *dev, const uint8_t dst_mac[6],
+						  uint32_t dst_ip, uint16_t ident, uint16_t seq)
+{
+	return send_icmp_echo_packet(dev, dst_mac, dev->ipv4_addr, dst_ip,
+								 ICMP_ECHO_REQUEST, ident, seq, NULL);
 }
 
 void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
@@ -55,6 +69,15 @@ void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
 		return;
 
 	const icmp_echo_t *icmp = (const icmp_echo_t *)((const uint8_t *)ip + ihl);
+	if (icmp->type == ICMP_ECHO_REQUEST) {
+		send_icmp_echo_packet(dev, dev->mac, ntohl(ip->dst), ntohl(ip->src),
+							  ICMP_ECHO_REPLY, ntohs(icmp->ident),
+							  ntohs(icmp->seq), icmp->payload);
+		return;
+	}
+
+	if (dev != ping_dev)
+		return;
 	if (icmp->type == ICMP_ECHO_REPLY && ntohs(icmp->ident) == ping_ident &&
 		ntohs(icmp->seq) == ping_seq && ntohl(ip->src) == ping_src) {
 		uint64_t hz = pit_get_hz();
@@ -72,7 +95,16 @@ void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
 int net_ping_echo(uint32_t dst_ip, uint16_t ident, uint16_t seq,
 				  uint64_t timeout_ms, net_ping_result_t *result)
 {
-	netdev_t *dev = net_default_dev();
+	netdev_t *dev = net_route(dst_ip, NULL);
+	if (!dev)
+		return VFS_ERR_NOENT;
+	return net_ping_echo_dev(dev, dst_ip, ident, seq, timeout_ms, result);
+}
+
+int net_ping_echo_dev(netdev_t *dev, uint32_t dst_ip, uint16_t ident,
+					  uint16_t seq, uint64_t timeout_ms,
+					  net_ping_result_t *result)
+{
 	if (!dev)
 		return VFS_ERR_NOENT;
 
@@ -88,6 +120,7 @@ int net_ping_echo(uint32_t dst_ip, uint16_t ident, uint16_t seq,
 	ping_ident = ident;
 	ping_seq = seq;
 	ping_src = dst_ip;
+	ping_dev = dev;
 	ping_ready = 0;
 	memset(&ping_result, 0, sizeof(ping_result));
 	ping_started_tick = pit_get_ticks();

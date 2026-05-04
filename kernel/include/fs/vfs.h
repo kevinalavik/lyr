@@ -66,6 +66,7 @@
 #define VFS_ERR_NOSYS -38
 #define VFS_ERR_NOTEMPTY -39
 #define VFS_ERR_NAMETOOLONG -36
+#define VFS_ERR_TIMEOUT -37
 
 typedef uint32_t vfs_mode_t;
 typedef uint32_t vfs_uid_t;

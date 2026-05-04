@@ -1,4 +1,5 @@
 #include <drv/driver.h>
+#include <stdarg.h>
 #include <debug/log.h>
 #include <dev/device.h>
 #include <fs/devfs.h>
@@ -33,6 +34,8 @@ typedef struct module_symbol {
 } module_symbol_t;
 
 extern int npf_snprintf_(char *buffer, size_t bufsz, const char *format, ...);
+extern int npf_vsnprintf(char *buffer, size_t bufsz, const char *format,
+						 va_list vlist);
 
 /* public kernel symbols */
 static const kernel_symbol_t kernel_symbols[] = {
@@ -54,20 +57,40 @@ static const kernel_symbol_t kernel_symbols[] = {
 	{ "memcpy", (uint64_t)memcpy },
 	{ "memset", (uint64_t)memset },
 	{ "net_receive_frame", (uint64_t)net_receive_frame },
+	{ "net_tcp_listen", (uint64_t)net_tcp_listen },
+	{ "net_poll_all", (uint64_t)net_poll_all },
+	{ "net_default_dev", (uint64_t)net_default_dev },
+	{ "netdev_count", (uint64_t)netdev_count },
+	{ "net_ipv4_format", (uint64_t)net_ipv4_format },
 	{ "netdev_register", (uint64_t)netdev_register },
 	{ "npf_snprintf_", (uint64_t)npf_snprintf_ },
+	{ "npf_vsnprintf", (uint64_t)npf_vsnprintf },
 	{ "palloc_single", (uint64_t)palloc_single },
 	{ "strlen", (uint64_t)strlen },
+	{ "vfs_root_cred", (uint64_t)&vfs_root_cred },
 	{ "vfs_close", (uint64_t)vfs_close },
 	{ "vfs_open", (uint64_t)vfs_open },
 	{ "vfs_read", (uint64_t)vfs_read },
 	{ "kzalloc", (uint64_t)kzalloc },
 	{ "kfree", (uint64_t)kfree },
+	{ "driver_spawn_thread", (uint64_t)driver_spawn_thread },
+	{ "vfs_node_release", (uint64_t)vfs_node_release },
+	{ "vfs_readdir", (uint64_t)vfs_readdir },
+	{ "vfs_resolve", (uint64_t)vfs_resolve },
+	{ "vfs_stat", (uint64_t)vfs_stat },
+	{ "memmove", (uint64_t)memmove },
+	{ "strcmp", (uint64_t)strcmp },
+	{ "strncmp", (uint64_t)strncmp },
+	{ "strstr", (uint64_t)strstr },
+	{ "net_default_dev", (uint64_t)net_default_dev },
+	{ "net_ipv4_format", (uint64_t)net_ipv4_format },
+	{ "netdev_count", (uint64_t)netdev_count },
 };
 
 static const char *boot_driver_paths[] = {
 	"/sys/pci.sys",
 	"/sys/e1000.sys",
+	"/sys/websrv.sys",
 };
 
 static spinlock_t driver_lock = SPINLOCK_INIT;
@@ -251,6 +274,16 @@ void driver_log(driver_t *driver, const char *level, const char *message)
 	}
 }
 
+int driver_spawn_thread(driver_t *driver, const char *name,
+						driver_thread_entry_t entry, void *arg)
+{
+	if (!driver || !driver->process || !entry)
+		return VFS_ERR_INVAL;
+	tcb_t *thread =
+		sched_create_thread((pcb_t *)driver->process, name, entry, arg);
+	return thread ? VFS_OK : VFS_ERR_NOMEM;
+}
+
 static int driver_read_file(const char *path, uint8_t **out, size_t *out_size)
 {
 	vfs_file_t *file = NULL;
@@ -323,6 +356,7 @@ static int driver_load_module(const char *path)
 	if (!process)
 		return VFS_ERR_NOMEM;
 	driver->pid = process->pid;
+	driver->process = process;
 
 	log_debug("driver", "loaded ELF %s as %s pid=%d", path, driver->name,
 			  driver->pid);

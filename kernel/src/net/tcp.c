@@ -3,31 +3,222 @@
 #include <fs/vfs.h>
 #include <lib/nanoprintf.h>
 #include <lib/string.h>
+#include <mm/heap.h>
 
-static uint32_t tcp_remote_ip;
-static uint16_t tcp_remote_port;
-static uint16_t tcp_local_port;
-static uint32_t tcp_seq;
-static uint32_t tcp_ack;
-static uint8_t tcp_peer_mac[NET_ETH_ALEN];
-static char *tcp_rx_buf;
-static size_t tcp_rx_cap;
-static size_t tcp_rx_len;
-static int tcp_connected;
-static int tcp_closed;
-static int tcp_error;
+#define TCP_RST 0x04
 
-void net_tcp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
-					 size_t ip_len)
+#define TCP_PASSIVE_RESPONSE_CAP 32768
+
+typedef struct tcp_conn {
+	netdev_t *dev;
+	uint32_t remote_ip;
+	uint16_t remote_port;
+	uint16_t local_port;
+	uint32_t seq;
+	uint32_t ack;
+	uint8_t peer_mac[NET_ETH_ALEN];
+	char *rx_buf;
+	size_t rx_cap;
+	size_t rx_len;
+	net_tcp_listen_handler_t handler;
+	void *handler_ctx;
+	int passive;
+	int connected;
+	int closed;
+	int error;
+	int heap_allocated;
+	struct tcp_conn *next;
+} tcp_conn_t;
+
+typedef struct tcp_listener {
+	uint16_t port;
+	net_tcp_listen_handler_t handler;
+	void *ctx;
+	struct tcp_listener *next;
+} tcp_listener_t;
+
+static tcp_conn_t *tcp_conns;
+static tcp_listener_t *tcp_listeners;
+
+static void tcp_conn_add(tcp_conn_t *conn)
+{
+	conn->next = tcp_conns;
+	tcp_conns = conn;
+}
+
+static void tcp_conn_remove(tcp_conn_t *conn)
+{
+	tcp_conn_t **cur = &tcp_conns;
+	while (*cur) {
+		if (*cur == conn) {
+			*cur = conn->next;
+			conn->next = NULL;
+			return;
+		}
+		cur = &(*cur)->next;
+	}
+}
+
+static tcp_conn_t *tcp_conn_find(netdev_t *dev, const ipv4_hdr_t *ip,
+								 const tcp_hdr_t *tcp)
+{
+	uint32_t remote_ip = ntohl(ip->src);
+	uint16_t remote_port = ntohs(tcp->src_port);
+	uint16_t local_port = ntohs(tcp->dst_port);
+
+	for (tcp_conn_t *conn = tcp_conns; conn; conn = conn->next) {
+		if (conn->dev == dev && conn->remote_ip == remote_ip &&
+			conn->remote_port == remote_port && conn->local_port == local_port)
+			return conn;
+	}
+	return NULL;
+}
+
+static tcp_listener_t *tcp_listener_find(uint16_t port)
+{
+	for (tcp_listener_t *listener = tcp_listeners; listener;
+		 listener = listener->next) {
+		if (listener->port == port)
+			return listener;
+	}
+	return NULL;
+}
+
+static void tcp_send_reset(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
+						   const ipv4_hdr_t *ip, const tcp_hdr_t *tcp)
+{
+	uint8_t flags = TCP_RST;
+	uint32_t seq = 0;
+	uint32_t ack = ntohl(tcp->seq) + 1;
+	if (tcp->flags & TCP_ACK) {
+		seq = ntohl(tcp->ack);
+		ack = 0;
+		flags |= 0;
+	} else {
+		flags |= TCP_ACK;
+	}
+
+	net_send_ipv4_tcp(dev, src_mac, ntohl(ip->src), ntohs(tcp->dst_port),
+					  ntohs(tcp->src_port), seq, ack, flags, NULL, 0);
+}
+
+static void tcp_handle_listen_syn(netdev_t *dev,
+								  const uint8_t src_mac[NET_ETH_ALEN],
+								  const ipv4_hdr_t *ip, const tcp_hdr_t *tcp,
+								  tcp_listener_t *listener)
+{
+	tcp_conn_t *conn = kzalloc(sizeof(*conn));
+	if (!conn) {
+		tcp_send_reset(dev, src_mac, ip, tcp);
+		return;
+	}
+
+	conn->dev = dev;
+	conn->remote_ip = ntohl(ip->src);
+	conn->remote_port = ntohs(tcp->src_port);
+	conn->local_port = ntohs(tcp->dst_port);
+	conn->seq = 0x4c595300u + (uint32_t)(pit_get_ticks() & 0xffff);
+	conn->ack = ntohl(tcp->seq) + 1;
+	memcpy(conn->peer_mac, src_mac, NET_ETH_ALEN);
+	conn->handler = listener->handler;
+	conn->handler_ctx = listener->ctx;
+	conn->passive = 1;
+	conn->heap_allocated = 1;
+	tcp_conn_add(conn);
+
+	net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip, conn->local_port,
+					  conn->remote_port, conn->seq, conn->ack,
+					  TCP_SYN | TCP_ACK, NULL, 0);
+}
+
+static void tcp_close_passive(tcp_conn_t *conn)
+{
+	tcp_conn_remove(conn);
+	kfree(conn);
+}
+
+static int tcp_send_payload(tcp_conn_t *conn, const void *payload, size_t len)
+{
+	const uint8_t *p = payload;
+
+	while (len) {
+		size_t chunk = len > 1400 ? 1400 : len;
+		uint32_t seq = conn->seq;
+
+		conn->seq += (uint32_t)chunk;
+
+		int r = net_send_ipv4_tcp(conn->dev, conn->peer_mac, conn->remote_ip,
+								  conn->local_port, conn->remote_port, seq,
+								  conn->ack, TCP_PSH | TCP_ACK, p, chunk);
+		if (r != VFS_OK) {
+			conn->seq = seq;
+			return r;
+		}
+
+		p += chunk;
+		len -= chunk;
+	}
+
+	return VFS_OK;
+}
+
+static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
+									   size_t payload_len)
+{
+	char *response = kzalloc(TCP_PASSIVE_RESPONSE_CAP);
+	if (!response)
+		return;
+
+	size_t response_len = 0;
+
+	int r = conn->handler(
+		conn->dev, conn->remote_ip, conn->remote_port, payload, payload_len,
+		response, TCP_PASSIVE_RESPONSE_CAP, &response_len, conn->handler_ctx);
+	if (r != VFS_OK)
+		response_len = 0;
+
+	if (response_len > TCP_PASSIVE_RESPONSE_CAP)
+		response_len = TCP_PASSIVE_RESPONSE_CAP;
+
+	if (response_len) {
+		if (tcp_send_payload(conn, response, response_len) != VFS_OK)
+			response_len = 0;
+	}
+
+	kfree(response);
+
+	uint32_t fin_seq = conn->seq;
+	conn->seq++;
+
+	if (net_send_ipv4_tcp(conn->dev, conn->peer_mac, conn->remote_ip,
+						  conn->local_port, conn->remote_port, fin_seq,
+						  conn->ack, TCP_FIN | TCP_ACK, NULL, 0) != VFS_OK) {
+		conn->seq = fin_seq;
+		return;
+	}
+
+	conn->closed = 1;
+}
+
+void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
+					 const ipv4_hdr_t *ip, size_t ihl, size_t ip_len)
 {
 	if (ip_len < ihl + sizeof(tcp_hdr_t))
 		return;
 
 	const tcp_hdr_t *tcp = (const tcp_hdr_t *)((const uint8_t *)ip + ihl);
-	if (ntohs(tcp->src_port) != tcp_remote_port ||
-		ntohs(tcp->dst_port) != tcp_local_port ||
-		ntohl(ip->src) != tcp_remote_ip)
+	tcp_conn_t *conn = tcp_conn_find(dev, ip, tcp);
+	if (!conn) {
+		uint16_t local_port = ntohs(tcp->dst_port);
+		tcp_listener_t *listener = tcp_listener_find(local_port);
+		if (listener && (tcp->flags & TCP_SYN)) {
+			tcp_handle_listen_syn(dev, src_mac, ip, tcp, listener);
+			return;
+		}
+		if (!listener)
+			tcp_send_reset(dev, src_mac, ip, tcp);
 		return;
+	}
 
 	size_t tcp_hlen = (tcp->data_off >> 4) * 4;
 	if (tcp_hlen < sizeof(*tcp) || ip_len < ihl + tcp_hlen)
@@ -40,50 +231,227 @@ void net_tcp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
 	const uint8_t *payload = (const uint8_t *)tcp + tcp_hlen;
 
 	if (flags & 0x04) {
-		tcp_error = 1;
-		tcp_closed = 1;
+		conn->error = 1;
+		conn->closed = 1;
+		if (conn->passive)
+			tcp_close_passive(conn);
+		return;
+	}
+
+	if (conn->passive) {
+		if (!conn->connected && (flags & TCP_ACK) && ack == conn->seq + 1) {
+			conn->seq++;
+			conn->connected = 1;
+		}
+
+		if (!conn->connected || seq != conn->ack)
+			return;
+
+		if (payload_len) {
+			conn->ack += (uint32_t)payload_len;
+			tcp_handle_passive_payload(conn, payload, payload_len);
+		} else if (flags & TCP_FIN) {
+			conn->ack++;
+			net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
+							  conn->local_port, conn->remote_port, conn->seq,
+							  conn->ack, TCP_ACK, NULL, 0);
+			tcp_close_passive(conn);
+		} else if (conn->closed && (flags & TCP_ACK)) {
+			tcp_close_passive(conn);
+		}
 		return;
 	}
 
 	if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK) &&
-		ack == tcp_seq + 1) {
-		tcp_ack = seq + 1;
-		tcp_seq++;
-		tcp_connected = 1;
-		net_send_ipv4_tcp(dev, tcp_peer_mac, tcp_remote_ip, tcp_local_port,
-						  tcp_remote_port, tcp_seq, tcp_ack, TCP_ACK, NULL, 0);
+		ack == conn->seq + 1) {
+		conn->ack = seq + 1;
+		conn->seq++;
+		conn->connected = 1;
+		net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
+						  conn->local_port, conn->remote_port, conn->seq,
+						  conn->ack, TCP_ACK, NULL, 0);
 		return;
 	}
 
-	if (!tcp_connected || seq != tcp_ack)
+	if (!conn->connected || seq != conn->ack)
 		return;
 
 	if (payload_len) {
 		size_t copy = payload_len;
-		if (copy > tcp_rx_cap - tcp_rx_len)
-			copy = tcp_rx_cap - tcp_rx_len;
+		if (copy > conn->rx_cap - conn->rx_len)
+			copy = conn->rx_cap - conn->rx_len;
 		if (copy) {
-			memcpy(tcp_rx_buf + tcp_rx_len, payload, copy);
-			tcp_rx_len += copy;
+			memcpy(conn->rx_buf + conn->rx_len, payload, copy);
+			conn->rx_len += copy;
 		}
-		tcp_ack += (uint32_t)payload_len;
-		net_send_ipv4_tcp(dev, tcp_peer_mac, tcp_remote_ip, tcp_local_port,
-						  tcp_remote_port, tcp_seq, tcp_ack, TCP_ACK, NULL, 0);
-		if (tcp_rx_len == tcp_rx_cap)
-			tcp_closed = 1;
+		conn->ack += (uint32_t)payload_len;
+		net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
+						  conn->local_port, conn->remote_port, conn->seq,
+						  conn->ack, TCP_ACK, NULL, 0);
 	}
 
 	if (flags & TCP_FIN) {
-		tcp_ack++;
-		net_send_ipv4_tcp(dev, tcp_peer_mac, tcp_remote_ip, tcp_local_port,
-						  tcp_remote_port, tcp_seq, tcp_ack, TCP_ACK, NULL, 0);
-		tcp_closed = 1;
+		conn->ack++;
+		net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
+						  conn->local_port, conn->remote_port, conn->seq,
+						  conn->ack, TCP_ACK, NULL, 0);
+		conn->closed = 1;
 	}
 }
 
+int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
+					   net_tcp_conn_t **out, uint64_t timeout_ms)
+{
+	if (!dev || !dst_ip || !port || !out)
+		return VFS_ERR_INVAL;
+
+	uint32_t next_hop = dst_ip;
+	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask))
+		next_hop = dev->ipv4_gateway;
+
+	tcp_conn_t *conn = kzalloc(sizeof(*conn));
+	if (!conn)
+		return VFS_ERR_NOMEM;
+
+	conn->dev = dev;
+	conn->remote_ip = dst_ip;
+	conn->remote_port = port;
+	conn->local_port = 40000 + (uint16_t)(pit_get_ticks() & 0x3fff);
+	conn->seq = 0x4c595200u + (uint32_t)(pit_get_ticks() & 0xffff);
+	conn->heap_allocated = 1;
+
+	int r = net_arp_resolve(dev, next_hop, timeout_ms, conn->peer_mac);
+	if (r != VFS_OK) {
+		kfree(conn);
+		return r;
+	}
+
+	tcp_conn_add(conn);
+
+	r = net_send_ipv4_tcp(dev, conn->peer_mac, dst_ip, conn->local_port, port,
+						  conn->seq, 0, TCP_SYN, NULL, 0);
+	if (r != VFS_OK) {
+		tcp_conn_remove(conn);
+		kfree(conn);
+		return r;
+	}
+
+	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
+	net_poll_until(dev, until, &conn->connected);
+
+	if (!conn->connected || conn->error) {
+		tcp_conn_remove(conn);
+		kfree(conn);
+		return VFS_ERR_NOENT;
+	}
+
+	*out = conn;
+	return VFS_OK;
+}
+
+int net_tcp_connect(const char *host, uint16_t port, net_tcp_conn_t **out,
+					uint64_t timeout_ms)
+{
+	if (!host || !port || !out)
+		return VFS_ERR_INVAL;
+
+	netdev_t *dev = net_default_dev();
+	if (!dev)
+		return VFS_ERR_NOENT;
+
+	uint32_t ip = 0;
+	int r = net_dns_resolve_dev(dev, host, timeout_ms, &ip);
+	if (r != VFS_OK)
+		return r;
+
+	return net_tcp_connect_ip(dev, ip, port, out, timeout_ms);
+}
+
+int net_tcp_send(net_tcp_conn_t *conn_, const void *buf, size_t len,
+				 size_t *done, uint64_t timeout_ms)
+{
+	(void)timeout_ms;
+
+	tcp_conn_t *conn = conn_;
+
+	if (!conn || !buf)
+		return VFS_ERR_INVAL;
+
+	if (!conn->connected || conn->closed || conn->error)
+		return VFS_ERR_NOENT;
+
+	int r = tcp_send_payload(conn, buf, len);
+	if (r != VFS_OK)
+		return r;
+
+	if (done)
+		*done = len;
+
+	return VFS_OK;
+}
+
+int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
+				 uint64_t timeout_ms)
+{
+	tcp_conn_t *conn = conn_;
+
+	if (!conn || !buf || !cap)
+		return VFS_ERR_INVAL;
+
+	if (done)
+		*done = 0;
+
+	if (!conn->connected || conn->error)
+		return VFS_ERR_NOENT;
+
+	conn->rx_buf = buf;
+	conn->rx_cap = cap;
+	conn->rx_len = 0;
+
+	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
+
+	while (!conn->rx_len && !conn->closed && !conn->error &&
+		   pit_get_ticks() < until) {
+		net_poll_all();
+	}
+
+	if (conn->error)
+		return VFS_ERR_NOENT;
+
+	if (done)
+		*done = conn->rx_len;
+
+	if (conn->rx_len)
+		return VFS_OK;
+
+	return conn->closed ? VFS_ERR_NOENT : VFS_ERR_TIMEOUT;
+}
+
+void net_tcp_close(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	if (!conn)
+		return;
+
+	if (conn->connected && !conn->closed && !conn->error) {
+		uint32_t fin_seq = conn->seq;
+		conn->seq++;
+
+		net_send_ipv4_tcp(conn->dev, conn->peer_mac, conn->remote_ip,
+						  conn->local_port, conn->remote_port, fin_seq,
+						  conn->ack, TCP_FIN | TCP_ACK, NULL, 0);
+	}
+
+	tcp_conn_remove(conn);
+
+	if (conn->heap_allocated)
+		kfree(conn);
+}
+
 int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
-						 const char *path, char *buf, size_t len,
-						 size_t *done, uint64_t timeout_ms)
+						 const char *path, char *buf, size_t len, size_t *done,
+						 uint64_t timeout_ms)
 {
 	if (!dev || !host || !path || !buf || len == 0)
 		return VFS_ERR_INVAL;
@@ -92,50 +460,83 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask))
 		next_hop = dev->ipv4_gateway;
 
-	int r = net_arp_resolve(dev, next_hop, timeout_ms, tcp_peer_mac);
+	tcp_conn_t conn;
+	memset(&conn, 0, sizeof(conn));
+	conn.dev = dev;
+	conn.remote_ip = dst_ip;
+	conn.remote_port = 80;
+	conn.local_port = 40000 + (uint16_t)(pit_get_ticks() & 0x3fff);
+	conn.seq = 0x4c595200u + (uint32_t)(pit_get_ticks() & 0xffff);
+	conn.rx_buf = buf;
+	conn.rx_cap = len;
+
+	int r = net_arp_resolve(dev, next_hop, timeout_ms, conn.peer_mac);
 	if (r != VFS_OK)
 		return r;
 
-	tcp_remote_ip = dst_ip;
-	tcp_remote_port = 80;
-	tcp_local_port = 40000 + (uint16_t)(pit_get_ticks() & 0x3fff);
-	tcp_seq = 0x4c595200u + (uint32_t)(pit_get_ticks() & 0xffff);
-	tcp_ack = 0;
-	tcp_rx_buf = buf;
-	tcp_rx_cap = len;
-	tcp_rx_len = 0;
-	tcp_connected = 0;
-	tcp_closed = 0;
-	tcp_error = 0;
+	tcp_conn_add(&conn);
 
-	r = net_send_ipv4_tcp(dev, tcp_peer_mac, dst_ip, tcp_local_port, 80,
-						  tcp_seq, 0, TCP_SYN, NULL, 0);
+	r = net_send_ipv4_tcp(dev, conn.peer_mac, dst_ip, conn.local_port, 80,
+						  conn.seq, 0, TCP_SYN, NULL, 0);
 	if (r != VFS_OK)
-		return r;
+		goto out;
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
-	net_poll_until(dev, until, &tcp_connected);
-	if (!tcp_connected || tcp_error)
-		return VFS_ERR_NOENT;
+	net_poll_until(dev, until, &conn.connected);
+	if (!conn.connected || conn.error) {
+		r = VFS_ERR_NOENT;
+		goto out;
+	}
 
 	char req[512];
-	int n = npf_snprintf(req, sizeof(req),
-						 "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nUser-Agent: lyr/0\r\n\r\n",
-						 path, host);
-	if (n < 0 || (size_t)n >= sizeof(req))
-		return VFS_ERR_INVAL;
+	int n = npf_snprintf(
+		req, sizeof(req),
+		"GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nUser-Agent: lyr/0\r\n\r\n",
+		path, host);
+	if (n < 0 || (size_t)n >= sizeof(req)) {
+		r = VFS_ERR_INVAL;
+		goto out;
+	}
 
-	r = net_send_ipv4_tcp(dev, tcp_peer_mac, dst_ip, tcp_local_port, 80,
-						  tcp_seq, tcp_ack, TCP_PSH | TCP_ACK, req,
+	r = net_send_ipv4_tcp(dev, conn.peer_mac, dst_ip, conn.local_port, 80,
+						  conn.seq, conn.ack, TCP_PSH | TCP_ACK, req,
 						  (size_t)n);
 	if (r != VFS_OK)
-		return r;
-	tcp_seq += (uint32_t)n;
+		goto out;
+	conn.seq += (uint32_t)n;
 
 	until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
-	net_poll_until(dev, until, &tcp_closed);
-	if (tcp_error)
-		return VFS_ERR_NOENT;
+	net_poll_until(dev, until, &conn.closed);
+	if (conn.error) {
+		r = VFS_ERR_NOENT;
+		goto out;
+	}
 	if (done)
-		*done = tcp_rx_len;
-	return tcp_rx_len ? VFS_OK : VFS_ERR_NOENT;
+		*done = conn.rx_len;
+	r = conn.rx_len ? VFS_OK : VFS_ERR_NOENT;
+
+out:
+	tcp_conn_remove(&conn);
+	return r;
+}
+
+int net_tcp_listen(uint16_t port, net_tcp_listen_handler_t handler, void *ctx)
+{
+	if (!port || !handler)
+		return VFS_ERR_INVAL;
+
+	for (tcp_listener_t *listener = tcp_listeners; listener;
+		 listener = listener->next) {
+		if (listener->port == port)
+			return VFS_ERR_EXIST;
+	}
+
+	tcp_listener_t *listener = kzalloc(sizeof(*listener));
+	if (!listener)
+		return VFS_ERR_NOMEM;
+	listener->port = port;
+	listener->handler = handler;
+	listener->ctx = ctx;
+	listener->next = tcp_listeners;
+	tcp_listeners = listener;
+	return VFS_OK;
 }

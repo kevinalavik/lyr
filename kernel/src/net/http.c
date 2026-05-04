@@ -90,9 +90,34 @@ int net_http_get(const char *host, const char *path, char *buf, size_t len,
 	if (r != VFS_OK)
 		return r;
 
-	netdev_t *dev = net_default_dev();
+	netdev_t *dev = net_route(ip, NULL);
 	if (!dev)
 		return VFS_ERR_NOENT;
+
+	size_t got = 0;
+	r = net_tcp_http_request(dev, ip, host, path, buf, len, &got, timeout_ms);
+	if (done)
+		*done = got;
+	if (r != VFS_OK)
+		return r;
+	if (response)
+		return net_http_parse(buf, got, response);
+	return VFS_OK;
+}
+
+int net_http_get_dev(netdev_t *dev, const char *host, const char *path,
+					 char *buf, size_t len, size_t *done,
+					 net_http_response_t *response, uint64_t timeout_ms)
+{
+	if (done)
+		*done = 0;
+	if (!dev || !host || !path || !buf || len == 0)
+		return VFS_ERR_INVAL;
+
+	uint32_t ip = 0;
+	int r = net_dns_resolve_dev(dev, host, timeout_ms, &ip);
+	if (r != VFS_OK)
+		return r;
 
 	size_t got = 0;
 	r = net_tcp_http_request(dev, ip, host, path, buf, len, &got, timeout_ms);

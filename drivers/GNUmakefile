@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-DRIVERS := pci e1000
+DRIVERS := pci e1000 websrv
 OUTPUT_DIR := bin
 OBJ_DIR := obj
 

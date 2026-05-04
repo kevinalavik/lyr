@@ -34,6 +34,7 @@
 #define E1000_REG_RAL 0x5400
 #define E1000_REG_RAH 0x5404
 
+#define E1000_STATUS_LU (1u << 1)
 #define E1000_RCTL_EN (1u << 1)
 #define E1000_RCTL_BAM (1u << 15)
 #define E1000_RCTL_SECRC (1u << 26)
@@ -304,6 +305,7 @@ static int e1000_probe(device_t *dev, void *ctx)
 	memset(&nd, 0, sizeof(nd));
 	npf_snprintf(nd.name, sizeof(nd.name), "eth%u", next_netdev_id++);
 	memcpy(nd.mac, e->mac, sizeof(nd.mac));
+	nd.link_up = (erd(e, E1000_REG_STATUS) & E1000_STATUS_LU) != 0;
 	nd.mtu = NET_MTU;
 	nd.send = e1000_send;
 	nd.poll = e1000_poll;

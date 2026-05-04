@@ -13,5 +13,7 @@ size_t strlen(const char *str);
 
 char *strcpy(char *dest, const char *src);
 int strcmp(const char *a, const char *b);
+int strncmp(const char *a, const char *b, size_t n);
+char *strstr(const char *haystack, const char *needle);
 
 #endif // _LYR_LIB_STRING_H

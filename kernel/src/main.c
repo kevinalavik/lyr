@@ -14,10 +14,9 @@
 #include <mm/pmm.h>
 #include <mm/page.h>
 #include <mm/paging.h>
-#include <lib/string.h>
-#include <mm/heap.h>
 #include <mm/vmm.h>
 #include <debug/test.h>
+#include <init/init.h>
 #include <sys/acpi.h>
 #include <sys/acpi/bgrt.h>
 #include <sys/acpi/madt.h>
@@ -28,6 +27,7 @@
 #include <sched/sched.h>
 #include <fs/initrd.h>
 #include <fs/vfs.h>
+#include <fs/tmpfs.h>
 #include <drv/driver.h>
 #include <fs/devfs.h>
 #include <ipc/ipc.h>
@@ -83,282 +83,6 @@ __attribute__((used,
 
 __attribute__((used, section(".limine_requests_end"))) static volatile uint64_t
 	limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
-
-static char fs_type_char(vfs_mode_t mode)
-{
-	if (VFS_S_ISDIR(mode))
-		return 'd';
-	if (VFS_S_ISCHR(mode))
-		return 'c';
-	if (VFS_S_ISREG(mode))
-		return '-';
-	return '?';
-}
-
-static void fs_mode_string(vfs_mode_t mode, char out[11])
-{
-	out[0] = fs_type_char(mode);
-	out[1] = (mode & VFS_S_IRUSR) ? 'r' : '-';
-	out[2] = (mode & VFS_S_IWUSR) ? 'w' : '-';
-	out[3] = (mode & VFS_S_IXUSR) ? 'x' : '-';
-	out[4] = (mode & VFS_S_IRGRP) ? 'r' : '-';
-	out[5] = (mode & VFS_S_IWGRP) ? 'w' : '-';
-	out[6] = (mode & VFS_S_IXGRP) ? 'x' : '-';
-	out[7] = (mode & VFS_S_IROTH) ? 'r' : '-';
-	out[8] = (mode & VFS_S_IWOTH) ? 'w' : '-';
-	out[9] = (mode & VFS_S_IXOTH) ? 'x' : '-';
-	out[10] = '\0';
-}
-
-static int fs_join_path(const char *parent, const char *name, char *out,
-						size_t out_len)
-{
-	size_t parent_len = strlen(parent);
-	size_t name_len = strlen(name);
-	int need_slash = !(parent_len == 1 && parent[0] == '/');
-	size_t total = parent_len + (need_slash ? 1 : 0) + name_len;
-	if (total + 1 > out_len)
-		return VFS_ERR_NAMETOOLONG;
-
-	memcpy(out, parent, parent_len);
-	size_t pos = parent_len;
-	if (need_slash)
-		out[pos++] = '/';
-	memcpy(out + pos, name, name_len);
-	out[pos + name_len] = '\0';
-	return VFS_OK;
-}
-
-__attribute__((unused)) static void fs_list_recursive(const char *path)
-{
-	vfs_stat_t st;
-	int r = vfs_stat(path, &vfs_root_cred, &st);
-	if (r != VFS_OK) {
-		kprintf("? %s status=%d\n", path, r);
-		return;
-	}
-
-	char mode[11];
-	fs_mode_string(st.mode, mode);
-	kprintf("%-10s %3u %5u:%-5u %10llu %04o %s\n", mode, st.nlink, st.uid,
-			st.gid, st.size, st.mode & VFS_S_PERM, path);
-
-	if (!VFS_S_ISDIR(st.mode))
-		return;
-
-	vfs_node_t *dir = NULL;
-	r = vfs_resolve(path, &vfs_root_cred, &dir);
-	if (r != VFS_OK) {
-		kprintf("! cannot open dir %s status=%d\n", path, r);
-		return;
-	}
-
-	for (size_t i = 0;; i++) {
-		vfs_dirent_t ent;
-		r = vfs_readdir(dir, i, &ent);
-		if (r == VFS_ERR_NOENT)
-			break;
-		if (r != VFS_OK) {
-			kprintf("! readdir %s[%zu] status=%d\n", path, i, r);
-			break;
-		}
-
-		char child_path[256];
-		r = fs_join_path(path, ent.name, child_path, sizeof(child_path));
-		if (r != VFS_OK) {
-			kprintf("! path too long under %s/%s\n", path, ent.name);
-			continue;
-		}
-		fs_list_recursive(child_path);
-	}
-
-	vfs_node_release(dir);
-	kprintf("\n");
-}
-
-#define CAT_FILE(path_)                                                        \
-	do {                                                                       \
-		vfs_file_t *file__ = NULL;                                             \
-		int r__ = vfs_open((path_), VFS_O_RDONLY, 0, &vfs_root_cred, &file__); \
-		if (r__ != VFS_OK) {                                                   \
-			kprintf("cat: failed to open %s status=%d\n", (path_), r__);       \
-			break;                                                             \
-		}                                                                      \
-                                                                               \
-		size_t cap__ = file__->node->size;                                     \
-		if (cap__ == 0 || VFS_S_ISCHR(file__->node->mode))                     \
-			cap__ = 4096;                                                      \
-                                                                               \
-		char *buf__ = kzalloc(cap__ + 1);                                      \
-		if (!buf__) {                                                          \
-			kprintf("cat: failed to allocate buffer for %s\n", (path_));       \
-			vfs_close(file__);                                                 \
-			break;                                                             \
-		}                                                                      \
-                                                                               \
-		size_t done__ = 0;                                                     \
-		r__ = vfs_read(file__, buf__, cap__, &done__);                         \
-		vfs_close(file__);                                                     \
-		if (r__ != VFS_OK) {                                                   \
-			kprintf("cat: failed to read %s status=%d\n", (path_), r__);       \
-			kfree(buf__);                                                      \
-			break;                                                             \
-		}                                                                      \
-                                                                               \
-		buf__[done__] = '\0';                                                  \
-		kprintf("%s", buf__);                                                  \
-		kfree(buf__);                                                          \
-	} while (0)
-
-void test(void *)
-{
-#define ANSI_GRAY "\x1b[38;2;120;120;120m"
-#define ANSI_RESET "\x1b[0m"
-#define INIT_LOG(fmt, ...) \
-	kprintf(ANSI_GRAY "init: " fmt ANSI_RESET, ##__VA_ARGS__)
-
-	CAT_FILE("/etc/banner");
-	kprintf("\n");
-
-	INIT_LOG("Hello, World!\n");
-	INIT_LOG("motd\n");
-	CAT_FILE("/etc/motd");
-	INIT_LOG("netdevs\n");
-	CAT_FILE("/dev/net/devices");
-
-#if _DEBUG
-	INIT_LOG("filesystem tree\n");
-	kprintf("%-10s %3s %11s %10s %4s %s\n", "mode", "lnk", "uid:gid", "size",
-			"perm", "path");
-	fs_list_recursive("/");
-#endif
-
-#if _DEBUG
-	{
-		vfs_node_t *dir = NULL;
-		int r = vfs_resolve("/dev/pci", &vfs_root_cred, &dir);
-		if (r != VFS_OK) {
-			INIT_LOG("pci: failed to open /dev/pci status=%d\n", r);
-			return;
-		}
-
-		for (size_t i = 0;; i++) {
-			vfs_dirent_t ent;
-			r = vfs_readdir(dir, i, &ent);
-			if (r == VFS_ERR_NOENT)
-				break;
-			if (r != VFS_OK) {
-				INIT_LOG("pci: readdir /dev/pci[%zu] status=%d\n", i, r);
-				break;
-			}
-
-			if (!strcmp(ent.name, "devices"))
-				continue;
-
-			char path[128];
-			r = fs_join_path("/dev/pci", ent.name, path, sizeof(path));
-			if (r != VFS_OK)
-				continue;
-
-			vfs_stat_t st;
-			r = vfs_stat(path, &vfs_root_cred, &st);
-			if (r != VFS_OK || !VFS_S_ISDIR(st.mode))
-				continue;
-
-			char info_path[160];
-			r = fs_join_path(path, "info", info_path, sizeof(info_path));
-			if (r != VFS_OK)
-				continue;
-
-			INIT_LOG("%s:\n", info_path);
-			CAT_FILE(info_path);
-			kprintf("\n");
-		}
-
-		vfs_node_release(dir);
-	}
-#endif
-
-	{
-		uint32_t target = net_ipv4(8, 8, 8, 8);
-		const uint16_t ident = 0x4c59;
-		const uint16_t count = 16;
-		uint16_t sent = 0;
-		uint16_t received = 0;
-		uint64_t min_ms = (uint64_t)-1;
-		uint64_t max_ms = 0;
-		uint64_t total_ms = 0;
-		char target_ip[24];
-
-		net_ipv4_format(target, target_ip, sizeof(target_ip));
-		INIT_LOG("PING %s: 40 data bytes\n", target_ip);
-		for (uint16_t seq = 1; seq <= count; seq++) {
-			net_ping_result_t reply;
-			sent++;
-			int r = net_ping_echo(target, ident, seq, 1500, &reply);
-			if (r == VFS_OK) {
-				received++;
-				if (reply.time_ms < min_ms)
-					min_ms = reply.time_ms;
-				if (reply.time_ms > max_ms)
-					max_ms = reply.time_ms;
-				total_ms += reply.time_ms;
-				char reply_ip[24];
-				net_ipv4_format(reply.src_ip, reply_ip, sizeof(reply_ip));
-				INIT_LOG("%u bytes from %s: icmp_seq=%u ttl=%u time=%llums\n",
-						 reply.bytes, reply_ip, reply.seq, reply.ttl,
-						 (unsigned long long)reply.time_ms);
-			} else {
-				INIT_LOG("Request timeout for icmp_seq %u (status=%d)\n", seq,
-						 r);
-			}
-		}
-
-		uint16_t lost = sent - received;
-		uint16_t loss = sent ? (uint16_t)((lost * 100) / sent) : 0;
-		INIT_LOG("--- %s ping statistics ---\n", target_ip);
-		INIT_LOG("%u packets transmitted, %u received, %u%% packet loss\n",
-				 sent, received, loss);
-		if (received) {
-			INIT_LOG("round-trip min/avg/max = %llu/%llu/%llums\n",
-					 (unsigned long long)min_ms,
-					 (unsigned long long)(total_ms / received),
-					 (unsigned long long)max_ms);
-		}
-	}
-
-	{
-		char *http = kzalloc(4096);
-		if (http) {
-			size_t done = 0;
-			net_http_response_t res;
-			memset(&res, 0, sizeof(res));
-			INIT_LOG("HTTP GET http://example.com/\n");
-			int r = net_http_get("example.com", "/", http, 4095, &done, &res,
-								 5000);
-			if (r == VFS_OK) {
-				http[done < 4095 ? done : 4095] = '\0';
-				INIT_LOG("HTTP status=%u bytes=%zu body=%zu\n", res.status,
-						 done, res.body_len);
-				if (res.header_len < done) {
-					size_t preview = done - res.header_len;
-					if (preview > 512)
-						preview = 512;
-					char saved = http[res.header_len + preview];
-					http[res.header_len + preview] = '\0';
-					kprintf("%s\n", http + res.header_len);
-					http[res.header_len + preview] = saved;
-				}
-			} else {
-				INIT_LOG("HTTP fetch failed status=%d\n", r);
-			}
-			kfree(http);
-		}
-	}
-
-	INIT_LOG("no shell, exiting.\n");
-	sched_thread_exit(0);
-}
 
 void lyr_entry(void)
 {
@@ -507,6 +231,6 @@ void lyr_entry(void)
 
 	pcb_t *p = sched_process_create("init", _lyr_kernel_vas);
 	assert(p);
-	sched_create_thread(p, "init", test, NULL);
+	sched_create_thread(p, "init", init_proc_entry, NULL);
 	sched_exit(); /* finished */
 }

@@ -98,7 +98,6 @@ static inline uint32_t net_bswap32(uint32_t v)
 #define htonl(v) net_bswap32((uint32_t)(v))
 #define ntohl(v) net_bswap32((uint32_t)(v))
 
-netdev_t *net_default_dev(void);
 uint64_t net_timeout_ticks(uint64_t timeout_ms);
 void net_poll_until(netdev_t *dev, uint64_t until_tick, int *flag);
 uint16_t net_checksum(const void *data, size_t len);
@@ -116,13 +115,14 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 
 int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 					uint8_t out_mac[NET_ETH_ALEN]);
-void net_arp_receive(const arp_pkt_t *arp);
+size_t net_arp_cache_count(netdev_t *dev);
+void net_arp_receive(netdev_t *dev, const arp_pkt_t *arp);
 void net_dhcp_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len);
-void net_dns_receive(const udp_hdr_t *udp, size_t udp_len);
+void net_dns_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len);
 void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
 					  size_t ip_len);
-void net_tcp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
-					 size_t ip_len);
+void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
+					 const ipv4_hdr_t *ip, size_t ihl, size_t ip_len);
 int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 						 const char *path, char *buf, size_t len,
 						 size_t *done, uint64_t timeout_ms);

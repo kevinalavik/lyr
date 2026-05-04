@@ -276,6 +276,38 @@ static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
 	}
 }
 
+static void clear_screen(void)
+{
+	fill_rect(0, 0, fb_width, fb_height, default_bg);
+	cursor_x = term_x0();
+	cursor_y = term_y0() + _LYRTERM_FONT_ASCENT;
+}
+
+static void clear_line_from_cursor(void)
+{
+	uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
+
+	fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
+			  _LYRTERM_LINE_HEIGHT, current_bg);
+}
+
+static void cursor_set_pos(uint32_t row, uint32_t col)
+{
+	if (row == 0)
+		row = 1;
+	if (col == 0)
+		col = 1;
+
+	if (row > rows)
+		row = rows;
+	if (col > cols)
+		col = cols;
+
+	cursor_x = term_x0() + (col - 1) * _LYRTERM_LINE_WIDTH;
+	cursor_y =
+		term_y0() + (row - 1) * _LYRTERM_LINE_HEIGHT + _LYRTERM_FONT_ASCENT;
+}
+
 static void scroll_up(void)
 {
 	uint32_t x0 = term_x0();
@@ -386,8 +418,117 @@ static void ansi_handle_sgr(int *params, int nparams)
 	}
 }
 
+static void ansi_handle_ed(int *params, int nparams)
+{
+	int mode = nparams ? params[0] : 0;
+
+	/* ESC[J or ESC[0J: clear from cursor to end.
+	   ESC[2J: clear whole screen. */
+	if (mode == 2) {
+		clear_screen();
+	} else {
+		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
+
+		fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
+				  _LYRTERM_LINE_HEIGHT, current_bg);
+
+		if (y + _LYRTERM_LINE_HEIGHT < term_y0() + term_height()) {
+			fill_rect(term_x0(), y + _LYRTERM_LINE_HEIGHT, term_width(),
+					  term_y0() + term_height() - (y + _LYRTERM_LINE_HEIGHT),
+					  current_bg);
+		}
+	}
+}
+
+static void ansi_handle_el(int *params, int nparams)
+{
+	int mode = nparams ? params[0] : 0;
+
+	if (mode == 2) {
+		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
+		fill_rect(term_x0(), y, term_width(), _LYRTERM_LINE_HEIGHT, current_bg);
+	} else {
+		clear_line_from_cursor();
+	}
+}
+
+static void ansi_handle_cup(int *params, int nparams)
+{
+	uint32_t row = 1;
+	uint32_t col = 1;
+
+	if (nparams >= 1 && params[0])
+		row = (uint32_t)params[0];
+	if (nparams >= 2 && params[1])
+		col = (uint32_t)params[1];
+
+	cursor_set_pos(row, col);
+}
+
+static void ansi_handle_cuu(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row =
+		(cursor_y - term_y0() - _LYRTERM_FONT_ASCENT) / _LYRTERM_LINE_HEIGHT;
+
+	if (n > row)
+		row = 0;
+	else
+		row -= n;
+
+	cursor_set_pos(row + 1, ((cursor_x - term_x0()) / _LYRTERM_LINE_WIDTH) + 1);
+}
+
+static void ansi_handle_cud(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row =
+		(cursor_y - term_y0() - _LYRTERM_FONT_ASCENT) / _LYRTERM_LINE_HEIGHT;
+
+	row += n;
+	if (row >= rows)
+		row = rows - 1;
+
+	cursor_set_pos(row + 1, ((cursor_x - term_x0()) / _LYRTERM_LINE_WIDTH) + 1);
+}
+
+static void ansi_handle_cuf(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t col = (cursor_x - term_x0()) / _LYRTERM_LINE_WIDTH;
+
+	col += n;
+	if (col >= cols)
+		col = cols - 1;
+
+	cursor_set_pos(
+		((cursor_y - term_y0() - _LYRTERM_FONT_ASCENT) / _LYRTERM_LINE_HEIGHT) +
+			1,
+		col + 1);
+}
+
+static void ansi_handle_cub(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t col = (cursor_x - term_x0()) / _LYRTERM_LINE_WIDTH;
+
+	if (n > col)
+		col = 0;
+	else
+		col -= n;
+
+	cursor_set_pos(
+		((cursor_y - term_y0() - _LYRTERM_FONT_ASCENT) / _LYRTERM_LINE_HEIGHT) +
+			1,
+		col + 1);
+}
+
 static const ansi_csi_handler_t ansi_csi_handlers[] = {
-	{ 'm', ansi_handle_sgr },
+	{ 'm', ansi_handle_sgr }, { 'J', ansi_handle_ed },
+	{ 'K', ansi_handle_el },  { 'H', ansi_handle_cup },
+	{ 'f', ansi_handle_cup }, { 'A', ansi_handle_cuu },
+	{ 'B', ansi_handle_cud }, { 'C', ansi_handle_cuf },
+	{ 'D', ansi_handle_cub },
 };
 
 static void ansi_dispatch_csi(char final)

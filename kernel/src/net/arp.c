@@ -3,9 +3,60 @@
 #include <fs/vfs.h>
 #include <lib/string.h>
 
+#define ARP_CACHE_LEN 32
+#define ARP_CACHE_TTL_MS 60000
+
+typedef struct {
+	netdev_t *dev;
+	uint32_t ip;
+	uint8_t mac[NET_ETH_ALEN];
+	uint64_t expires_tick;
+} arp_cache_entry_t;
+
+static arp_cache_entry_t arp_cache[ARP_CACHE_LEN];
 static uint8_t arp_mac[NET_ETH_ALEN];
+static netdev_t *arp_dev;
 static uint32_t arp_ip;
 static int arp_ready;
+
+static int arp_cache_lookup(netdev_t *dev, uint32_t ip,
+							uint8_t out_mac[NET_ETH_ALEN])
+{
+	uint64_t now = pit_get_ticks();
+	for (size_t i = 0; i < ARP_CACHE_LEN; i++) {
+		arp_cache_entry_t *ent = &arp_cache[i];
+		if (ent->dev != dev || ent->ip != ip || now >= ent->expires_tick)
+			continue;
+		memcpy(out_mac, ent->mac, NET_ETH_ALEN);
+		return 1;
+	}
+	return 0;
+}
+
+static void arp_cache_store(netdev_t *dev, uint32_t ip,
+							const uint8_t mac[NET_ETH_ALEN])
+{
+	uint64_t now = pit_get_ticks();
+	uint64_t ttl = net_timeout_ticks(ARP_CACHE_TTL_MS);
+	size_t victim = 0;
+
+	for (size_t i = 0; i < ARP_CACHE_LEN; i++) {
+		arp_cache_entry_t *ent = &arp_cache[i];
+		if (ent->dev == dev && ent->ip == ip) {
+			victim = i;
+			break;
+		}
+		if (!ent->dev || now >= ent->expires_tick) {
+			victim = i;
+			break;
+		}
+	}
+
+	arp_cache[victim].dev = dev;
+	arp_cache[victim].ip = ip;
+	memcpy(arp_cache[victim].mac, mac, NET_ETH_ALEN);
+	arp_cache[victim].expires_tick = now + ttl;
+}
 
 static int send_arp_request(netdev_t *dev, uint32_t target_ip)
 {
@@ -35,7 +86,14 @@ int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 {
 	if (!dev || !out_mac)
 		return VFS_ERR_INVAL;
+	if (dev->loopback) {
+		memcpy(out_mac, dev->mac, NET_ETH_ALEN);
+		return VFS_OK;
+	}
+	if (arp_cache_lookup(dev, target_ip, out_mac))
+		return VFS_OK;
 
+	arp_dev = dev;
 	arp_ip = target_ip;
 	arp_ready = 0;
 	int r = send_arp_request(dev, target_ip);
@@ -48,12 +106,31 @@ int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 		return VFS_ERR_NOENT;
 
 	memcpy(out_mac, arp_mac, NET_ETH_ALEN);
+	arp_cache_store(dev, target_ip, arp_mac);
 	return VFS_OK;
 }
 
-void net_arp_receive(const arp_pkt_t *arp)
+size_t net_arp_cache_count(netdev_t *dev)
 {
-	if (ntohs(arp->oper) == 2 && ntohl(arp->spa) == arp_ip) {
+	uint64_t now = pit_get_ticks();
+	size_t count = 0;
+	for (size_t i = 0; i < ARP_CACHE_LEN; i++) {
+		arp_cache_entry_t *ent = &arp_cache[i];
+		if (ent->dev == dev && now < ent->expires_tick)
+			count++;
+	}
+	return count;
+}
+
+void net_arp_receive(netdev_t *dev, const arp_pkt_t *arp)
+{
+	if (ntohs(arp->oper) != 2)
+		return;
+
+	uint32_t sender_ip = ntohl(arp->spa);
+	arp_cache_store(dev, sender_ip, arp->sha);
+
+	if (dev == arp_dev && sender_ip == arp_ip) {
 		memcpy(arp_mac, arp->sha, NET_ETH_ALEN);
 		arp_ready = 1;
 	}
