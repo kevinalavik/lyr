@@ -106,12 +106,9 @@ disk-apps: apps
 		[ -f "$$app" ] || continue; \
 		[ "$$(basename "$$app")" != "$(EARLY_INIT)" ] || continue; \
 		dst="/bin/$$(basename "$$app")"; \
-		if debugfs -R "stat $$dst" $(NVME_TEST_DISK) 2>&1 | grep -q '^Inode:'; then \
-			echo "exists: $$dst"; \
-		else \
-			echo "write: $$dst"; \
-			debugfs -w -R "write $$app $$dst" $(NVME_TEST_DISK); \
-		fi; \
+		echo "write: $$dst"; \
+		debugfs -w -R "rm $$dst" $(NVME_TEST_DISK) >/dev/null 2>&1 || true; \
+		debugfs -w -R "write $$app $$dst" $(NVME_TEST_DISK); \
 	done
 
 .PHONY: rootfs-update
