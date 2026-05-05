@@ -1,0 +1,54 @@
+sources:
+  - name: mlibc
+    git: 'https://github.com/kevinalavik/mlibc-lyr.git'
+    branch: 'master'
+    subdir: sources
+    rolling_version: true
+    version: '0.0pl@ROLLING_ID@'
+
+packages:
+- name: mlibc-headers
+  labels: [ x86_64 ]
+  architecture: 'x86_64'
+  revision: 4
+  from_source: mlibc
+  configure:
+    - args:
+      - 'meson'
+      - 'setup'
+      - '--cross-file'
+      - '@SOURCE_ROOT@/scripts/lyr-mlibc.cross-file'
+      - '--prefix=/usr'
+      - '-Dheaders_only=true'
+      - '@THIS_SOURCE_DIR@'
+  build:
+    - args: ['ninja', '-j@PARALLELISM@']
+    - args: ['ninja', 'install']
+      environ:
+        DESTDIR: '@SYSROOT_DIR@'
+
+- name: mlibc
+  labels: [ x86_64 ]
+  architecture: 'x86_64'
+  revision: 5
+  from_source: mlibc
+  pkgs_required:
+    - mlibc-headers
+  tools_required:
+    - lyr-gcc
+    - lyr-binutils
+  configure:
+    - args:
+      - 'meson'
+      - 'setup'
+      - '--cross-file'
+      - '@SOURCE_ROOT@/scripts/lyr-mlibc.cross-file'
+      - '--prefix=/usr'
+      - '-Ddefault_library=both'
+      - '-Dno_headers=true'
+      - '@THIS_SOURCE_DIR@'
+  build:
+    - args: ['ninja', '-j@PARALLELISM@']
+    - args: ['ninja', 'install']
+      environ:
+        DESTDIR: '@SYSROOT_DIR@'

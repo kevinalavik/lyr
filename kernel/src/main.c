@@ -34,6 +34,7 @@
 #include <ipc/ipc.h>
 #include <net/net.h>
 #include <sys/syscall.h>
+#include <dev/console.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -86,6 +87,20 @@ __attribute__((used,
 __attribute__((used, section(".limine_requests_end"))) static volatile uint64_t
 	limine_requests_end_marker[] = LIMINE_REQUESTS_END_MARKER;
 
+static void cpu_enable_sse(void)
+{
+	uint64_t cr0 = read_cr0();
+	uint64_t cr4 = read_cr4();
+
+	cr0 &= ~(1ULL << 2); /* EM */
+	cr0 |= (1ULL << 1); /* MP */
+	cr4 |= (1ULL << 9) | (1ULL << 10); /* OSFXSR | OSXMMEXCPT */
+
+	write_cr0(cr0);
+	write_cr4(cr4);
+	fninit();
+}
+
 void lyr_entry(void)
 {
 	__asm__ volatile("movq %%rsp, %0" : "=r"(_lyr_kstack_top));
@@ -98,6 +113,7 @@ void lyr_entry(void)
 
 	log_info("entry", "Welcome to lyr-kernel " LYR_VERSION);
 	log_info("entry", "UART %s", uart_init() == 0 ? "ok" : "not ok");
+	cpu_enable_sse();
 
 	/* framebuffer */
 	LIMINE_REQUIRE(framebuffer_request);
@@ -173,6 +189,8 @@ void lyr_entry(void)
 	vfs_init(root);
 	devfs_init();
 	log_info("entry", "devfs ok");
+	assert(console_init() == VFS_OK);
+	log_info("entry", "console ok");
 	assert(vfs_root() == root);
 	log_info("entry", "VFS ok");
 	vfs_tmpfs_test(_lyr_kernel_vas);
@@ -232,7 +250,7 @@ void lyr_entry(void)
 	assert(driver_manager_init() == VFS_OK);
 	log_info("entry", "Driver manager ok");
 
-#if _DEBUG
+#if _DEBUG_INIT
 	init_smoke_test();
 #endif
 

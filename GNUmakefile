@@ -3,13 +3,14 @@
 TAP_IF ?= tap0
 QEMU_NET_USER := \
   -netdev user,id=net0,net=10.0.2.0/24,hostfwd=tcp::6969-:6969 -device e1000,netdev=net0
-NVME_TEST_DISK := disk.img
-QEMU_NVME := -drive file=$(NVME_TEST_DISK),if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=LYRNVME0
+ROOTFS_DISK := disk.img
+QEMU_NVME := -drive file=$(ROOTFS_DISK),if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=LYRNVME0
 QEMUFLAGS := -m 2G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME)
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd
 ROOTFS_DIR := rootfs
+SYSTEM_ROOT := system-root
 INITRD_IMAGE := initrd.cpio
 DRIVERS_ROOT := drivers
 APPS_ROOT := src
@@ -98,54 +99,70 @@ apps: kernel/.deps-obtained
 
 .PHONY: disk-apps
 disk-apps: apps
-	@if [ ! -f "$(NVME_TEST_DISK)" ]; then \
-		$(MAKE) $(NVME_TEST_DISK); \
+	@if [ ! -f "$(ROOTFS_DISK)" ]; then \
+		$(MAKE) $(ROOTFS_DISK); \
 	fi
 	PATH=$$PATH:/usr/sbin:/sbin; \
-	debugfs -w -R "mkdir /bin" $(NVME_TEST_DISK) >/dev/null 2>&1 || true; \
+	debugfs -w -R "mkdir /bin" $(ROOTFS_DISK) >/dev/null 2>&1 || true; \
 	for app in $(APPS_BIN)/*; do \
 		[ -f "$$app" ] || continue; \
 		[ "$$(basename "$$app")" != "$(EARLY_INIT)" ] || continue; \
 		dst="/bin/$$(basename "$$app")"; \
 		echo "write: $$dst"; \
-		debugfs -w -R "rm $$dst" $(NVME_TEST_DISK) >/dev/null 2>&1 || true; \
-		debugfs -w -R "write $$app $$dst" $(NVME_TEST_DISK); \
+		debugfs -w -R "rm $$dst" $(ROOTFS_DISK) >/dev/null 2>&1 || true; \
+		debugfs -w -R "write $$app $$dst" $(ROOTFS_DISK); \
 	done
 
 .PHONY: rootfs-update
 rootfs-update:
-	@if [ ! -f "$(NVME_TEST_DISK)" ]; then \
-		$(MAKE) $(NVME_TEST_DISK); \
+	@if [ ! -f "$(ROOTFS_DISK)" ]; then \
+		$(MAKE) $(ROOTFS_DISK); \
 	fi
-	PATH=$$PATH:/usr/sbin:/sbin; \
-	find $(ROOTFS_DIR) -type f | while read src; do \
-		rel=$${src#$(ROOTFS_DIR)/}; \
-		dir=$$(dirname "$$rel"); \
-		if [ "$$dir" != "." ]; then \
-			debugfs -w -R "mkdir /$$dir" $(NVME_TEST_DISK) >/dev/null 2>&1 || true; \
+	@PATH=$$PATH:/usr/sbin:/sbin; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	{ \
+		if [ -d "$(ROOTFS_DIR)" ]; then \
+			find "$(ROOTFS_DIR)" -type d -printf '%P\n'; \
 		fi; \
-		if debugfs -R "stat /$$rel" $(NVME_TEST_DISK) 2>&1 | grep -q '^Inode:'; then \
-			echo "exists: /$$rel"; \
-		else \
-			echo "write: /$$rel"; \
-			debugfs -w -R "write $$src /$$rel" $(NVME_TEST_DISK); \
+		if [ -d "$(SYSTEM_ROOT)" ]; then \
+			find "$(SYSTEM_ROOT)" -type d -printf '%P\n'; \
 		fi; \
-	done
+	} | awk 'NF' | LC_ALL=C sort -u > "$$tmp/dirs"; \
+	while IFS= read -r dir; do \
+		debugfs -w -R "mkdir /$$dir" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	done < "$$tmp/dirs"; \
+	{ \
+		if [ -d "$(ROOTFS_DIR)" ]; then \
+			find "$(ROOTFS_DIR)" -type f -printf '%P\n'; \
+		fi; \
+		if [ -d "$(SYSTEM_ROOT)" ]; then \
+			find "$(SYSTEM_ROOT)" -type f -printf '%P\n'; \
+		fi; \
+	} | awk 'NF' | LC_ALL=C sort -u > "$$tmp/files"; \
+	while IFS= read -r rel; do \
+		src="$(ROOTFS_DIR)/$$rel"; \
+		if [ -f "$(SYSTEM_ROOT)/$$rel" ]; then \
+			src="$(SYSTEM_ROOT)/$$rel"; \
+		fi; \
+		debugfs -w -R "rm /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+		debugfs -w -R "write $$src /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1; \
+	done < "$$tmp/files"
 	
 .PHONY: rootfs-extract
-rootfs-extract: $(NVME_TEST_DISK)
+rootfs-extract: $(ROOTFS_DISK)
 	rm -rf $(ROOTFS_DIR)
 	mkdir -p $(ROOTFS_DIR)
 	PATH=$$PATH:/usr/sbin:/sbin; \
-	debugfs -R "ls -l /" $(NVME_TEST_DISK) 2>/dev/null | awk 'NF>1{print $$NF}' | grep -v '^\.' | while read entry; do \
-		debugfs -R "rdump /$$entry $(ROOTFS_DIR)/$$entry" $(NVME_TEST_DISK) 2>/dev/null || true; \
+	debugfs -R "ls -l /" $(ROOTFS_DISK) 2>/dev/null | awk 'NF>1{print $$NF}' | grep -v '^\.' | while read entry; do \
+		debugfs -R "rdump /$$entry $(ROOTFS_DIR)/$$entry" $(ROOTFS_DISK) 2>/dev/null || true; \
 	done
 
 .PHONY: FORCE
 FORCE:
 
-$(NVME_TEST_DISK):
-	dd if=/dev/zero of=$@ bs=1M count=16
+$(ROOTFS_DISK):
+	dd if=/dev/zero of=$@ bs=1M count=128
 	PATH=$$PATH:/usr/sbin:/sbin mkfs.ext2 -q -F -L LYRTEST $@
 
 $(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers apps $(DRIVER_SYS_FILES)
@@ -193,4 +210,4 @@ distclean: clean
 	$(MAKE) -C kernel distclean
 	$(MAKE) -C drivers distclean
 	$(MAKE) -C $(APPS_ROOT) distclean
-	rm -rf limine edk2-ovmf $(NVME_TEST_DISK)
+	rm -rf limine edk2-ovmf $(ROOTFS_DISK)

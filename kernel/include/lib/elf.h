@@ -9,6 +9,25 @@ typedef struct vas vas_t;
 #define ELF_EI_NIDENT 16
 #define ELF_SHN_UNDEF 0
 
+#define ELF_AUX_AT_NULL 0
+#define ELF_AUX_AT_PHDR 3
+#define ELF_AUX_AT_PHENT 4
+#define ELF_AUX_AT_PHNUM 5
+#define ELF_AUX_AT_PAGESZ 6
+#define ELF_AUX_AT_BASE 7
+#define ELF_AUX_AT_FLAGS 8
+#define ELF_AUX_AT_ENTRY 9
+#define ELF_AUX_AT_UID 11
+#define ELF_AUX_AT_EUID 12
+#define ELF_AUX_AT_GID 13
+#define ELF_AUX_AT_EGID 14
+#define ELF_AUX_AT_PLATFORM 15
+#define ELF_AUX_AT_HWCAP 16
+#define ELF_AUX_AT_CLKTCK 17
+#define ELF_AUX_AT_SECURE 23
+#define ELF_AUX_AT_RANDOM 25
+#define ELF_AUX_AT_EXECFN 31
+
 typedef uint16_t elf64_half_t;
 typedef uint32_t elf64_word_t;
 typedef int32_t elf64_sword_t;
@@ -84,6 +103,16 @@ typedef struct {
 	const char *strtab;
 } elf_image_t;
 
+typedef struct {
+	uint64_t entry;
+	uint64_t program_entry;
+	uint64_t program_phdr;
+	uint64_t interp_base;
+	uint16_t program_phentsize;
+	uint16_t program_phnum;
+	char exec_path[256];
+} elf_user_image_t;
+
 typedef void *(*elf_alloc_section_t)(uint64_t size, uint64_t align, void *ctx);
 typedef int (*elf_resolve_symbol_t)(const char *name, uint64_t *out, void *ctx);
 
@@ -98,6 +127,11 @@ int elf_find_symbol_value(const elf_image_t *image, const char *name,
 						  void *resolve_ctx);
 int elf_find_defined_symbol_value(const elf_image_t *image, const char *name,
 								  uint64_t *out);
-int elf_load_user_executable(vas_t *vas, const char *path, uint64_t *entry_out);
+int elf_load_user_executable(vas_t *vas, const char *path,
+							 elf_user_image_t *image_out);
+int elf_build_initial_stack(vas_t *vas, uint64_t stack_top, const char *exec_path,
+							const char *const *argv, size_t argc,
+							const char *const *envp, size_t envc,
+							const elf_user_image_t *image, uint64_t *rsp_out);
 
 #endif /* _LYR_LIB_ELF_H */

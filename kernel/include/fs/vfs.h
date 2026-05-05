@@ -63,6 +63,7 @@
 #define VFS_ERR_NOTDIR -20
 #define VFS_ERR_ISDIR -21
 #define VFS_ERR_INVAL -22
+#define VFS_ERR_NOTTY -25
 #define VFS_ERR_NOSYS -38
 #define VFS_ERR_NOTEMPTY -39
 #define VFS_ERR_NAMETOOLONG -36
@@ -116,6 +117,7 @@ struct vfs_ops {
 				size_t *done);
 	int (*write)(vfs_node_t *node, uint64_t off, const void *buf, size_t len,
 				 size_t *done);
+	int (*ioctl)(vfs_file_t *file, unsigned long request, void *arg);
 	int (*readdir)(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 	int (*truncate)(vfs_node_t *node, uint64_t size);
 	int (*get_page)(vfs_node_t *node, uint64_t page_index, int for_write,
@@ -159,6 +161,7 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 int vfs_close(vfs_file_t *file);
 int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done);
 int vfs_write(vfs_file_t *file, const void *buf, size_t len, size_t *done);
+int vfs_ioctl(vfs_file_t *file, unsigned long request, void *arg);
 int vfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off);
 int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);

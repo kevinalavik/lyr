@@ -91,6 +91,17 @@ static inline long lyr_change_root(const char *source, const char *fstype,
 						 (long)init_path);
 }
 
+static inline long lyr_execve(const char *path, char *const argv[],
+							  char *const envp[])
+{
+	return lyr_syscall3(SYS_EXECVE, (long)path, (long)argv, (long)envp);
+}
+
+static inline long lyr_arch_prctl(long code, unsigned long addr)
+{
+	return lyr_syscall3(SYS_ARCH_PRCTL, code, addr, 0);
+}
+
 static inline void lyr_exit(int status)
 {
 	lyr_syscall3(SYS_EXIT, status, 0, 0);

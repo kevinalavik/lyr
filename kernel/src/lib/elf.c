@@ -17,8 +17,11 @@
 #define ELFDATA2LSB 1
 #define ET_REL 1
 #define ET_EXEC 2
+#define ET_DYN 3
 #define EM_X86_64 62
 #define PT_LOAD 1
+#define PT_INTERP 3
+#define PT_PHDR 6
 #define PF_X 0x1
 #define PF_W 0x2
 #define SHF_ALLOC 0x2
@@ -33,6 +36,10 @@
 
 #define ELF64_R_SYM(i) ((i) >> 32)
 #define ELF64_R_TYPE(i) ((uint32_t)(i))
+
+#define ELF_ET_DYN_BASE 0x0000000040000000ULL
+#define ELF_INTERP_BASE 0x0000000050000000ULL
+#define ELF_STACK_RANDOM_SIZE 16
 
 static int range_ok(size_t file_size, uint64_t off, uint64_t size)
 {
@@ -71,7 +78,8 @@ static int elf_validate_executable(const elf64_ehdr_t *ehdr, size_t file_size)
 		ehdr->e_ident[2] != ELFMAG2 || ehdr->e_ident[3] != ELFMAG3 ||
 		ehdr->e_ident[4] != ELFCLASS64 || ehdr->e_ident[5] != ELFDATA2LSB)
 		return VFS_ERR_INVAL;
-	if (ehdr->e_type != ET_EXEC || ehdr->e_machine != EM_X86_64)
+	if ((ehdr->e_type != ET_EXEC && ehdr->e_type != ET_DYN) ||
+		ehdr->e_machine != EM_X86_64)
 		return VFS_ERR_INVAL;
 	if (ehdr->e_phentsize != sizeof(elf64_phdr_t) || ehdr->e_phnum == 0 ||
 		!range_ok(file_size, ehdr->e_phoff,
@@ -272,7 +280,7 @@ int elf_find_defined_symbol_value(const elf_image_t *image, const char *name,
 }
 
 static int elf_load_segment(vas_t *vas, const uint8_t *file, size_t file_size,
-							const elf64_phdr_t *ph)
+							const elf64_phdr_t *ph, uint64_t load_bias)
 {
 	if (ph->p_memsz < ph->p_filesz ||
 		!range_ok(file_size, ph->p_offset, ph->p_filesz))
@@ -280,12 +288,13 @@ static int elf_load_segment(vas_t *vas, const uint8_t *file, size_t file_size,
 	if (ph->p_memsz == 0)
 		return VFS_OK;
 
-	uint64_t seg_end = ph->p_vaddr + ph->p_memsz;
-	if (seg_end < ph->p_vaddr || ph->p_vaddr < VAS_USER_START ||
+	uint64_t seg_start = load_bias + ph->p_vaddr;
+	uint64_t seg_end = seg_start + ph->p_memsz;
+	if (seg_start < VAS_USER_START || seg_end < seg_start ||
 		seg_end > VAS_USER_END)
 		return VFS_ERR_INVAL;
 
-	uint64_t map_start = ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE);
+	uint64_t map_start = ALIGN_DOWN(seg_start, PAGE_SIZE);
 	uint64_t map_end = ALIGN_UP(seg_end, PAGE_SIZE);
 	uint64_t map_len = map_end - map_start;
 	uint64_t flags = VMM_PRESENT | VMM_USER | VAD_FIXED;
@@ -300,7 +309,7 @@ static int elf_load_segment(vas_t *vas, const uint8_t *file, size_t file_size,
 
 	size_t copied = 0;
 	while (copied < ph->p_filesz) {
-		uint64_t va = ph->p_vaddr + copied;
+		uint64_t va = seg_start + copied;
 		uint64_t phys = get_phys(vas->pml4, va);
 		if (!phys)
 			return VFS_ERR_INVAL;
@@ -318,9 +327,9 @@ static int elf_load_segment(vas_t *vas, const uint8_t *file, size_t file_size,
 	return VFS_OK;
 }
 
-int elf_load_user_executable(vas_t *vas, const char *path, uint64_t *entry_out)
+static int elf_read_file(const char *path, uint8_t **file_out, size_t *size_out)
 {
-	if (!vas || !path || !entry_out)
+	if (!path || !file_out || !size_out)
 		return VFS_ERR_INVAL;
 
 	vfs_stat_t st;
@@ -349,23 +358,294 @@ int elf_load_user_executable(vas_t *vas, const char *path, uint64_t *entry_out)
 		return r == VFS_OK ? VFS_ERR_INVAL : r;
 	}
 
-	const elf64_ehdr_t *ehdr = (const elf64_ehdr_t *)file;
-	r = elf_validate_executable(ehdr, (size_t)st.size);
-	if (r == VFS_OK) {
-		const elf64_phdr_t *phdrs =
-			(const elf64_phdr_t *)(file + ehdr->e_phoff);
-		for (size_t i = 0; i < ehdr->e_phnum; i++) {
-			if (phdrs[i].p_type != PT_LOAD)
-				continue;
-			r = elf_load_segment(vas, file, (size_t)st.size, &phdrs[i]);
-			if (r != VFS_OK)
-				break;
+	*file_out = file;
+	*size_out = (size_t)st.size;
+	return VFS_OK;
+}
+
+static int elf_find_interp(const uint8_t *file, size_t file_size,
+						   const elf64_ehdr_t *ehdr, char *path_out,
+						   size_t path_len)
+{
+	if (!file || !ehdr || !path_out || !path_len)
+		return VFS_ERR_INVAL;
+
+	path_out[0] = '\0';
+	const elf64_phdr_t *phdrs = (const elf64_phdr_t *)(file + ehdr->e_phoff);
+	for (size_t i = 0; i < ehdr->e_phnum; i++) {
+		if (phdrs[i].p_type != PT_INTERP)
+			continue;
+		if (phdrs[i].p_filesz == 0 || phdrs[i].p_filesz > path_len ||
+			!range_ok(file_size, phdrs[i].p_offset, phdrs[i].p_filesz))
+			return VFS_ERR_INVAL;
+		memcpy(path_out, file + phdrs[i].p_offset, (size_t)phdrs[i].p_filesz);
+		path_out[path_len - 1] = '\0';
+		return VFS_OK;
+	}
+
+	return VFS_OK;
+}
+
+static int elf_find_loaded_phdr(const elf64_ehdr_t *ehdr,
+								const elf64_phdr_t *phdrs, uint64_t load_bias,
+								uint64_t *phdr_out)
+{
+	if (!ehdr || !phdrs || !phdr_out)
+		return VFS_ERR_INVAL;
+
+	for (size_t i = 0; i < ehdr->e_phnum; i++) {
+		if (phdrs[i].p_type == PT_PHDR) {
+			*phdr_out = load_bias + phdrs[i].p_vaddr;
+			return VFS_OK;
 		}
 	}
 
-	if (r == VFS_OK)
-		*entry_out = ehdr->e_entry;
+	for (size_t i = 0; i < ehdr->e_phnum; i++) {
+		if (phdrs[i].p_type != PT_LOAD)
+			continue;
+		if (ehdr->e_phoff < phdrs[i].p_offset ||
+			ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize >
+				phdrs[i].p_offset + phdrs[i].p_filesz)
+			continue;
+		*phdr_out =
+			load_bias + phdrs[i].p_vaddr + (ehdr->e_phoff - phdrs[i].p_offset);
+		return VFS_OK;
+	}
 
+	return VFS_ERR_INVAL;
+}
+
+static int elf_load_user_image_file(vas_t *vas, const char *path,
+									const uint8_t *file, size_t file_size,
+									uint64_t base_hint,
+									elf_user_image_t *image_out,
+									int as_interpreter)
+{
+	if (!vas || !path || !file || !image_out)
+		return VFS_ERR_INVAL;
+
+	const elf64_ehdr_t *ehdr = (const elf64_ehdr_t *)file;
+	int r = elf_validate_executable(ehdr, file_size);
+	if (r != VFS_OK)
+		return r;
+
+	const elf64_phdr_t *phdrs = (const elf64_phdr_t *)(file + ehdr->e_phoff);
+	uint64_t load_bias = ehdr->e_type == ET_DYN ? base_hint : 0;
+	for (size_t i = 0; i < ehdr->e_phnum; i++) {
+		if (phdrs[i].p_type != PT_LOAD)
+			continue;
+		r = elf_load_segment(vas, file, file_size, &phdrs[i], load_bias);
+		if (r != VFS_OK)
+			return r;
+	}
+
+	uint64_t phdr_addr = 0;
+	r = elf_find_loaded_phdr(ehdr, phdrs, load_bias, &phdr_addr);
+	if (r != VFS_OK && ehdr->e_type != ET_EXEC)
+		return r;
+	if (r != VFS_OK)
+		phdr_addr = 0;
+
+	memset(image_out, 0, sizeof(*image_out));
+	image_out->entry = load_bias + ehdr->e_entry;
+	if (!as_interpreter) {
+		image_out->program_entry = load_bias + ehdr->e_entry;
+		image_out->program_phdr = phdr_addr;
+		image_out->program_phentsize = ehdr->e_phentsize;
+		image_out->program_phnum = ehdr->e_phnum;
+		size_t path_len = strlen(path);
+		if (path_len >= sizeof(image_out->exec_path))
+			path_len = sizeof(image_out->exec_path) - 1;
+		memcpy(image_out->exec_path, path, path_len);
+		image_out->exec_path[sizeof(image_out->exec_path) - 1] = '\0';
+	} else {
+		image_out->interp_base = load_bias;
+	}
+
+	return VFS_OK;
+}
+
+int elf_load_user_executable(vas_t *vas, const char *path,
+							 elf_user_image_t *image_out)
+{
+	if (!vas || !path || !image_out)
+		return VFS_ERR_INVAL;
+
+	uint8_t *file = NULL;
+	size_t file_size = 0;
+	int r = elf_read_file(path, &file, &file_size);
+	if (r != VFS_OK)
+		return r;
+
+	const elf64_ehdr_t *ehdr = (const elf64_ehdr_t *)file;
+	char interp_path[256];
+	r = elf_find_interp(file, file_size, ehdr, interp_path,
+						sizeof(interp_path));
+	if (r == VFS_OK)
+		r = elf_load_user_image_file(vas, path, file, file_size,
+									 ELF_ET_DYN_BASE, image_out, 0);
 	kfree(file);
-	return r;
+	if (r != VFS_OK)
+		return r;
+
+	if (!interp_path[0]) {
+		image_out->entry = image_out->program_entry;
+		return VFS_OK;
+	}
+
+	uint8_t *interp_file = NULL;
+	size_t interp_size = 0;
+	r = elf_read_file(interp_path, &interp_file, &interp_size);
+	if (r != VFS_OK)
+		return r;
+
+	elf_user_image_t interp_image;
+	r = elf_load_user_image_file(vas, interp_path, interp_file, interp_size,
+								 ELF_INTERP_BASE, &interp_image, 1);
+	kfree(interp_file);
+	if (r != VFS_OK)
+		return r;
+
+	image_out->entry = interp_image.entry;
+	image_out->interp_base = interp_image.interp_base;
+	return VFS_OK;
+}
+
+static int stack_write_bytes(vas_t *vas, uint64_t *sp, const void *src,
+							 size_t len, uint64_t align, uint64_t *addr_out)
+{
+	if (!vas || !sp || (len && !src))
+		return VFS_ERR_INVAL;
+
+	uint64_t next = *sp - len;
+	if (align > 1)
+		next &= ~(align - 1);
+	if (next < VAS_USER_START)
+		return VFS_ERR_NOMEM;
+
+	uint64_t written = next;
+	size_t copied = 0;
+	while (copied < len) {
+		uint64_t va = written + copied;
+		uint64_t phys = get_phys(vas->pml4, va);
+		if (!phys)
+			return VFS_ERR_INVAL;
+
+		size_t page_off = (size_t)(va & (PAGE_SIZE - 1));
+		size_t chunk = PAGE_SIZE - page_off;
+		if (chunk > len - copied)
+			chunk = len - copied;
+
+		memcpy(PHYS_TO_VIRT(phys), (const uint8_t *)src + copied, chunk);
+		copied += chunk;
+	}
+
+	*sp = next;
+	if (addr_out)
+		*addr_out = written;
+	return VFS_OK;
+}
+
+int elf_build_initial_stack(vas_t *vas, uint64_t stack_top,
+							const char *exec_path, const char *const *argv,
+							size_t argc, const char *const *envp, size_t envc,
+							const elf_user_image_t *image, uint64_t *rsp_out)
+{
+	if (!vas || !image || !rsp_out || (!exec_path && argc))
+		return VFS_ERR_INVAL;
+
+	uint64_t sp = stack_top;
+	uint64_t arg_ptrs[32];
+	uint64_t env_ptrs[32];
+	if (argc > 32 || envc > 32)
+		return VFS_ERR_INVAL;
+
+	for (size_t i = argc; i > 0; i--) {
+		const char *s = argv[i - 1] ? argv[i - 1] : "";
+		size_t len = strlen(s) + 1;
+		int r = stack_write_bytes(vas, &sp, s, len, 1, &arg_ptrs[i - 1]);
+		if (r != VFS_OK)
+			return r;
+	}
+
+	for (size_t i = envc; i > 0; i--) {
+		const char *s = envp[i - 1] ? envp[i - 1] : "";
+		size_t len = strlen(s) + 1;
+		int r = stack_write_bytes(vas, &sp, s, len, 1, &env_ptrs[i - 1]);
+		if (r != VFS_OK)
+			return r;
+	}
+
+	uint64_t execfn_ptr = 0;
+	size_t execfn_len = strlen(exec_path ? exec_path : "") + 1;
+	int r = stack_write_bytes(vas, &sp, exec_path ? exec_path : "", execfn_len,
+							  1, &execfn_ptr);
+	if (r != VFS_OK)
+		return r;
+
+	static const char platform[] = "x86_64";
+	uint64_t platform_ptr = 0;
+	r = stack_write_bytes(vas, &sp, platform, sizeof(platform), 1,
+						  &platform_ptr);
+	if (r != VFS_OK)
+		return r;
+
+	uint8_t random_bytes[ELF_STACK_RANDOM_SIZE] = {
+		0x42, 0x61, 0x73, 0x65, 0x54, 0x6c, 0x73, 0x21,
+		0x50, 0x69, 0x65, 0x45, 0x78, 0x65, 0x63, 0x00,
+	};
+	uint64_t random_ptr = 0;
+	r = stack_write_bytes(vas, &sp, random_bytes, sizeof(random_bytes), 16,
+						  &random_ptr);
+	if (r != VFS_OK)
+		return r;
+
+	uint64_t auxv[] = {
+		ELF_AUX_AT_PHDR,	 image->program_phdr,
+		ELF_AUX_AT_PHENT,	 image->program_phentsize,
+		ELF_AUX_AT_PHNUM,	 image->program_phnum,
+		ELF_AUX_AT_PAGESZ,	 PAGE_SIZE,
+		ELF_AUX_AT_BASE,	 image->interp_base,
+		ELF_AUX_AT_FLAGS,	 0,
+		ELF_AUX_AT_ENTRY,	 image->program_entry,
+		ELF_AUX_AT_UID,		 0,
+		ELF_AUX_AT_EUID,	 0,
+		ELF_AUX_AT_GID,		 0,
+		ELF_AUX_AT_EGID,	 0,
+		ELF_AUX_AT_PLATFORM, platform_ptr,
+		ELF_AUX_AT_HWCAP,	 0,
+		ELF_AUX_AT_CLKTCK,	 100,
+		ELF_AUX_AT_SECURE,	 0,
+		ELF_AUX_AT_RANDOM,	 random_ptr,
+		ELF_AUX_AT_EXECFN,	 execfn_ptr,
+		ELF_AUX_AT_NULL,	 0,
+	};
+
+	size_t ptr_count = 1 + argc + 1 + envc + 1;
+	size_t words = ptr_count + (sizeof(auxv) / sizeof(auxv[0]));
+	sp &= ~0xFULL;
+	if (words & 1)
+		sp -= 8;
+	uint64_t *stack_words = kzalloc(words * sizeof(uint64_t));
+	if (!stack_words)
+		return VFS_ERR_NOMEM;
+	size_t idx = 0;
+	stack_words[idx++] = argc;
+	for (size_t i = 0; i < argc; i++)
+		stack_words[idx++] = arg_ptrs[i];
+	stack_words[idx++] = 0;
+	for (size_t i = 0; i < envc; i++)
+		stack_words[idx++] = env_ptrs[i];
+	stack_words[idx++] = 0;
+	for (size_t i = 0; i < sizeof(auxv) / sizeof(auxv[0]); i++)
+		stack_words[idx++] = auxv[i];
+
+	r = stack_write_bytes(vas, &sp, stack_words, words * sizeof(uint64_t), 8,
+						  NULL);
+	kfree(stack_words);
+	if (r != VFS_OK)
+		return r;
+
+	*rsp_out = sp;
+	return VFS_OK;
 }

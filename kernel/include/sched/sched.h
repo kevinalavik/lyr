@@ -54,6 +54,8 @@ typedef struct tcb {
 	tcb_mode_t mode;
 	bool is_idle;
 	bool reap_process;
+	uint64_t fs_base;
+	uint64_t user_entry_rsp;
 	uint64_t rsp;
 	uint64_t kstack_base;
 	uint64_t kstack_top;

@@ -852,3 +852,19 @@ void lyrterm_putcp(uint32_t codepoint)
 
 	spinlock_release(&lyrterm_render_lock);
 }
+
+void lyrterm_get_size(uint32_t *cols_out, uint32_t *rows_out,
+					  uint32_t *width_out, uint32_t *height_out)
+{
+	if (cols_out)
+		*cols_out = initialized ? cols : 0;
+
+	if (rows_out)
+		*rows_out = initialized ? rows : 0;
+
+	if (width_out)
+		*width_out = initialized ? fb_width : 0;
+
+	if (height_out)
+		*height_out = initialized ? fb_height : 0;
+}

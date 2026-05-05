@@ -20,8 +20,8 @@ int init_spawn(const char *path)
 	if (!vas)
 		return VFS_ERR_NOMEM;
 
-	uint64_t entry = 0;
-	int r = elf_load_user_executable(vas, path, &entry);
+	elf_user_image_t image;
+	int r = elf_load_user_executable(vas, path, &image);
 	if (r != VFS_OK) {
 		log_err("init", "failed to load %s status=%s(%d)", path,
 				vfs_err_name(r), r);
@@ -39,6 +39,17 @@ int init_spawn(const char *path)
 		return VFS_ERR_NOMEM;
 	}
 
+	const char *argv[] = { path, NULL };
+	uint64_t user_rsp = 0;
+	r = elf_build_initial_stack(vas, INIT_STACK_TOP, path, argv, 1, NULL, 0,
+								&image, &user_rsp);
+	if (r != VFS_OK) {
+		log_err("init", "failed to build initial stack for %s status=%s(%d)",
+				path, vfs_err_name(r), r);
+		vas_destroy(vas);
+		return r;
+	}
+
 	pcb_t *process = sched_process_create("init", vas);
 	if (!process) {
 		vas_destroy(vas);
@@ -46,11 +57,11 @@ int init_spawn(const char *path)
 	}
 
 	tcb_t *thread =
-		sched_create_user_thread(process, "init", entry, INIT_STACK_TOP - 16);
+		sched_create_user_thread(process, "init", image.entry, user_rsp);
 	if (!thread)
 		return VFS_ERR_NOMEM;
 
-	log_debug("init", "spawned %s entry=0x%llx stack=0x%llx", path, entry,
-			  INIT_STACK_TOP);
+	log_debug("init", "spawned %s entry=0x%llx stack=0x%llx", path, image.entry,
+			  user_rsp);
 	return VFS_OK;
 }

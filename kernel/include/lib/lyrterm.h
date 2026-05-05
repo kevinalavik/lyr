@@ -18,5 +18,7 @@ size_t lyrterm_drain(size_t budget);
 void lyrterm_flush(void);
 size_t lyrterm_dropped_bytes(void);
 void lyrterm_apply_theme(const lyrterm_theme_t *theme);
+void lyrterm_get_size(uint32_t *cols_out, uint32_t *rows_out,
+					  uint32_t *width_out, uint32_t *height_out);
 
 #endif // _LYR_LIB_LYRTERM_H

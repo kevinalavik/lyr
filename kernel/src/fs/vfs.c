@@ -28,6 +28,8 @@ const char *vfs_err_name(int err)
 		return "VFS_ERR_ISDIR";
 	case VFS_ERR_INVAL:
 		return "VFS_ERR_INVAL";
+	case VFS_ERR_NOTTY:
+		return "VFS_ERR_NOTTY";
 	case VFS_ERR_NAMETOOLONG:
 		return "VFS_ERR_NAMETOOLONG";
 	case VFS_ERR_TIMEOUT:
@@ -571,6 +573,19 @@ int vfs_write(vfs_file_t *file, const void *buf, size_t len, size_t *done)
 		*done = n;
 	log_trace("vfs", "write node=%p off=%llu len=%zu done=%zu status=%s(%d)",
 			  file->node, off, len, n, vfs_err_name(r), r);
+	return r;
+}
+
+int vfs_ioctl(vfs_file_t *file, unsigned long request, void *arg)
+{
+	if (!file || !file->node)
+		return VFS_ERR_BADF;
+	if (!file->node->ops || !file->node->ops->ioctl)
+		return VFS_ERR_NOTTY;
+
+	int r = file->node->ops->ioctl(file, request, arg);
+	log_trace("vfs", "ioctl node=%p req=0x%lx status=%s(%d)", file->node,
+			  request, vfs_err_name(r), r);
 	return r;
 }
 

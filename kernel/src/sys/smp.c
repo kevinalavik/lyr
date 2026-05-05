@@ -20,6 +20,20 @@ uint32_t bootstrap_lapic_id = 0;
 atomic_uint started_cpus = 0;
 cpu_local_t cpu_locals[MAX_CPUS];
 
+static void cpu_enable_sse(void)
+{
+	uint64_t cr0 = read_cr0();
+	uint64_t cr4 = read_cr4();
+
+	cr0 &= ~(1ULL << 2);
+	cr0 |= (1ULL << 1);
+	cr4 |= (1ULL << 9) | (1ULL << 10);
+
+	write_cr0(cr0);
+	write_cr4(cr4);
+	fninit();
+}
+
 static inline void set_cpu_local(cpu_local_t *cpu)
 {
 	wrmsr(MSR_GS_BASE, (uint64_t)cpu);
@@ -43,6 +57,7 @@ cpu_local_t *get_cpu_local(void)
 static void init_cpu(cpu_local_t *cpu)
 {
 	gdt_init();
+	cpu_enable_sse();
 	set_cpu_local(cpu);
 	gdt_tss_init_cpu(cpu->cpu_index, 0);
 	idt_init();

@@ -1,0 +1,11 @@
+[host_machine]
+system = 'lyr'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+[binaries]
+c = 'x86_64-lyr-gcc'
+cpp = 'x86_64-lyr-g++'
+ar = 'x86_64-lyr-ar'
+strip = 'x86_64-lyr-strip'
+ld = 'x86_64-lyr-ld'

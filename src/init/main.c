@@ -11,6 +11,7 @@
 #define TMPFS_TYPE "tmpfs"
 
 #define MOTD_PATH "/etc/motd"
+#define TEST_PATH "/bin/hello-world"
 
 #define NET_DEVICES_PATH "/dev/net/devices"
 #define NET_ROUTES_PATH "/dev/net/routes"
@@ -438,6 +439,13 @@ int main(void)
 
 	write_line("");
 	print_file(MOTD_PATH);
+
+	init_msg("exec: /bin/hello-world");
+	static char test_path[] = TEST_PATH;
+	char *const argv[] = { test_path, 0 };
+	char *const envp[] = { 0 };
+	if (lyr_execve(test_path, argv, envp) < 0)
+		init_msg("exec: failed");
 
 	return 0;
 }

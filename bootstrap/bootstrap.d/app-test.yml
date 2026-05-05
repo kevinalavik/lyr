@@ -1,0 +1,18 @@
+sources:
+  - name: tests
+    subdir: ''
+
+packages:
+- name: hello-world
+  labels: [ x86_64 ]
+  architecture: 'x86_64'
+  revision: 1
+  from_source: tests
+  pkgs_required:
+    - mlibc
+  tools_required:
+    - lyr-gcc
+    - lyr-binutils
+  build:
+    - args: 'x86_64-lyr-gcc -o @THIS_BUILD_DIR@/hello-world @THIS_SOURCE_DIR@/hello.c'
+    - args: 'install -D @THIS_BUILD_DIR@/hello-world @SYSROOT_DIR@/bin/hello-world'
