@@ -847,7 +847,7 @@ interrupt_frame_t *sched_syscall_exit(interrupt_frame_t *frame, int status)
 		return frame;
 
 	spinlock_acquire(&cpu->runq_lock);
-	thread_finish_current_locked(cpu, frame, status, " via int80");
+	thread_finish_current_locked(cpu, frame, status, " via syscall");
 
 	interrupt_frame_t *next_frame = schedule_locked(cpu, frame, false);
 	spinlock_release(&cpu->runq_lock);

@@ -12,6 +12,8 @@
 struct tcb;
 
 typedef struct cpu_local {
+	uint64_t syscall_rsp0;
+	uint64_t syscall_user_rsp;
 	uint32_t lapic_id;
 	uint32_t cpu_index;
 	atomic_bool ready;

@@ -1,4 +1,5 @@
 #include <sys/syscall.h>
+#include <cpu/instr.h>
 #include <debug/log.h>
 #include <fs/mount.h>
 #include <fs/vfs.h>
@@ -6,6 +7,28 @@
 #include <lib/string.h>
 #include <sched/sched.h>
 #include <util/kprintf.h>
+
+#define MSR_EFER 0xC0000080
+#define MSR_STAR 0xC0000081
+#define MSR_LSTAR 0xC0000082
+#define MSR_SFMASK 0xC0000084
+#define EFER_SCE (1ULL << 0)
+#define RFLAGS_IF (1ULL << 9)
+#define KERNEL_CS 0x08
+#define USER_CS 0x1B
+
+extern void syscall_entry(void);
+
+void syscall_init(void)
+{
+	uint64_t efer = rdmsr(MSR_EFER);
+	uint64_t star = ((uint64_t)(KERNEL_CS & ~0x3) << 32) |
+					((uint64_t)((USER_CS - 0x10) & ~0x3) << 48);
+	wrmsr(MSR_STAR, star);
+	wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)syscall_entry);
+	wrmsr(MSR_SFMASK, RFLAGS_IF);
+	wrmsr(MSR_EFER, efer | EFER_SCE);
+}
 
 typedef long (*syscall_handler_t)(interrupt_frame_t *frame);
 
@@ -272,7 +295,7 @@ static long sys_mount_handler(interrupt_frame_t *frame)
 	if (r != VFS_OK)
 		return r;
 
-	return fs_mount_spec(source, target, fstype, frame->rcx,
+	return fs_mount_spec(source, target, fstype, frame->r10,
 						 (const char *)frame->r8);
 }
 

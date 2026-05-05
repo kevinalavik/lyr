@@ -8,6 +8,7 @@
 #include <debug/log.h>
 #include <sched/sched.h>
 #include <stdatomic.h>
+#include <sys/syscall.h>
 
 #define MSR_GS_BASE 0xC0000101
 #define CPU_START_TIMEOUT 10000000UL
@@ -45,6 +46,7 @@ static void init_cpu(cpu_local_t *cpu)
 	set_cpu_local(cpu);
 	gdt_tss_init_cpu(cpu->cpu_index, 0);
 	idt_init();
+	syscall_init();
 	write_cr3((uint64_t)kernel_ptable);
 	apic_cpu_init(cpu->cpu_index);
 	if (!atomic_load_explicit(&cpu->sched_ready, memory_order_acquire))

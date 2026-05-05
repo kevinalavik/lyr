@@ -23,6 +23,7 @@ enum {
 
 #ifdef LYR_KERNEL
 #include <cpu/idt.h>
+void syscall_init(void);
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame);
 #endif
 

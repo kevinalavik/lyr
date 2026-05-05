@@ -33,6 +33,7 @@
 #include <fs/devfs.h>
 #include <ipc/ipc.h>
 #include <net/net.h>
+#include <sys/syscall.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -123,6 +124,7 @@ void lyr_entry(void)
 	gdt_tss_init(_lyr_kstack_top);
 	log_info("entry", "GDT ok");
 	idt_init();
+	syscall_init();
 	log_info("entry", "IDT ok");
 
 	/* physical memory  */

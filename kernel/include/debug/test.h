@@ -1278,7 +1278,7 @@ static void sched_test(void)
 			0xF0, 0x48, 0xFF, 0x00, /* lock inc qword [rax] */
 			0x48, 0xC7, 0xC0, (SYS_EXIT), 0, 0, 0, /* mov rax, SYS_EXIT */
 			0x48, 0x31, 0xFF, /* xor rdi, rdi */
-			0xCD, 0x80, /* int 0x80 */
+			0x0F, 0x05, /* syscall */
 			0xEB, 0xFE, /* jmp $ */
 		};
 		sched_write_imm64(&program[2], data_va);
@@ -1302,7 +1302,8 @@ static void sched_test(void)
 		assert(!sched_process_exists(user_pid));
 		assert(!sched_reap_pending());
 		page_unref(data_page);
-		log_debug("sched_test", "userspace int80 exit ok on cpu%u", user_cpu);
+		log_debug("sched_test", "userspace syscall exit ok on cpu%u",
+				  user_cpu);
 	}
 
 	log_debug("sched_test", "all tests passed");

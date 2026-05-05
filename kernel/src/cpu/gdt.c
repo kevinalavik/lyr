@@ -121,6 +121,7 @@ void gdt_tss_init_cpu(uint32_t cpu_index, uint64_t rsp0)
 	memset(tss, 0, sizeof(*tss));
 	tss->rsp[0] = rsp0;
 	tss->iopb = sizeof(*tss);
+	cpu_locals[cpu_index].syscall_rsp0 = rsp0;
 	gdt_set_tss_descriptor(tss);
 
 	__asm__ volatile("ltr %%ax" ::"a"((uint16_t)0x28) : "memory");
@@ -137,5 +138,7 @@ void gdt_set_kernel_stack(uint64_t rsp0)
 	uint32_t index = cpu ? cpu->cpu_index : 0;
 	if (index >= MAX_CPUS)
 		index = 0;
+	if (cpu)
+		cpu->syscall_rsp0 = rsp0;
 	cpu_tss[index].rsp[0] = rsp0;
 }
