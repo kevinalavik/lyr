@@ -192,25 +192,20 @@ int main(void)
 {
 	int s;
 	struct sockaddr_in addr;
-	const char msg[] = "hello from lyrOS/mlibc over TCP\n";
-	char buf[256];
+	const char msg[] =
+		"lyrOS (c) 2026 Kevin Alavik, made for the love of computing and my beautiful girlfriend ♥\n";
+	char buf[512];
 	ssize_t n;
+	struct in_addr ip;
 
 	printf("\033[1;36mHello, World from mlibc!\033[0m\n\n");
 
-	struct in_addr ip;
-
 	if (dns_resolve_a_tcp("tcpbin.com", &ip) < 0) {
-		printf("\033[1;31mdns:\033[0m resolve failed\n");
+		printf("\033[1;31mdns:\033[0m tcpbin.com resolve failed\n");
 		return 1;
 	}
 
 	printf("\033[1;32mdns:\033[0m tcpbin.com -> %s\n", inet_ntoa(ip));
-
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(4242);
-	addr.sin_addr = ip;
 
 	s = socket(AF_INET, SOCK_STREAM, 0);
 	if (s < 0) {
@@ -221,7 +216,7 @@ int main(void)
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(4242);
-	addr.sin_addr.s_addr = inet_addr("45.79.112.203"); /* tcpbin.com */
+	addr.sin_addr = ip;
 
 	printf("\033[1;34mtcp:\033[0m connecting to tcpbin.com:4242...\n");
 
@@ -248,7 +243,15 @@ int main(void)
 	}
 
 	buf[n] = 0;
+	if (strcmp(buf, msg) != 0) {
+		printf("\033[1;31mtcp:\033[0m response mismatch\n");
+		printf("expected:\n%s\n", msg);
+		printf("got:\n%s\n", buf);
+		close(s);
+		return 1;
+	}
 	printf("\033[1;35mecho:\033[0m %s", buf);
+
 	close(s);
 
 	return 0;
