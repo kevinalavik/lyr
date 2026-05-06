@@ -24,3 +24,5 @@ system-root/
 *.a
 rootfs/root/test
 rootfs/usr
+
+*.xbstrap
