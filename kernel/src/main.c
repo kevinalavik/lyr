@@ -33,6 +33,7 @@
 #include <fs/devfs.h>
 #include <ipc/ipc.h>
 #include <net/net.h>
+#include <net/socket.h>
 #include <sys/syscall.h>
 #include <dev/console.h>
 
@@ -202,6 +203,8 @@ void lyr_entry(void)
 	log_info("entry", "Block layer ok");
 	assert(net_init() == VFS_OK);
 	log_info("entry", "Network core ok");
+	assert(socket_init() == VFS_OK);
+	log_info("entry", "Socket layer ok");
 
 	/* ACPI */
 	LIMINE_REQUIRE(rsdp_request);

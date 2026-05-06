@@ -86,10 +86,19 @@ int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 {
 	if (!dev || !out_mac)
 		return VFS_ERR_INVAL;
-	if (dev->loopback) {
+
+	/*
+	 * Traffic to the address assigned to this interface is local traffic.
+	 * Do not ARP for our own IPv4 address: no peer will answer, and callers
+	 * such as the init interface probe will stall until the ARP timeout.
+	 * Return the device MAC; the IPv4 send path will short-circuit such frames
+	 * back into net_receive_frame().
+	 */
+	if (dev->loopback || target_ip == dev->ipv4_addr) {
 		memcpy(out_mac, dev->mac, NET_ETH_ALEN);
 		return VFS_OK;
 	}
+
 	if (arp_cache_lookup(dev, target_ip, out_mac))
 		return VFS_OK;
 

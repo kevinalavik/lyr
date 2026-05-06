@@ -9,6 +9,9 @@
 #include <mm/vmm.h>
 #include <sched/sched.h>
 #include <util/kprintf.h>
+#include <mm/heap.h>
+#include <net/net.h>
+#include <net/socket.h>
 
 #define MSR_EFER 0xC0000080
 #define MSR_STAR 0xC0000081
@@ -147,6 +150,11 @@ static long sys_read_handler(interrupt_frame_t *frame)
 	if (!file)
 		return VFS_ERR_BADF;
 
+	if (file->private_data) {
+		socket_t *sock = file->private_data;
+		return net_recv(sock, buf, len, 0);
+	}
+
 	size_t done = 0;
 	int r = vfs_read(file, buf, len, &done);
 	if (r != VFS_OK)
@@ -164,13 +172,26 @@ static long sys_write_handler(interrupt_frame_t *frame)
 	const char *buf = (const char *)frame->rsi;
 	size_t len = (size_t)frame->rdx;
 
-	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf ||
-		!syscall_user_range_ok((uint64_t)buf, len))
+	log_debug("syscall", "write: fd=%d buf=0x%llx len=%zu", fd, (uint64_t)buf,
+			  len);
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	if (len && (!buf || !syscall_user_range_ok((uint64_t)buf, len)))
 		return VFS_ERR_INVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 	if (!file)
 		return VFS_ERR_BADF;
+
+	if (file->private_data) {
+		socket_t *sock = file->private_data;
+		return net_send(sock, buf, len, 0);
+	}
+
+	if (!buf)
+		return VFS_ERR_INVAL;
 
 	size_t done = 0;
 	int r = vfs_write(file, buf, len, &done);
@@ -218,7 +239,12 @@ static long sys_close_handler(interrupt_frame_t *frame)
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !thread->process->files[fd])
 		return VFS_ERR_BADF;
 
-	vfs_close(thread->process->files[fd]);
+	vfs_file_t *file = thread->process->files[fd];
+	if (file->private_data) {
+		socket_t *sock = file->private_data;
+		net_close(sock);
+	}
+	vfs_close(file);
 	thread->process->files[fd] = NULL;
 	return VFS_OK;
 }
@@ -633,6 +659,521 @@ static long sys_ioctl_handler(interrupt_frame_t *frame)
 	return vfs_ioctl(file, request, arg);
 }
 
+static long sys_socket_handler(interrupt_frame_t *frame)
+{
+	int domain = (int)frame->rdi;
+	int type = (int)frame->rsi;
+	int protocol = (int)frame->rdx;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = NULL;
+	int r = net_socket(&sock, domain, type, protocol);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	for (int fd = 0; fd < SCHED_FILE_MAX; fd++) {
+		if (!thread->process->files[fd]) {
+			vfs_file_t *file = kzalloc(sizeof(*file));
+			if (!file) {
+				net_close(sock);
+				return VFS_ERR_NOMEM;
+			}
+			file->node = NULL;
+			file->flags = 0;
+			file->offset = 0;
+			file->private_data = sock;
+			thread->process->files[fd] = file;
+			log_debug("syscall", "socket created fd=%d", fd);
+			return fd;
+		}
+	}
+
+	net_close(sock);
+	return VFS_ERR_NOMEM;
+}
+
+static long sys_bind_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t addr_ptr = frame->rsi;
+	socklen_t addrlen = (socklen_t)frame->rdx;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	if (!addr_ptr || !syscall_user_range_ok(addr_ptr, addrlen))
+		return VFS_ERR_INVAL;
+
+	sockaddr_t addr;
+	if (addrlen > sizeof(addr))
+		addrlen = sizeof(addr);
+	memcpy(&addr, (void *)addr_ptr, addrlen);
+
+	return net_bind(sock, &addr, addrlen);
+}
+
+static long sys_connect_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t addr_ptr = frame->rsi;
+	socklen_t addrlen = (socklen_t)frame->rdx;
+
+	log_debug("syscall", "connect: fd=%d addr=%llx len=%d", fd, addr_ptr,
+			  addrlen);
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	if (!addr_ptr || !syscall_user_range_ok(addr_ptr, addrlen))
+		return VFS_ERR_INVAL;
+
+	sockaddr_t addr;
+	if (addrlen > sizeof(addr))
+		addrlen = sizeof(addr);
+	memcpy(&addr, (void *)addr_ptr, addrlen);
+
+	log_debug("syscall", "connect: calling net_connect");
+	long r = net_connect(sock, &addr, addrlen);
+	log_debug("syscall", "connect: net_connect returned %ld", r);
+	return r;
+}
+
+static long sys_listen_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	int backlog = (int)frame->rsi;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	return net_listen(sock, backlog);
+}
+
+static long sys_accept_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t addr_ptr = frame->rsi;
+	uint64_t addrlen_ptr = frame->rdx;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	socket_t *client = NULL;
+	sockaddr_t addr;
+	socklen_t addrlen = 0;
+
+	if (addrlen_ptr && syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		addrlen = *(socklen_t *)addrlen_ptr;
+	}
+
+	int r = net_accept(sock, &client, &addr, &addrlen);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	for (int newfd = 0; newfd < SCHED_FILE_MAX; newfd++) {
+		if (!thread->process->files[newfd]) {
+			vfs_file_t *newfile = kzalloc(sizeof(*newfile));
+			if (!newfile) {
+				net_close(client);
+				return VFS_ERR_NOMEM;
+			}
+			newfile->node = NULL;
+			newfile->flags = 0;
+			newfile->offset = 0;
+			newfile->private_data = client;
+			thread->process->files[newfd] = newfile;
+
+			if (addr_ptr && addrlen_ptr &&
+				syscall_user_range_ok(addr_ptr, sizeof(sockaddr_t)) &&
+				syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+				memcpy((void *)addr_ptr, &addr,
+					   addrlen < sizeof(sockaddr_t) ? addrlen :
+													  sizeof(sockaddr_t));
+				*(socklen_t *)addrlen_ptr = addrlen;
+			}
+
+			log_debug("syscall", "accept created fd=%d", newfd);
+			return newfd;
+		}
+	}
+
+	net_close(client);
+	return VFS_ERR_NOMEM;
+}
+
+static long sys_send_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t buf_ptr = frame->rsi;
+	size_t len = (size_t)frame->rdx;
+	int flags = (int)frame->r10;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
+		!syscall_user_range_ok(buf_ptr, len))
+		return VFS_ERR_INVAL;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	return net_send(sock, (const void *)buf_ptr, len, flags);
+}
+
+static long sys_recv_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t buf_ptr = frame->rsi;
+	size_t len = (size_t)frame->rdx;
+	int flags = (int)frame->r10;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
+		!syscall_user_range_ok(buf_ptr, len))
+		return VFS_ERR_INVAL;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	return net_recv(sock, (void *)buf_ptr, len, flags);
+}
+
+static long sys_sendto_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t buf_ptr = frame->rsi;
+	size_t len = (size_t)frame->rdx;
+	int flags = (int)frame->r10;
+	uint64_t dest_ptr = frame->r8;
+	socklen_t dest_len = (socklen_t)frame->r9;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
+		!syscall_user_range_ok(buf_ptr, len))
+		return VFS_ERR_INVAL;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	sockaddr_t dest;
+	if (dest_ptr && syscall_user_range_ok(dest_ptr, dest_len)) {
+		if (dest_len > sizeof(dest))
+			dest_len = sizeof(dest);
+		memcpy(&dest, (void *)dest_ptr, dest_len);
+	} else {
+		memset(&dest, 0, sizeof(dest));
+		dest_len = 0;
+	}
+
+	return net_sendto(sock, (const void *)buf_ptr, len, flags, &dest, dest_len);
+}
+
+static long sys_recvfrom_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t buf_ptr = frame->rsi;
+	size_t len = (size_t)frame->rdx;
+	int flags = (int)frame->r10;
+	uint64_t addr_ptr = frame->r8;
+	uint64_t addrlen_ptr = frame->r9;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
+		!syscall_user_range_ok(buf_ptr, len))
+		return VFS_ERR_INVAL;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	sockaddr_t addr;
+	socklen_t addrlen = 0;
+
+	if (addr_ptr && addrlen_ptr &&
+		syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		addrlen = *(socklen_t *)addrlen_ptr;
+	}
+
+	int r = net_recvfrom(sock, (void *)buf_ptr, len, flags, &addr, &addrlen);
+
+	if (r >= 0 && addr_ptr && addrlen_ptr &&
+		syscall_user_range_ok(addr_ptr, sizeof(sockaddr_t)) &&
+		syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		memcpy((void *)addr_ptr, &addr,
+			   addrlen < sizeof(sockaddr_t) ? addrlen : sizeof(sockaddr_t));
+		*(socklen_t *)addrlen_ptr = addrlen;
+	}
+
+	return r;
+}
+
+static long sys_shutdown_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	int how = (int)frame->rsi;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	return net_shutdown(sock, how);
+}
+
+static long sys_getsockname_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t addr_ptr = frame->rsi;
+	uint64_t addrlen_ptr = frame->rdx;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	socklen_t addrlen = 0;
+	if (addrlen_ptr && syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		addrlen = *(socklen_t *)addrlen_ptr;
+	}
+
+	sockaddr_t addr;
+	int r = net_getsockname(sock, &addr, &addrlen);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	if (addr_ptr && addrlen_ptr &&
+		syscall_user_range_ok(addr_ptr, sizeof(sockaddr_t)) &&
+		syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		memcpy((void *)addr_ptr, &addr,
+			   addrlen < sizeof(sockaddr_t) ? addrlen : sizeof(sockaddr_t));
+		*(socklen_t *)addrlen_ptr = addrlen;
+	}
+
+	return NET_SOCK_OK;
+}
+
+static long sys_getpeername_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	uint64_t addr_ptr = frame->rsi;
+	uint64_t addrlen_ptr = frame->rdx;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	socklen_t addrlen = 0;
+	if (addrlen_ptr && syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		addrlen = *(socklen_t *)addrlen_ptr;
+	}
+
+	sockaddr_t addr;
+	int r = net_getpeername(sock, &addr, &addrlen);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	if (addr_ptr && addrlen_ptr &&
+		syscall_user_range_ok(addr_ptr, sizeof(sockaddr_t)) &&
+		syscall_user_range_ok(addrlen_ptr, sizeof(socklen_t))) {
+		memcpy((void *)addr_ptr, &addr,
+			   addrlen < sizeof(sockaddr_t) ? addrlen : sizeof(sockaddr_t));
+		*(socklen_t *)addrlen_ptr = addrlen;
+	}
+
+	return NET_SOCK_OK;
+}
+
+static long sys_setsockopt_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	int level = (int)frame->rsi;
+	int optname = (int)frame->rdx;
+	uint64_t optval_ptr = frame->r10;
+	socklen_t optlen = (socklen_t)frame->r8;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	void *optval = NULL;
+	char optbuf[256];
+
+	if (optval_ptr && optlen > 0 && optlen <= sizeof(optbuf) &&
+		syscall_user_range_ok(optval_ptr, optlen)) {
+		memcpy(optbuf, (void *)optval_ptr, optlen);
+		optval = optbuf;
+	}
+
+	return net_setsockopt(sock, level, optname, optval, optlen);
+}
+
+static long sys_getsockopt_handler(interrupt_frame_t *frame)
+{
+	int fd = (int)frame->rdi;
+	int level = (int)frame->rsi;
+	int optname = (int)frame->rdx;
+	uint64_t optval_ptr = frame->r10;
+	uint64_t optlen_ptr = frame->r8;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return VFS_ERR_BADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return VFS_ERR_BADF;
+
+	socket_t *sock = file->private_data;
+	if (!sock)
+		return VFS_ERR_BADF;
+
+	socklen_t optlen = 0;
+	if (optlen_ptr && syscall_user_range_ok(optlen_ptr, sizeof(socklen_t))) {
+		optlen = *(socklen_t *)optlen_ptr;
+	}
+
+	char optbuf[256];
+	socklen_t actual_len = sizeof(optbuf);
+	int r = net_getsockopt(sock, level, optname, optbuf, &actual_len);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	if (optval_ptr && optlen_ptr &&
+		syscall_user_range_ok(optval_ptr, actual_len) &&
+		syscall_user_range_ok(optlen_ptr, sizeof(socklen_t))) {
+		memcpy((void *)optval_ptr, optbuf, actual_len);
+		*(socklen_t *)optlen_ptr = actual_len;
+	}
+
+	return NET_SOCK_OK;
+}
+
 static syscall_handler_t syscall_table[] = {
 	[SYS_READ] = sys_read_handler,
 	[SYS_WRITE] = sys_write_handler,
@@ -657,6 +1198,20 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_MUNMAP] = sys_munmap_handler,
 	[SYS_MPROTECT] = sys_mprotect_handler,
 	[SYS_IOCTL] = sys_ioctl_handler,
+	[SYS_SOCKET] = sys_socket_handler,
+	[SYS_BIND] = sys_bind_handler,
+	[SYS_CONNECT] = sys_connect_handler,
+	[SYS_LISTEN] = sys_listen_handler,
+	[SYS_ACCEPT] = sys_accept_handler,
+	[SYS_GETSOCKNAME] = sys_getsockname_handler,
+	[SYS_GETPEERNAME] = sys_getpeername_handler,
+	[SYS_SEND] = sys_send_handler,
+	[SYS_RECV] = sys_recv_handler,
+	[SYS_SENDTO] = sys_sendto_handler,
+	[SYS_RECVFROM] = sys_recvfrom_handler,
+	[SYS_SHUTDOWN] = sys_shutdown_handler,
+	[SYS_SETSOCKOPT] = sys_setsockopt_handler,
+	[SYS_GETSOCKOPT] = sys_getsockopt_handler,
 };
 
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)

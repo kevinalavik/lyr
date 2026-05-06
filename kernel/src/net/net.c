@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <dev/async.h>
 #include <debug/log.h>
 #include <dev/pit.h>
 #include <fs/devfs.h>
@@ -569,8 +570,17 @@ void net_receive_frame(netdev_t *dev, const void *frame, size_t len)
 
 void net_poll_until(netdev_t *dev, uint64_t until_tick, int *flag)
 {
-	while (!*flag && pit_get_ticks() < until_tick)
-		net_poll_dev(dev);
+	if (!flag)
+		return;
+
+	while (!*flag && pit_get_ticks() < until_tick) {
+		async_io_drain(16);
+		if (dev)
+			net_poll_dev(dev);
+		else
+			net_poll_all();
+		__asm__ volatile("pause" ::: "memory");
+	}
 }
 
 void net_poll_all(void)

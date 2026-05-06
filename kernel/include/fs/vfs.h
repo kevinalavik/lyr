@@ -141,6 +141,7 @@ struct vfs_file {
 	uint32_t flags;
 	uint64_t offset;
 	vfs_cred_t cred;
+	void *private_data;
 };
 
 extern const vfs_cred_t vfs_root_cred;

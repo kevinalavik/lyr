@@ -44,6 +44,18 @@ int net_send_ipv4_udp(netdev_t *dev, const uint8_t dst_mac[6],
 	udp->checksum = 0;
 	memcpy(body, payload, payload_len);
 
+	/*
+	 * If the destination is this interface's own address, deliver the frame
+	 * through the local RX path instead of handing it to the NIC. Real hardware
+	 * usually will not reflect a unicast frame addressed to our own MAC back to
+	 * us, but local sockets must still be able to connect to the interface IP.
+	 */
+	if (dst_ip == dev->ipv4_addr) {
+		dev->tx_packets++;
+		net_receive_frame(dev, frame, frame_len);
+		return VFS_OK;
+	}
+
 	return dev->send(dev, frame, frame_len);
 }
 
@@ -99,6 +111,18 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 	pseudo.proto = IP_PROTO_TCP;
 	pseudo.len = htons(tcp_len);
 	tcp->checksum = htons(net_checksum2(&pseudo, sizeof(pseudo), tcp, tcp_len));
+
+	/*
+	 * Local delivery for connections to one of our own IPv4 addresses. This is
+	 * required for tests such as connect(10.0.2.15:port) from the same host; ARP
+	 * can resolve the address to our MAC, but the NIC will not normally loop that
+	 * packet back into RX.
+	 */
+	if (dst_ip == dev->ipv4_addr) {
+		dev->tx_packets++;
+		net_receive_frame(dev, frame, frame_len);
+		return VFS_OK;
+	}
 
 	return dev->send(dev, frame, frame_len);
 }

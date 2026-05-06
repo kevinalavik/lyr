@@ -96,6 +96,7 @@ uint32_t net_default_ipv4(void);
 uint32_t net_default_gateway(void);
 
 typedef struct tcp_conn net_tcp_conn_t;
+
 int net_tcp_connect(const char *host, uint16_t port, net_tcp_conn_t **out,
 					uint64_t timeout_ms);
 int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,

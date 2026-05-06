@@ -102,6 +102,118 @@ static inline long lyr_arch_prctl(long code, unsigned long addr)
 	return lyr_syscall3(SYS_ARCH_PRCTL, code, addr, 0);
 }
 
+#define AF_UNIX 1
+#define AF_INET 2
+
+#define SOCK_STREAM 1
+#define SOCK_DGRAM 2
+
+typedef unsigned short sa_family_t;
+typedef unsigned int socklen_t;
+
+static inline unsigned short htons(unsigned short h)
+{
+	return ((h & 0xff) << 8) | ((h >> 8) & 0xff);
+}
+
+static inline unsigned int htonl(unsigned int h)
+{
+	return ((h & 0xff) << 24) | ((h & 0xff00) << 8) |
+		   ((h >> 8) & 0xff00) | ((h >> 24) & 0xff);
+}
+
+static inline unsigned int ntohl(unsigned int n)
+{
+	return htonl(n);
+}
+
+static inline unsigned short ntohs(unsigned short n)
+{
+	return htons(n);
+}
+
+typedef struct {
+	char sun_path[108];
+	sa_family_t sun_family;
+} sockaddr_un_t;
+
+typedef struct {
+	sa_family_t sin_family;
+	unsigned short sin_port;
+	unsigned int sin_addr;
+	unsigned char sin_zero[8];
+} sockaddr_in_t;
+
+typedef union {
+	sa_family_t sa_family;
+	sockaddr_un_t sun;
+	sockaddr_in_t sin;
+} sockaddr_t;
+
+static inline int lyr_socket(int domain, int type, int protocol)
+{
+	return (int)lyr_syscall3(SYS_SOCKET, domain, type, protocol);
+}
+
+static inline int lyr_bind(int fd, const sockaddr_t *addr, socklen_t addrlen)
+{
+	return (int)lyr_syscall3(SYS_BIND, fd, (long)addr, addrlen);
+}
+
+static inline int lyr_connect(int fd, const sockaddr_t *addr, socklen_t addrlen)
+{
+	return (int)lyr_syscall3(SYS_CONNECT, fd, (long)addr, addrlen);
+}
+
+static inline int lyr_listen(int fd, int backlog)
+{
+	return (int)lyr_syscall3(SYS_LISTEN, fd, backlog, 0);
+}
+
+static inline int lyr_accept(int fd, sockaddr_t *addr, socklen_t *addrlen)
+{
+	return (int)lyr_syscall3(SYS_ACCEPT, fd, (long)addr, (long)addrlen);
+}
+
+static inline long lyr_send(int fd, const void *buf, size_t len, int flags)
+{
+	return lyr_syscall3(SYS_SEND, fd, (long)buf, (long)len);
+}
+
+static inline long lyr_recv(int fd, void *buf, size_t len, int flags)
+{
+	return lyr_syscall3(SYS_RECV, fd, (long)buf, (long)len);
+}
+
+static inline long lyr_sendto(int fd, const void *buf, size_t len, int flags,
+							   const sockaddr_t *dest, socklen_t dest_len)
+{
+	return lyr_syscall6(SYS_SENDTO, fd, (long)buf, (long)len, flags,
+						(long)dest, dest_len);
+}
+
+static inline long lyr_recvfrom(int fd, void *buf, size_t len, int flags,
+								 sockaddr_t *addr, socklen_t *addrlen)
+{
+	return lyr_syscall6(SYS_RECVFROM, fd, (long)buf, (long)len, flags,
+						(long)addr, (long)addrlen);
+}
+
+static inline int lyr_shutdown(int fd, int how)
+{
+	return (int)lyr_syscall3(SYS_SHUTDOWN, fd, how, 0);
+}
+
+static inline int lyr_getsockname(int fd, sockaddr_t *addr, socklen_t *addrlen)
+{
+	return (int)lyr_syscall3(SYS_GETSOCKNAME, fd, (long)addr, (long)addrlen);
+}
+
+static inline int lyr_getpeername(int fd, sockaddr_t *addr, socklen_t *addrlen)
+{
+	return (int)lyr_syscall3(SYS_GETPEERNAME, fd, (long)addr, (long)addrlen);
+}
+
 static inline void lyr_exit(int status)
 {
 	lyr_syscall3(SYS_EXIT, status, 0, 0);

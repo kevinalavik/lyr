@@ -1,13 +1,16 @@
 #include "internal.h"
+#include <debug/log.h>
 #include <dev/pit.h>
 #include <fs/vfs.h>
 #include <lib/nanoprintf.h>
 #include <lib/string.h>
 #include <mm/heap.h>
+#include <net/net.h>
 
 #define TCP_RST 0x04
 
 #define TCP_PASSIVE_RESPONSE_CAP 32768
+#define TCP_ACTIVE_RX_CAP 32768
 
 typedef struct tcp_conn {
 	netdev_t *dev;
@@ -134,6 +137,8 @@ static void tcp_handle_listen_syn(netdev_t *dev,
 static void tcp_close_passive(tcp_conn_t *conn)
 {
 	tcp_conn_remove(conn);
+	if (conn->rx_buf)
+		kfree(conn->rx_buf);
 	kfree(conn);
 }
 
@@ -146,6 +151,12 @@ static int tcp_send_payload(tcp_conn_t *conn, const void *payload, size_t len)
 		uint32_t seq = conn->seq;
 
 		conn->seq += (uint32_t)chunk;
+
+		log_debug("tcp", "send payload: %u.%u.%u.%u:%u -> local:%u seq=%u ack=%u len=%zu",
+				  (conn->remote_ip >> 24) & 0xff,
+				  (conn->remote_ip >> 16) & 0xff,
+				  (conn->remote_ip >> 8) & 0xff, conn->remote_ip & 0xff,
+				  conn->remote_port, conn->local_port, seq, conn->ack, chunk);
 
 		int r = net_send_ipv4_tcp(conn->dev, conn->peer_mac, conn->remote_ip,
 								  conn->local_port, conn->remote_port, seq,
@@ -171,9 +182,14 @@ static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
 
 	size_t response_len = 0;
 
+	log_debug("tcp", "passive payload: local_port=%u remote_port=%u len=%zu",
+			  conn->local_port, conn->remote_port, payload_len);
+
 	int r = conn->handler(
 		conn->dev, conn->remote_ip, conn->remote_port, payload, payload_len,
 		response, TCP_PASSIVE_RESPONSE_CAP, &response_len, conn->handler_ctx);
+	log_debug("tcp", "passive handler returned r=%d response_len=%zu", r,
+			  response_len);
 	if (r != VFS_OK)
 		response_len = 0;
 
@@ -211,6 +227,12 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 	if (!conn) {
 		uint16_t local_port = ntohs(tcp->dst_port);
 		tcp_listener_t *listener = tcp_listener_find(local_port);
+		log_debug("tcp", "rx no conn: src=%u.%u.%u.%u:%u dst_port=%u flags=0x%x listener=%s",
+				  (ntohl(ip->src) >> 24) & 0xff,
+				  (ntohl(ip->src) >> 16) & 0xff,
+				  (ntohl(ip->src) >> 8) & 0xff, ntohl(ip->src) & 0xff,
+				  ntohs(tcp->src_port), local_port, tcp->flags,
+				  listener ? "yes" : "no");
 		if (listener && (tcp->flags & TCP_SYN)) {
 			tcp_handle_listen_syn(dev, src_mac, ip, tcp, listener);
 			return;
@@ -229,6 +251,14 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 	uint32_t ack = ntohl(tcp->ack);
 	size_t payload_len = ip_len - ihl - tcp_hlen;
 	const uint8_t *payload = (const uint8_t *)tcp + tcp_hlen;
+
+	log_debug("tcp", "rx: %u.%u.%u.%u:%u -> local:%u flags=0x%x seq=%u ack=%u payload=%zu passive=%d connected=%d closed=%d rx_len=%zu rx_cap=%zu",
+			  (ntohl(ip->src) >> 24) & 0xff,
+			  (ntohl(ip->src) >> 16) & 0xff,
+			  (ntohl(ip->src) >> 8) & 0xff, ntohl(ip->src) & 0xff,
+			  ntohs(tcp->src_port), ntohs(tcp->dst_port), flags, seq, ack,
+			  payload_len, conn->passive, conn->connected, conn->closed,
+			  conn->rx_len, conn->rx_cap);
 
 	if (flags & 0x04) {
 		conn->error = 1;
@@ -278,12 +308,16 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 
 	if (payload_len) {
 		size_t copy = payload_len;
-		if (copy > conn->rx_cap - conn->rx_len)
+		if (!conn->rx_buf || conn->rx_len >= conn->rx_cap)
+			copy = 0;
+		else if (copy > conn->rx_cap - conn->rx_len)
 			copy = conn->rx_cap - conn->rx_len;
 		if (copy) {
 			memcpy(conn->rx_buf + conn->rx_len, payload, copy);
 			conn->rx_len += copy;
 		}
+		log_debug("tcp", "active queued payload: got=%zu copied=%zu queued=%zu cap=%zu",
+				  payload_len, copy, conn->rx_len, conn->rx_cap);
 		conn->ack += (uint32_t)payload_len;
 		net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
 						  conn->local_port, conn->remote_port, conn->seq,
@@ -305,9 +339,14 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 	if (!dev || !dst_ip || !port || !out)
 		return VFS_ERR_INVAL;
 
+	log_debug("tcp", "connect: dst_ip=%x port=%d timeout=%llu", dst_ip, port,
+			  timeout_ms);
+
 	uint32_t next_hop = dst_ip;
 	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask))
 		next_hop = dev->ipv4_gateway;
+
+	log_debug("tcp", "connect: next_hop=%x", next_hop);
 
 	tcp_conn_t *conn = kzalloc(sizeof(*conn));
 	if (!conn)
@@ -319,32 +358,61 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 	conn->local_port = 40000 + (uint16_t)(pit_get_ticks() & 0x3fff);
 	conn->seq = 0x4c595200u + (uint32_t)(pit_get_ticks() & 0xffff);
 	conn->heap_allocated = 1;
+	conn->rx_cap = TCP_ACTIVE_RX_CAP;
+	conn->rx_buf = kzalloc(conn->rx_cap);
+	if (!conn->rx_buf) {
+		kfree(conn);
+		return VFS_ERR_NOMEM;
+	}
 
+	log_debug("tcp", "connect: calling arp_resolve");
 	int r = net_arp_resolve(dev, next_hop, timeout_ms, conn->peer_mac);
+	log_debug("tcp", "connect: arp_resolve returned %d", r);
 	if (r != VFS_OK) {
+		if (conn->rx_buf)
+			kfree(conn->rx_buf);
 		kfree(conn);
 		return r;
 	}
 
 	tcp_conn_add(conn);
 
+	log_debug("tcp", "connect: sending SYN");
 	r = net_send_ipv4_tcp(dev, conn->peer_mac, dst_ip, conn->local_port, port,
 						  conn->seq, 0, TCP_SYN, NULL, 0);
 	if (r != VFS_OK) {
+		log_debug("tcp", "connect: send SYN failed r=%d", r);
 		tcp_conn_remove(conn);
+		if (conn->rx_buf)
+			kfree(conn->rx_buf);
 		kfree(conn);
 		return r;
 	}
 
+	/* Spin-poll until the SYN-ACK arrives and the 3-way handshake
+	 * completes, or we time out. net_poll_until drives the NIC rx path. */
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	net_poll_until(dev, until, &conn->connected);
 
-	if (!conn->connected || conn->error) {
+	if (conn->error) {
+		log_debug("tcp", "connect: reset by peer");
 		tcp_conn_remove(conn);
+		if (conn->rx_buf)
+			kfree(conn->rx_buf);
 		kfree(conn);
 		return VFS_ERR_NOENT;
 	}
 
+	if (!conn->connected) {
+		log_debug("tcp", "connect: timed out waiting for SYN-ACK");
+		tcp_conn_remove(conn);
+		if (conn->rx_buf)
+			kfree(conn->rx_buf);
+		kfree(conn);
+		return VFS_ERR_TIMEOUT;
+	}
+
+	log_debug("tcp", "connect: 3-way handshake complete");
 	*out = conn;
 	return VFS_OK;
 }
@@ -404,26 +472,38 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 	if (!conn->connected || conn->error)
 		return VFS_ERR_NOENT;
 
-	conn->rx_buf = buf;
-	conn->rx_cap = cap;
-	conn->rx_len = 0;
-
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
+
+	log_debug("tcp", "recv wait: cap=%zu queued=%zu closed=%d error=%d timeout=%llu",
+			  cap, conn->rx_len, conn->closed, conn->error, timeout_ms);
 
 	while (!conn->rx_len && !conn->closed && !conn->error &&
 		   pit_get_ticks() < until) {
 		net_poll_all();
 	}
 
-	if (conn->error)
+	if (conn->error) {
+		log_debug("tcp", "recv: connection error");
 		return VFS_ERR_NOENT;
+	}
 
-	if (done)
-		*done = conn->rx_len;
-
-	if (conn->rx_len)
+	if (conn->rx_len) {
+		size_t copy = conn->rx_len;
+		if (copy > cap)
+			copy = cap;
+		memcpy(buf, conn->rx_buf, copy);
+		if (copy < conn->rx_len)
+			memmove(conn->rx_buf, conn->rx_buf + copy, conn->rx_len - copy);
+		conn->rx_len -= copy;
+		if (done)
+			*done = copy;
+		log_debug("tcp", "recv: copied=%zu remaining=%zu closed=%d", copy,
+				  conn->rx_len, conn->closed);
 		return VFS_OK;
+	}
 
+	log_debug("tcp", "recv: no data closed=%d error=%d", conn->closed,
+			  conn->error);
 	return conn->closed ? VFS_ERR_NOENT : VFS_ERR_TIMEOUT;
 }
 
@@ -444,6 +524,9 @@ void net_tcp_close(net_tcp_conn_t *conn_)
 	}
 
 	tcp_conn_remove(conn);
+
+	if (conn->rx_buf)
+		kfree(conn->rx_buf);
 
 	if (conn->heap_allocated)
 		kfree(conn);
@@ -538,5 +621,6 @@ int net_tcp_listen(uint16_t port, net_tcp_listen_handler_t handler, void *ctx)
 	listener->ctx = ctx;
 	listener->next = tcp_listeners;
 	tcp_listeners = listener;
+	log_info("tcp", "listening on port %u", port);
 	return VFS_OK;
 }
