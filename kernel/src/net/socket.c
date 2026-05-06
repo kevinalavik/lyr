@@ -238,6 +238,31 @@ int net_accept(socket_t *sock, socket_t **out, sockaddr_t *addr,
 		return NET_SOCK_OK;
 	}
 
+	if (sock->domain == AF_INET) {
+		if (sock->backlog_count == 0) {
+			return NET_SOCK_ERR_WOULDBLOCK;
+		}
+
+		socket_t *client = sock->backlog[0];
+
+		for (int i = 0; i < sock->backlog_count - 1; i++)
+			sock->backlog[i] = sock->backlog[i + 1];
+
+		sock->backlog_count--;
+
+		*out = client;
+
+		if (addr && addrlen && *addrlen >= sizeof(sockaddr_in_t)) {
+			memset(addr, 0, sizeof(*addr));
+			addr->sin.sin_family = AF_INET;
+			addr->sin.sin_addr = htonl(client->inet_data->remote_ip);
+			addr->sin.sin_port = htons(client->inet_data->remote_port);
+			*addrlen = sizeof(sockaddr_in_t);
+		}
+
+		return NET_SOCK_OK;
+	}
+
 	return NET_SOCK_ERR_INVAL;
 }
 
@@ -444,10 +469,20 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 			int r =
 				net_tcp_recv(sock->inet_data->tcp_conn, sock->inet_data->rx_buf,
 							 SOCKET_BUF_SIZE, &done, 10000);
+
 			if (r == VFS_ERR_TIMEOUT)
 				return NET_SOCK_ERR_WOULDBLOCK;
-			if (r != VFS_OK || done == 0)
+
+			if (r != VFS_OK)
 				return NET_SOCK_ERR_NOTCONN;
+
+			/*
+			 * done == 0 with VFS_OK is TCP EOF. Return 0 to userspace
+			 * instead of translating EOF into ENOTCONN.
+			 */
+			if (done == 0)
+				return 0;
+
 			sock->inet_data->rx_len = done;
 			sock->inet_data->rx_head = 0;
 		}
@@ -535,8 +570,10 @@ int net_getsockname(socket_t *sock, sockaddr_t *addr, socklen_t *addrlen)
 	} else if (sock->domain == AF_INET) {
 		memset(addr, 0, sizeof(*addr));
 		addr->sin.sin_family = AF_INET;
-		addr->sin.sin_addr = sock->inet_data ? htonl(sock->inet_data->remote_ip) : 0;
-		addr->sin.sin_port = sock->inet_data ? htons(sock->inet_data->remote_port) : 0;
+		addr->sin.sin_addr =
+			sock->inet_data ? htonl(sock->inet_data->remote_ip) : 0;
+		addr->sin.sin_port =
+			sock->inet_data ? htons(sock->inet_data->remote_port) : 0;
 		*addrlen = sizeof(sockaddr_in_t);
 	}
 

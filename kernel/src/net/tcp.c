@@ -469,12 +469,13 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 	if (done)
 		*done = 0;
 
-	if (!conn->connected || conn->error)
+	if (!conn->connected)
 		return VFS_ERR_NOENT;
 
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 
-	log_debug("tcp", "recv wait: cap=%zu queued=%zu closed=%d error=%d timeout=%llu",
+	log_debug("tcp",
+			  "recv wait: cap=%zu queued=%zu closed=%d error=%d timeout=%llu",
 			  cap, conn->rx_len, conn->closed, conn->error, timeout_ms);
 
 	while (!conn->rx_len && !conn->closed && !conn->error &&
@@ -482,29 +483,50 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 		net_poll_all();
 	}
 
-	if (conn->error) {
-		log_debug("tcp", "recv: connection error");
-		return VFS_ERR_NOENT;
-	}
-
+	/*
+	 * Data wins over connection errors.
+	 *
+	 * A peer can legally send payload and then reset the connection. If the RST
+	 * is processed before userspace calls read(), conn->error may be set while
+	 * conn->rx_len still contains valid data. Return the queued bytes first;
+	 * report the reset only after the receive queue has been drained.
+	 */
 	if (conn->rx_len) {
 		size_t copy = conn->rx_len;
+
 		if (copy > cap)
 			copy = cap;
+
 		memcpy(buf, conn->rx_buf, copy);
+
 		if (copy < conn->rx_len)
 			memmove(conn->rx_buf, conn->rx_buf + copy, conn->rx_len - copy);
+
 		conn->rx_len -= copy;
+
 		if (done)
 			*done = copy;
-		log_debug("tcp", "recv: copied=%zu remaining=%zu closed=%d", copy,
-				  conn->rx_len, conn->closed);
+
+		log_debug("tcp",
+				  "recv: copied=%zu remaining=%zu closed=%d error=%d",
+				  copy, conn->rx_len, conn->closed, conn->error);
+
 		return VFS_OK;
 	}
 
-	log_debug("tcp", "recv: no data closed=%d error=%d", conn->closed,
-			  conn->error);
-	return conn->closed ? VFS_ERR_NOENT : VFS_ERR_TIMEOUT;
+	if (conn->error) {
+		log_debug("tcp", "recv: connection error with empty rx queue");
+		return VFS_ERR_NOENT;
+	}
+
+	if (conn->closed) {
+		log_debug("tcp", "recv: clean EOF");
+		return VFS_OK;
+	}
+
+	log_debug("tcp", "recv: timeout/no data closed=%d error=%d",
+			  conn->closed, conn->error);
+	return VFS_ERR_TIMEOUT;
 }
 
 void net_tcp_close(net_tcp_conn_t *conn_)
