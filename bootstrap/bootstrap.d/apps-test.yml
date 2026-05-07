@@ -1,6 +1,8 @@
 sources:
   - name: lyr-test
     subdir: sources
+  - name: hello
+    subdir: sources
 
 packages:
 - name: lyr-test
@@ -15,6 +17,30 @@ packages:
     - lyr-binutils
   build:
     - args: 'cp -a @SOURCE_ROOT@/../src/lyr-test/. @THIS_BUILD_DIR@/'
+    - args:
+        - make
+        - '-C'
+        - '@THIS_BUILD_DIR@'
+        - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
+    - args:
+        - make
+        - '-C'
+        - '@THIS_BUILD_DIR@'
+        - install
+        - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
+        - 'DESTDIR=@SYSROOT_DIR@'
+- name: hello
+  labels: [ x86_64 ]
+  architecture: 'x86_64'
+  revision: 1
+  from_source: hello
+  pkgs_required:
+    - mlibc
+  tools_required:
+    - lyr-gcc
+    - lyr-binutils
+  build:
+    - args: 'cp -a @SOURCE_ROOT@/../src/hello/. @THIS_BUILD_DIR@/'
     - args:
         - make
         - '-C'
