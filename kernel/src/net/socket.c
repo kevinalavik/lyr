@@ -62,6 +62,8 @@ struct socket {
 	int type;
 	int protocol;
 	uint32_t flags;
+	const net_socket_domain_ops_t *domain_ops;
+	void *private_data;
 	unix_sock_t *unix_data;
 	inet_sock_t *inet_data;
 	socket_t *backlog[SOCKET_BACKLOG];
@@ -74,32 +76,105 @@ static socket_entry_t *socket_list = NULL;
 static int socket_count = 0;
 static uint16_t udp_next_ephemeral = UDP_EPHEMERAL_MIN;
 
+#define SOCKET_DOMAIN_MAX 8
+
+static const net_socket_domain_ops_t *socket_domains[SOCKET_DOMAIN_MAX];
+static int socket_builtin_domains_ready;
+
 static int socket_add(socket_t *sock);
+static void socket_remove(socket_t *sock);
 static int udp_auto_bind(socket_t *sock);
 static int tcp_socket_accept(netdev_t *dev, uint32_t remote_ip,
 							 uint16_t remote_port, net_tcp_conn_t *conn,
 							 void *ctx);
+static int unix_socket_validate(int type, int protocol);
+static int unix_socket_init(socket_t *sock);
+static void unix_socket_destroy(socket_t *sock);
+static int inet_socket_validate(int type, int protocol);
+static int inet_socket_init(socket_t *sock);
+static void inet_socket_destroy(socket_t *sock);
+static void socket_register_builtin_domains(void);
+static const net_socket_domain_ops_t *socket_domain_lookup(int domain);
+
+static const net_socket_domain_ops_t unix_socket_domain = {
+	.domain = AF_UNIX,
+	.name = "AF_UNIX",
+	.validate = unix_socket_validate,
+	.init = unix_socket_init,
+	.destroy = unix_socket_destroy,
+};
+
+static const net_socket_domain_ops_t inet_socket_domain = {
+	.domain = AF_INET,
+	.name = "AF_INET",
+	.validate = inet_socket_validate,
+	.init = inet_socket_init,
+	.destroy = inet_socket_destroy,
+};
+
+int net_socket_register_domain(const net_socket_domain_ops_t *ops)
+{
+	if (!ops || !ops->domain || !ops->name || !ops->validate || !ops->init ||
+		!ops->destroy)
+		return NET_SOCK_ERR_INVAL;
+
+	for (size_t i = 0; i < SOCKET_DOMAIN_MAX; i++) {
+		if (socket_domains[i] && socket_domains[i]->domain == ops->domain)
+			return NET_SOCK_ERR_ADDRINUSE;
+	}
+
+	for (size_t i = 0; i < SOCKET_DOMAIN_MAX; i++) {
+		if (!socket_domains[i]) {
+			socket_domains[i] = ops;
+			return NET_SOCK_OK;
+		}
+	}
+
+	return NET_SOCK_ERR_NOMEM;
+}
+
+static void socket_register_builtin_domains(void)
+{
+	if (socket_builtin_domains_ready)
+		return;
+
+	(void)net_socket_register_domain(&unix_socket_domain);
+	(void)net_socket_register_domain(&inet_socket_domain);
+	socket_builtin_domains_ready = 1;
+}
+
+static const net_socket_domain_ops_t *socket_domain_lookup(int domain)
+{
+	socket_register_builtin_domains();
+
+	for (size_t i = 0; i < SOCKET_DOMAIN_MAX; i++) {
+		if (socket_domains[i] && socket_domains[i]->domain == domain)
+			return socket_domains[i];
+	}
+
+	return NULL;
+}
 
 int net_socket(socket_t **out, int domain, int type, int protocol)
 {
 	int type_flags = type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
 	int base_type = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+	const net_socket_domain_ops_t *ops;
+	int r;
 
 	if (!out)
 		return NET_SOCK_ERR_INVAL;
 
-	if (domain != AF_UNIX && domain != AF_INET)
+	*out = NULL;
+	type = base_type;
+
+	ops = socket_domain_lookup(domain);
+	if (!ops)
 		return NET_SOCK_ERR_AFNOSUPPORT;
 
-	if (domain == AF_INET && base_type != SOCK_STREAM &&
-		base_type != SOCK_DGRAM && base_type != SOCK_RAW)
-		return NET_SOCK_ERR_PROTONOSUPPORT;
-
-	if (domain == AF_INET && base_type == SOCK_RAW &&
-		protocol != IPPROTO_ICMP)
-		return NET_SOCK_ERR_PROTONOSUPPORT;
-
-	type = base_type;
+	r = ops->validate(type, protocol);
+	if (r != NET_SOCK_OK)
+		return r;
 
 	socket_t *sock = kzalloc(sizeof(*sock));
 	if (!sock)
@@ -108,56 +183,116 @@ int net_socket(socket_t **out, int domain, int type, int protocol)
 	sock->domain = domain;
 	sock->type = type;
 	sock->protocol = protocol;
+	sock->domain_ops = ops;
 	if (type_flags & SOCK_NONBLOCK)
 		sock->flags |= NET_SOCK_NONBLOCK;
 	sock->refcount = 1;
 
-	if (domain == AF_UNIX) {
-		sock->unix_data = kzalloc(sizeof(*sock->unix_data));
-		if (!sock->unix_data) {
-			kfree(sock);
-			return NET_SOCK_ERR_NOMEM;
-		}
-		sock->unix_data->rx_cap = SOCKET_BUF_SIZE;
-		sock->unix_data->rx_buf = kzalloc(sock->unix_data->rx_cap);
-		if (!sock->unix_data->rx_buf) {
-			kfree(sock->unix_data);
-			kfree(sock);
-			return NET_SOCK_ERR_NOMEM;
-		}
-		sock->unix_data->tx_cap = SOCKET_BUF_SIZE;
-		sock->unix_data->tx_buf = kzalloc(sock->unix_data->tx_cap);
-		if (!sock->unix_data->tx_buf) {
-			kfree(sock->unix_data->rx_buf);
-			kfree(sock->unix_data);
-			kfree(sock);
-			return NET_SOCK_ERR_NOMEM;
-		}
-		sock->unix_data->readable = 0;
-		sock->unix_data->writable = 1;
-	} else if (domain == AF_INET) {
-		sock->inet_data = kzalloc(sizeof(*sock->inet_data));
-		if (!sock->inet_data) {
-			kfree(sock);
-			return NET_SOCK_ERR_NOMEM;
-		}
-		sock->inet_data->tcp_conn = NULL;
-		sock->inet_data->local_ip = 0;
-		sock->inet_data->local_port = 0;
-		sock->inet_data->remote_ip = 0;
-		sock->inet_data->remote_port = 0;
-		sock->inet_data->packet_src_ip = 0;
-		sock->inet_data->packet_src_port = 0;
-		sock->inet_data->rx_len = 0;
-		sock->inet_data->rx_head = 0;
-		sock->inet_data->readable = 0;
-		sock->inet_data->recv_timeout_ms = 10000;
-		sock->inet_data->ttl = 64;
+	r = ops->init(sock);
+	if (r != NET_SOCK_OK) {
+		kfree(sock);
+		return r;
+	}
+
+	r = socket_add(sock);
+	if (r != NET_SOCK_OK) {
+		ops->destroy(sock);
+		kfree(sock);
+		return r;
 	}
 
 	*out = sock;
-	socket_add(sock);
 	return NET_SOCK_OK;
+}
+
+static int unix_socket_validate(int type, int protocol)
+{
+	(void)protocol;
+
+	if (type != SOCK_STREAM && type != SOCK_DGRAM && type != SOCK_SEQPACKET)
+		return NET_SOCK_ERR_PROTONOSUPPORT;
+
+	return NET_SOCK_OK;
+}
+
+static int unix_socket_init(socket_t *sock)
+{
+	if (!sock)
+		return NET_SOCK_ERR_INVAL;
+
+	sock->unix_data = kzalloc(sizeof(*sock->unix_data));
+	if (!sock->unix_data)
+		return NET_SOCK_ERR_NOMEM;
+
+	sock->unix_data->rx_cap = SOCKET_BUF_SIZE;
+	sock->unix_data->rx_buf = kzalloc(sock->unix_data->rx_cap);
+	if (!sock->unix_data->rx_buf) {
+		kfree(sock->unix_data);
+		sock->unix_data = NULL;
+		return NET_SOCK_ERR_NOMEM;
+	}
+
+	sock->unix_data->tx_cap = SOCKET_BUF_SIZE;
+	sock->unix_data->tx_buf = kzalloc(sock->unix_data->tx_cap);
+	if (!sock->unix_data->tx_buf) {
+		kfree(sock->unix_data->rx_buf);
+		kfree(sock->unix_data);
+		sock->unix_data = NULL;
+		return NET_SOCK_ERR_NOMEM;
+	}
+
+	sock->unix_data->readable = 0;
+	sock->unix_data->writable = 1;
+	return NET_SOCK_OK;
+}
+
+static void unix_socket_destroy(socket_t *sock)
+{
+	if (!sock || !sock->unix_data)
+		return;
+
+	if (sock->unix_data->rx_buf)
+		kfree(sock->unix_data->rx_buf);
+	if (sock->unix_data->tx_buf)
+		kfree(sock->unix_data->tx_buf);
+	kfree(sock->unix_data);
+	sock->unix_data = NULL;
+}
+
+static int inet_socket_validate(int type, int protocol)
+{
+	if (type != SOCK_STREAM && type != SOCK_DGRAM && type != SOCK_RAW)
+		return NET_SOCK_ERR_PROTONOSUPPORT;
+
+	if (type == SOCK_RAW && protocol != IPPROTO_ICMP)
+		return NET_SOCK_ERR_PROTONOSUPPORT;
+
+	return NET_SOCK_OK;
+}
+
+static int inet_socket_init(socket_t *sock)
+{
+	if (!sock)
+		return NET_SOCK_ERR_INVAL;
+
+	sock->inet_data = kzalloc(sizeof(*sock->inet_data));
+	if (!sock->inet_data)
+		return NET_SOCK_ERR_NOMEM;
+
+	sock->inet_data->recv_timeout_ms = 10000;
+	sock->inet_data->ttl = 64;
+	return NET_SOCK_OK;
+}
+
+static void inet_socket_destroy(socket_t *sock)
+{
+	if (!sock || !sock->inet_data)
+		return;
+
+	if (sock->inet_data->tcp_conn)
+		net_tcp_close(sock->inet_data->tcp_conn);
+	kfree(sock->inet_data);
+	sock->inet_data = NULL;
 }
 
 static int socket_add(socket_t *sock)
@@ -925,18 +1060,11 @@ int net_close(socket_t *sock)
 	if (sock->refcount > 0)
 		return NET_SOCK_OK;
 
-	if (sock->unix_data) {
-		if (sock->unix_data->rx_buf)
-			kfree(sock->unix_data->rx_buf);
-		if (sock->unix_data->tx_buf)
-			kfree(sock->unix_data->tx_buf);
-		kfree(sock->unix_data);
-	}
-
-	if (sock->inet_data) {
-		if (sock->inet_data->tcp_conn)
-			net_tcp_close(sock->inet_data->tcp_conn);
-		kfree(sock->inet_data);
+	if (sock->domain_ops && sock->domain_ops->destroy)
+		sock->domain_ops->destroy(sock);
+	else {
+		unix_socket_destroy(sock);
+		inet_socket_destroy(sock);
 	}
 
 	socket_remove(sock);
@@ -1118,6 +1246,21 @@ void net_socket_raw_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
 	uint32_t src_ip = ntohl(ip->src);
 	uint32_t dst_ip = ntohl(ip->dst);
 
+	if (ip_len >= ihl + sizeof(icmp_echo_t)) {
+		const icmp_echo_t *icmp =
+			(const icmp_echo_t *)((const uint8_t *)ip + ihl);
+
+		/*
+		 * Loopback sends our own echo request back through RX before the echo
+		 * reply is generated.  Do not let that self-originated request occupy
+		 * the one-packet raw receive slot; otherwise userspace ping can read the
+		 * request, discard it, and miss the reply that was dropped while the slot
+		 * was full.
+		 */
+		if (dev && dev->loopback && src_ip == dst_ip && icmp->type == 8)
+			return;
+	}
+
 	for (socket_entry_t *entry = socket_list; entry; entry = entry->next) {
 		socket_t *sock = entry->socket;
 		if (!sock || sock->domain != AF_INET || sock->type != SOCK_RAW ||
@@ -1149,6 +1292,7 @@ void net_socket_raw_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
 
 int socket_init(void)
 {
+	socket_register_builtin_domains();
 	log_info("socket", "initializing socket layer");
 	return NET_SOCK_OK;
 }

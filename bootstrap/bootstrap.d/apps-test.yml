@@ -1,18 +1,29 @@
 sources:
-  - name: tests
-    subdir: ''
+  - name: lyr-test
+    subdir: sources
 
 packages:
-- name: hello-world
+- name: lyr-test
   labels: [ x86_64 ]
   architecture: 'x86_64'
   revision: 1
-  from_source: tests
+  from_source: lyr-test
   pkgs_required:
     - mlibc
   tools_required:
     - lyr-gcc
     - lyr-binutils
   build:
-    - args: 'x86_64-lyr-gcc -o @THIS_BUILD_DIR@/hello-world @THIS_SOURCE_DIR@/hello.c'
-    - args: 'install -D @THIS_BUILD_DIR@/hello-world @SYSROOT_DIR@/bin/hello-world'
+    - args: 'cp -a @SOURCE_ROOT@/../src/lyr-test/. @THIS_BUILD_DIR@/'
+    - args:
+        - make
+        - '-C'
+        - '@THIS_BUILD_DIR@'
+        - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
+    - args:
+        - make
+        - '-C'
+        - '@THIS_BUILD_DIR@'
+        - install
+        - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
+        - 'DESTDIR=@SYSROOT_DIR@'

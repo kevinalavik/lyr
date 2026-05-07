@@ -67,6 +67,7 @@
 #define NET_SOCK_ERR_CONNRESET (-ECONNRESET)
 #define NET_SOCK_ERR_CONNREFUSED (-ECONNREFUSED)
 #define NET_SOCK_ERR_TIMEDOUT (-ETIMEDOUT)
+#define NET_SOCK_ERR_OPNOTSUPP (-EOPNOTSUPP)
 
 #define NET_SOCK_NONBLOCK 0x01
 #define NET_SOCK_LISTENING 0x02
@@ -102,6 +103,16 @@ typedef union {
 	sockaddr_un_t sun;
 	sockaddr_in_t sin;
 } sockaddr_t;
+
+typedef struct net_socket_domain_ops {
+	int domain;
+	const char *name;
+	int (*validate)(int type, int protocol);
+	int (*init)(socket_t *sock);
+	void (*destroy)(socket_t *sock);
+} net_socket_domain_ops_t;
+
+int net_socket_register_domain(const net_socket_domain_ops_t *ops);
 
 int socket_init(void);
 int net_socket(socket_t **out, int domain, int type, int protocol);

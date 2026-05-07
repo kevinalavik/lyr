@@ -79,10 +79,10 @@ static int ping_ip_once(const char *ip)
 	pkt.hdr.checksum = 0;
 	pkt.hdr.checksum = icmp_checksum(&pkt, sizeof(pkt));
 
-	if (sendto(sockfd, &pkt, sizeof(pkt), 0,
-			   (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		fprintf(stderr, "init: failed to send ICMP echo to %s: %s\n",
-				ip, strerror(errno));
+	if (sendto(sockfd, &pkt, sizeof(pkt), 0, (struct sockaddr *)&addr,
+			   sizeof(addr)) < 0) {
+		fprintf(stderr, "init: failed to send ICMP echo to %s: %s\n", ip,
+				strerror(errno));
 		close(sockfd);
 		return -1;
 	}
@@ -91,8 +91,8 @@ static int ping_ip_once(const char *ip)
 	return 0;
 }
 
-static int get_field(const char *line, const char *key,
-					 char *out, size_t out_size)
+static int get_field(const char *line, const char *key, char *out,
+					 size_t out_size)
 {
 	const char *pos;
 	const char *end;
@@ -128,8 +128,8 @@ static int check_ifaces(void)
 
 	fp = fopen(iface_list, "r");
 	if (!fp) {
-		fprintf(stderr, "init: failed to open %s: %s\n",
-				iface_list, strerror(errno));
+		fprintf(stderr, "init: failed to open %s: %s\n", iface_list,
+				strerror(errno));
 		return -1;
 	}
 
@@ -169,8 +169,8 @@ static int check_ifaces(void)
 		}
 
 		if (ping_ip_once(target) == 0) {
-			printf("init: iface %s has working ICMP target %s\n",
-				   iface, target);
+			printf("init: iface %s has working ICMP target %s\n", iface,
+				   target);
 			found_working_iface = 0;
 		}
 	}
@@ -207,7 +207,7 @@ int main(void)
 
 	check_ifaces();
 
-	static char path[] = "/bin/hello-world";
+	static char path[] = "/usr/bin/lyr-test";
 	static char *const argv[] = { path, NULL };
 	static char *const envp[] = { NULL };
 
