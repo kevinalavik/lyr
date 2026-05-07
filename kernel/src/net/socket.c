@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <dev/pit.h>
 #include <debug/log.h>
 #include <fs/vfs.h>
 #include <lib/string.h>
@@ -6,12 +7,15 @@
 #include <mm/vmm.h>
 #include <net/net.h>
 #include <net/socket.h>
+#include <sys/poll.h>
 #include <sched/sched.h>
 #include <sync/spinlock.h>
 
 #define SOCKET_BACKLOG 16
 #define SOCKET_NAME_MAX 64
 #define SOCKET_BUF_SIZE 4096
+#define UDP_EPHEMERAL_MIN 49152
+#define UDP_EPHEMERAL_MAX 65535
 
 typedef struct socket_entry {
 	socket_t *socket;
@@ -34,9 +38,12 @@ typedef struct unix_sock {
 
 typedef struct inet_sock {
 	net_tcp_conn_t *tcp_conn;
+	uint32_t local_ip;
 	uint16_t local_port;
 	uint32_t remote_ip;
 	uint16_t remote_port;
+	uint32_t packet_src_ip;
+	uint16_t packet_src_port;
 	char rx_buf[SOCKET_BUF_SIZE];
 	size_t rx_len;
 	size_t rx_head;
@@ -58,16 +65,29 @@ struct socket {
 static spinlock_t socket_lock = SPINLOCK_INIT;
 static socket_entry_t *socket_list = NULL;
 static int socket_count = 0;
+static uint16_t udp_next_ephemeral = UDP_EPHEMERAL_MIN;
 
 static int socket_add(socket_t *sock);
+static int udp_auto_bind(socket_t *sock);
+static int tcp_socket_accept(netdev_t *dev, uint32_t remote_ip,
+							 uint16_t remote_port, net_tcp_conn_t *conn,
+							 void *ctx);
 
 int net_socket(socket_t **out, int domain, int type, int protocol)
 {
-	if (domain != AF_UNIX && domain != AF_INET)
+	int type_flags = type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
+	int base_type = type & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+	if (!out)
 		return NET_SOCK_ERR_INVAL;
 
-	if (domain == AF_INET && type != SOCK_STREAM)
-		return NET_SOCK_ERR_INVAL;
+	if (domain != AF_UNIX && domain != AF_INET)
+		return NET_SOCK_ERR_AFNOSUPPORT;
+
+	if (domain == AF_INET && base_type != SOCK_STREAM && base_type != SOCK_DGRAM)
+		return NET_SOCK_ERR_PROTONOSUPPORT;
+
+	type = base_type;
 
 	socket_t *sock = kzalloc(sizeof(*sock));
 	if (!sock)
@@ -76,6 +96,8 @@ int net_socket(socket_t **out, int domain, int type, int protocol)
 	sock->domain = domain;
 	sock->type = type;
 	sock->protocol = protocol;
+	if (type_flags & SOCK_NONBLOCK)
+		sock->flags |= NET_SOCK_NONBLOCK;
 	sock->refcount = 1;
 
 	if (domain == AF_UNIX) {
@@ -108,9 +130,12 @@ int net_socket(socket_t **out, int domain, int type, int protocol)
 			return NET_SOCK_ERR_NOMEM;
 		}
 		sock->inet_data->tcp_conn = NULL;
+		sock->inet_data->local_ip = 0;
 		sock->inet_data->local_port = 0;
 		sock->inet_data->remote_ip = 0;
 		sock->inet_data->remote_port = 0;
+		sock->inet_data->packet_src_ip = 0;
+		sock->inet_data->packet_src_port = 0;
 		sock->inet_data->rx_len = 0;
 		sock->inet_data->rx_head = 0;
 		sock->inet_data->readable = 0;
@@ -134,6 +159,44 @@ static int socket_add(socket_t *sock)
 	return NET_SOCK_OK;
 }
 
+
+static int ipv4_addr_is_local(uint32_t ip)
+{
+	if (ip == 0)
+		return 1;
+
+	for (netdev_t *dev = net_first_dev(); dev; dev = dev->next) {
+		if (dev->ipv4_addr == ip)
+			return 1;
+	}
+
+	return 0;
+}
+
+static int inet_bind_conflicts(socket_t *sock, uint32_t local_ip,
+							  uint16_t port)
+{
+	if (!port)
+		return 0;
+
+	for (socket_entry_t *entry = socket_list; entry; entry = entry->next) {
+		socket_t *s = entry->socket;
+		if (!s || s == sock || s->domain != AF_INET || !s->inet_data)
+			continue;
+
+		if (s->inet_data->local_port != port)
+			continue;
+
+		/* Wildcard conflicts with every same-port bind. Exact binds conflict
+		 * with the same exact address and with wildcard binds. */
+		if (s->inet_data->local_ip == 0 || local_ip == 0 ||
+			s->inet_data->local_ip == local_ip)
+			return 1;
+	}
+
+	return 0;
+}
+
 static void socket_remove(socket_t *sock)
 {
 	socket_entry_t **cur = &socket_list;
@@ -147,6 +210,113 @@ static void socket_remove(socket_t *sock)
 		}
 		cur = &(*cur)->next;
 	}
+}
+
+
+static int tcp_socket_accept(netdev_t *dev, uint32_t remote_ip,
+							 uint16_t remote_port, net_tcp_conn_t *conn,
+							 void *ctx)
+{
+	socket_t *listener = ctx;
+	if (!listener || !listener->inet_data || !conn)
+		return NET_SOCK_ERR_INVAL;
+
+	if (listener->backlog_count >= SOCKET_BACKLOG)
+		return NET_SOCK_ERR_WOULDBLOCK;
+
+	socket_t *client = NULL;
+	int r = net_socket(&client, AF_INET, SOCK_STREAM, 0);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	client->inet_data->tcp_conn = conn;
+	client->inet_data->local_ip = listener->inet_data->local_ip ?
+		listener->inet_data->local_ip : (dev ? dev->ipv4_addr : 0);
+	client->inet_data->local_port = listener->inet_data->local_port;
+	client->inet_data->remote_ip = remote_ip;
+	client->inet_data->remote_port = remote_port;
+	client->flags |= NET_SOCK_BINDED | NET_SOCK_CONNECTED;
+
+	listener->backlog[listener->backlog_count++] = client;
+
+	log_debug("socket", "queued TCP accept on port %u from %u.%u.%u.%u:%u",
+			  listener->inet_data->local_port, (remote_ip >> 24) & 0xff,
+			  (remote_ip >> 16) & 0xff, (remote_ip >> 8) & 0xff,
+			  remote_ip & 0xff, remote_port);
+
+	return NET_SOCK_OK;
+}
+
+static int udp_port_in_use(uint16_t port)
+{
+	for (socket_entry_t *entry = socket_list; entry; entry = entry->next) {
+		socket_t *s = entry->socket;
+		if (!s || s->domain != AF_INET || s->type != SOCK_DGRAM || !s->inet_data)
+			continue;
+		if (s->inet_data->local_port == port)
+			return 1;
+	}
+	return 0;
+}
+
+static int udp_auto_bind(socket_t *sock)
+{
+	if (!sock || sock->domain != AF_INET || sock->type != SOCK_DGRAM ||
+		!sock->inet_data)
+		return NET_SOCK_ERR_INVAL;
+
+	if (sock->inet_data->local_port)
+		return NET_SOCK_OK;
+
+	for (uint32_t tries = UDP_EPHEMERAL_MIN;
+		 tries <= UDP_EPHEMERAL_MAX; tries++) {
+		uint16_t port = udp_next_ephemeral++;
+		if (udp_next_ephemeral < UDP_EPHEMERAL_MIN)
+			udp_next_ephemeral = UDP_EPHEMERAL_MIN;
+
+		if (!udp_port_in_use(port)) {
+			sock->inet_data->local_port = port;
+			sock->inet_data->local_ip = 0;
+			sock->flags |= NET_SOCK_BINDED;
+			return NET_SOCK_OK;
+		}
+	}
+
+	return NET_SOCK_ERR_ADDRINUSE;
+}
+
+static int udp_send_packet(socket_t *sock, uint32_t dst_ip, uint16_t dst_port,
+						   const void *buf, size_t len)
+{
+	if (!sock || !sock->inet_data || !buf)
+		return NET_SOCK_ERR_INVAL;
+	if (len > 1400)
+		return NET_SOCK_ERR_MSGSIZE;
+
+	int r = udp_auto_bind(sock);
+	if (r != NET_SOCK_OK)
+		return r;
+
+	uint32_t next_hop = 0;
+	netdev_t *dev = net_route(dst_ip, &next_hop);
+	if (!dev || !dev->ipv4_addr)
+		return NET_SOCK_ERR_NETUNREACH;
+
+	uint8_t mac[NET_ETH_ALEN];
+	memset(mac, 0, sizeof(mac));
+	if (!dev->loopback && dst_ip != dev->ipv4_addr) {
+		r = net_arp_resolve(dev, next_hop ? next_hop : dst_ip, 1000, mac);
+		if (r != VFS_OK)
+			return NET_SOCK_ERR_NETUNREACH;
+	}
+
+	uint32_t src_ip = sock->inet_data->local_ip ? sock->inet_data->local_ip :
+		dev->ipv4_addr;
+	r = net_send_ipv4_udp(dev, mac, src_ip, dst_ip,
+						 sock->inet_data->local_port, dst_port, buf, len);
+	if (r != VFS_OK)
+		return r;
+	return (int)len;
 }
 
 int net_bind(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
@@ -179,9 +349,21 @@ int net_bind(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
 		if (addr->sin.sin_family != AF_INET)
 			return NET_SOCK_ERR_INVAL;
 
-		sock->inet_data->local_port = ntohs(addr->sin.sin_port);
+		uint32_t local_ip = ntohl(addr->sin.sin_addr);
+		uint16_t port = ntohs(addr->sin.sin_port);
+
+		if (!ipv4_addr_is_local(local_ip))
+			return NET_SOCK_ERR_ADDRNOTAVAIL;
+
+		if (inet_bind_conflicts(sock, local_ip, port))
+			return NET_SOCK_ERR_ADDRINUSE;
+
+		sock->inet_data->local_ip = local_ip;
+		sock->inet_data->local_port = port;
 		sock->flags |= NET_SOCK_BINDED;
-		log_debug("socket", "AF_INET bound to port %d",
+		log_debug("socket", "AF_INET bound to %u.%u.%u.%u:%d",
+				  (local_ip >> 24) & 0xff, (local_ip >> 16) & 0xff,
+				  (local_ip >> 8) & 0xff, local_ip & 0xff,
 				  sock->inet_data->local_port);
 	}
 
@@ -199,6 +381,18 @@ int net_listen(socket_t *sock, int backlog)
 			backlog = SOCKET_BACKLOG;
 		log_debug("socket", "AF_UNIX listening (backlog=%d)", backlog);
 	} else if (sock->domain == AF_INET) {
+		if (sock->type != SOCK_STREAM)
+			return NET_SOCK_ERR_INVAL;
+
+		if (!sock->inet_data || !sock->inet_data->local_port)
+			return NET_SOCK_ERR_INVAL;
+
+		int r = net_tcp_listen_accept_addr(sock->inet_data->local_ip,
+											  sock->inet_data->local_port,
+											  tcp_socket_accept, sock);
+		if (r != VFS_OK)
+			return r;
+
 		sock->flags |= NET_SOCK_LISTENING;
 		log_debug("socket", "AF_INET listening (backlog=%d)", backlog);
 	}
@@ -239,8 +433,14 @@ int net_accept(socket_t *sock, socket_t **out, sockaddr_t *addr,
 	}
 
 	if (sock->domain == AF_INET) {
-		if (sock->backlog_count == 0) {
-			return NET_SOCK_ERR_WOULDBLOCK;
+		if (!(sock->flags & NET_SOCK_LISTENING))
+			return NET_SOCK_ERR_INVAL;
+
+		while (sock->backlog_count == 0) {
+			if (sock->flags & NET_SOCK_NONBLOCK)
+				return NET_SOCK_ERR_WOULDBLOCK;
+
+			net_poll_all();
 		}
 
 		socket_t *client = sock->backlog[0];
@@ -327,11 +527,28 @@ int net_connect(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
 		sock->inet_data->remote_ip = ntohl(addr->sin.sin_addr);
 		sock->inet_data->remote_port = ntohs(addr->sin.sin_port);
 
+		if (sock->type == SOCK_DGRAM) {
+			int r = udp_auto_bind(sock);
+			if (r != NET_SOCK_OK)
+				return r;
+			sock->flags |= NET_SOCK_CONNECTED;
+			log_debug("socket", "AF_INET UDP connected to %u.%u.%u.%u:%d",
+					  (sock->inet_data->remote_ip >> 24) & 0xff,
+					  (sock->inet_data->remote_ip >> 16) & 0xff,
+					  (sock->inet_data->remote_ip >> 8) & 0xff,
+					  sock->inet_data->remote_ip & 0xff,
+					  sock->inet_data->remote_port);
+			return NET_SOCK_OK;
+		}
+
 		/* Use net_route so loopback (127.x) goes via lo, not eth0. */
 		uint32_t next_hop = 0;
 		netdev_t *dev = net_route(sock->inet_data->remote_ip, &next_hop);
 		if (!dev)
 			return NET_SOCK_ERR_NOENT;
+
+		if (!sock->inet_data->local_ip)
+			sock->inet_data->local_ip = dev->ipv4_addr;
 
 		net_tcp_conn_t *conn = NULL;
 		int r = net_tcp_connect_ip(dev, sock->inet_data->remote_ip,
@@ -339,7 +556,9 @@ int net_connect(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
 
 		if (r != VFS_OK) {
 			log_debug("socket", "AF_INET connect failed r=%d", r);
-			return NET_SOCK_ERR_NOENT;
+			if (r == VFS_ERR_TIMEOUT)
+				return NET_SOCK_ERR_TIMEDOUT;
+			return NET_SOCK_ERR_CONNREFUSED;
 		}
 
 		sock->inet_data->tcp_conn = conn;
@@ -402,6 +621,26 @@ int net_sendto(socket_t *sock, const void *buf, size_t len, int flags,
 		return (int)to_copy;
 	} else if (sock->domain == AF_INET) {
 		inet_sock_t *is = sock->inet_data;
+
+		if (sock->type == SOCK_DGRAM) {
+			uint32_t dst_ip = 0;
+			uint16_t dst_port = 0;
+
+			if (dest && addrlen >= sizeof(sockaddr_in_t)) {
+				if (dest->sin.sin_family != AF_INET)
+					return NET_SOCK_ERR_INVAL;
+				dst_ip = ntohl(dest->sin.sin_addr);
+				dst_port = ntohs(dest->sin.sin_port);
+			} else if (sock->flags & NET_SOCK_CONNECTED) {
+				dst_ip = is->remote_ip;
+				dst_port = is->remote_port;
+			} else {
+				return NET_SOCK_ERR_NOTCONN;
+			}
+
+			return udp_send_packet(sock, dst_ip, dst_port, buf, len);
+		}
+
 		if (!is->tcp_conn)
 			return NET_SOCK_ERR_NOTCONN;
 
@@ -458,6 +697,34 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 
 		return (int)to_read;
 	} else if (sock->domain == AF_INET) {
+		if (sock->type == SOCK_DGRAM) {
+			inet_sock_t *is = sock->inet_data;
+			if (is->rx_len == 0) {
+				uint64_t until = pit_get_ticks() + net_timeout_ticks(10000);
+				net_poll_until(NULL, until, (int *)&is->readable);
+			}
+			if (is->rx_len == 0)
+				return NET_SOCK_ERR_WOULDBLOCK;
+
+			size_t to_read = is->rx_len;
+			if (to_read > len)
+				to_read = len;
+			memcpy(buf, is->rx_buf + is->rx_head, to_read);
+
+			if (addr && addrlen && *addrlen >= sizeof(sockaddr_in_t)) {
+				memset(addr, 0, sizeof(*addr));
+				addr->sin.sin_family = AF_INET;
+				addr->sin.sin_addr = htonl(is->packet_src_ip);
+				addr->sin.sin_port = htons(is->packet_src_port);
+				*addrlen = sizeof(sockaddr_in_t);
+			}
+
+			is->rx_len = 0;
+			is->rx_head = 0;
+			is->readable = 0;
+			return (int)to_read;
+		}
+
 		if (!sock->inet_data->tcp_conn)
 			return NET_SOCK_ERR_NOTCONN;
 
@@ -503,6 +770,14 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 	}
 
 	return NET_SOCK_ERR_INVAL;
+}
+
+int net_socket_ref(socket_t *sock)
+{
+	if (!sock)
+		return NET_SOCK_ERR_INVAL;
+	sock->refcount++;
+	return NET_SOCK_OK;
 }
 
 int net_shutdown(socket_t *sock, int how)
@@ -571,9 +846,9 @@ int net_getsockname(socket_t *sock, sockaddr_t *addr, socklen_t *addrlen)
 		memset(addr, 0, sizeof(*addr));
 		addr->sin.sin_family = AF_INET;
 		addr->sin.sin_addr =
-			sock->inet_data ? htonl(sock->inet_data->remote_ip) : 0;
+			sock->inet_data ? htonl(sock->inet_data->local_ip) : 0;
 		addr->sin.sin_port =
-			sock->inet_data ? htons(sock->inet_data->remote_port) : 0;
+			sock->inet_data ? htons(sock->inet_data->local_port) : 0;
 		*addrlen = sizeof(sockaddr_in_t);
 	}
 
@@ -582,7 +857,30 @@ int net_getsockname(socket_t *sock, sockaddr_t *addr, socklen_t *addrlen)
 
 int net_getpeername(socket_t *sock, sockaddr_t *addr, socklen_t *addrlen)
 {
-	return net_getsockname(sock, addr, addrlen);
+	if (!sock || !addr || !addrlen)
+		return NET_SOCK_ERR_INVAL;
+
+	if (sock->domain == AF_UNIX && sock->unix_data) {
+		if (!(sock->flags & NET_SOCK_CONNECTED))
+			return NET_SOCK_ERR_NOTCONN;
+		memset(addr, 0, sizeof(*addr));
+		addr->sun.sun_family = AF_UNIX;
+		*addrlen = sizeof(sa_family_t_16);
+		return NET_SOCK_OK;
+	}
+
+	if (sock->domain == AF_INET && sock->inet_data) {
+		if (!(sock->flags & NET_SOCK_CONNECTED))
+			return NET_SOCK_ERR_NOTCONN;
+		memset(addr, 0, sizeof(*addr));
+		addr->sin.sin_family = AF_INET;
+		addr->sin.sin_addr = htonl(sock->inet_data->remote_ip);
+		addr->sin.sin_port = htons(sock->inet_data->remote_port);
+		*addrlen = sizeof(sockaddr_in_t);
+		return NET_SOCK_OK;
+	}
+
+	return NET_SOCK_ERR_INVAL;
 }
 
 int net_setsockopt(socket_t *sock, int level, int optname, const void *optval,
@@ -621,8 +919,108 @@ int net_getsockopt(socket_t *sock, int level, int optname, void *optval,
 	return NET_SOCK_ERR_INVAL;
 }
 
+int net_poll_socket(socket_t *sock, int events)
+{
+	if (!sock)
+		return LYR_POLLNVAL;
+
+	int revents = 0;
+
+	if (sock->domain == AF_UNIX && sock->unix_data) {
+		unix_sock_t *us = sock->unix_data;
+
+		if ((events & LYR_POLL_READ_MASK) && us->rx_len > 0)
+			revents |= LYR_POLLIN | LYR_POLLRDNORM;
+
+		if ((events & LYR_POLL_WRITE_MASK) &&
+			(us->rx_cap == 0 || us->rx_len < us->rx_cap))
+			revents |= LYR_POLLOUT | LYR_POLLWRNORM;
+
+		return revents;
+	}
+
+	if (sock->domain == AF_INET && sock->inet_data) {
+		inet_sock_t *is = sock->inet_data;
+
+		if ((events & LYR_POLL_READ_MASK) && is->rx_len > 0)
+			revents |= LYR_POLLIN | LYR_POLLRDNORM;
+
+		if (sock->type == SOCK_STREAM && is->tcp_conn) {
+			/*
+			 * Socket-layer TCP buffering is filled by recv().  Until the TCP core
+			 * exposes a non-consuming readiness primitive, report established
+			 * TCP sockets as writable and rely on recv() for blocking reads.
+			 */
+			if (!(sock->flags & NET_SOCK_CONNECTED))
+				revents |= LYR_POLLHUP;
+		}
+
+		if ((events & LYR_POLL_WRITE_MASK) &&
+			(sock->type == SOCK_DGRAM || (sock->flags & NET_SOCK_CONNECTED)))
+			revents |= LYR_POLLOUT | LYR_POLLWRNORM;
+
+		return revents;
+	}
+
+	return LYR_POLLERR;
+}
+
 int socket_init(void)
 {
 	log_info("socket", "initializing socket layer");
 	return NET_SOCK_OK;
+}
+void net_socket_udp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
+							const udp_hdr_t *udp, size_t udp_len)
+{
+	(void)dev;
+	if (!ip || !udp || udp_len < sizeof(*udp))
+		return;
+
+	uint16_t dst_port = ntohs(udp->dst_port);
+	uint16_t src_port = ntohs(udp->src_port);
+	uint32_t src_ip = ntohl(ip->src);
+	uint32_t dst_ip = ntohl(ip->dst);
+	const uint8_t *payload = (const uint8_t *)udp + sizeof(*udp);
+	size_t payload_len = udp_len - sizeof(*udp);
+
+	for (socket_entry_t *entry = socket_list; entry; entry = entry->next) {
+		socket_t *sock = entry->socket;
+		if (!sock || sock->domain != AF_INET || sock->type != SOCK_DGRAM ||
+			!sock->inet_data)
+			continue;
+
+		inet_sock_t *is = sock->inet_data;
+		if (is->local_port != dst_port)
+			continue;
+
+		if (is->local_ip != 0 && is->local_ip != dst_ip)
+			continue;
+
+		if ((sock->flags & NET_SOCK_CONNECTED) &&
+			(is->remote_ip != src_ip || is->remote_port != src_port))
+			continue;
+
+		if (payload_len > sizeof(is->rx_buf))
+			payload_len = sizeof(is->rx_buf);
+
+		/* Single-packet receive queue for now. Drop if userspace is behind. */
+		if (is->rx_len != 0)
+			return;
+
+		memcpy(is->rx_buf, payload, payload_len);
+		is->rx_len = payload_len;
+		is->rx_head = 0;
+		is->packet_src_ip = src_ip;
+		is->packet_src_port = src_port;
+		is->readable = 1;
+
+		log_debug("socket", "UDP rx %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u len=%zu",
+				  (src_ip >> 24) & 0xff, (src_ip >> 16) & 0xff,
+				  (src_ip >> 8) & 0xff, src_ip & 0xff, src_port,
+				  (dst_ip >> 24) & 0xff, (dst_ip >> 16) & 0xff,
+				  (dst_ip >> 8) & 0xff, dst_ip & 0xff, dst_port,
+				  payload_len);
+		return;
+	}
 }

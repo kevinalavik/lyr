@@ -554,6 +554,7 @@ void net_receive_frame(netdev_t *dev, const void *frame, size_t len)
 		size_t udp_len = ntohs(udp->len);
 		if (udp_len < sizeof(*udp) || ihl + udp_len > ip_len)
 			return;
+		net_socket_udp_receive(dev, ip, udp, udp_len);
 		net_dhcp_receive(dev, udp, udp_len);
 		net_dns_receive(dev, udp, udp_len);
 		return;

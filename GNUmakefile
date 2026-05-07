@@ -16,7 +16,7 @@ DRIVERS_ROOT := drivers
 APPS_ROOT := src
 APPS_BIN := $(APPS_ROOT)/bin
 EARLY_INIT := early-init
-EARLY_INIT_BIN := $(APPS_BIN)/$(EARLY_INIT)
+EARLY_INIT_BIN := $(APPS_ROOT)/early-init/bin/$(EARLY_INIT)
 INITRD_FILES := $(filter-out $(INITRD_IMAGE),$(shell find $(INITRD_ROOT) -type f -o -type d 2>/dev/null | LC_ALL=C sort))
 DRIVER_SYS_FILES := $(shell find $(DRIVERS_ROOT)/bin -type f -name '*.sys' 2>/dev/null | LC_ALL=C sort)
 
@@ -95,7 +95,7 @@ drivers: kernel/.deps-obtained
 
 .PHONY: apps
 apps: kernel/.deps-obtained
-	$(MAKE) -C $(APPS_ROOT)
+	$(MAKE) -C $(APPS_ROOT)/early-init
 
 .PHONY: disk-apps
 disk-apps: apps

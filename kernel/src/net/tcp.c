@@ -24,6 +24,7 @@ typedef struct tcp_conn {
 	size_t rx_cap;
 	size_t rx_len;
 	net_tcp_listen_handler_t handler;
+	net_tcp_accept_handler_t accept_handler;
 	void *handler_ctx;
 	int passive;
 	int connected;
@@ -34,8 +35,10 @@ typedef struct tcp_conn {
 } tcp_conn_t;
 
 typedef struct tcp_listener {
+	uint32_t local_ip;
 	uint16_t port;
 	net_tcp_listen_handler_t handler;
+	net_tcp_accept_handler_t accept_handler;
 	void *ctx;
 	struct tcp_listener *next;
 } tcp_listener_t;
@@ -77,14 +80,25 @@ static tcp_conn_t *tcp_conn_find(netdev_t *dev, const ipv4_hdr_t *ip,
 	return NULL;
 }
 
-static tcp_listener_t *tcp_listener_find(uint16_t port)
+static tcp_listener_t *tcp_listener_find(uint32_t local_ip, uint16_t port)
 {
+	tcp_listener_t *wildcard = NULL;
+
 	for (tcp_listener_t *listener = tcp_listeners; listener;
 		 listener = listener->next) {
-		if (listener->port == port)
+		if (listener->port != port)
+			continue;
+
+		/* Linux-style bind semantics: an exact local address wins over
+		 * INADDR_ANY. A wildcard listener accepts packets for any local
+		 * address only if there is no exact listener for that address. */
+		if (listener->local_ip == local_ip)
 			return listener;
+		if (listener->local_ip == 0)
+			wildcard = listener;
 	}
-	return NULL;
+
+	return wildcard;
 }
 
 static void tcp_send_reset(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
@@ -124,8 +138,19 @@ static void tcp_handle_listen_syn(netdev_t *dev,
 	conn->ack = ntohl(tcp->seq) + 1;
 	memcpy(conn->peer_mac, src_mac, NET_ETH_ALEN);
 	conn->handler = listener->handler;
+	conn->accept_handler = listener->accept_handler;
 	conn->handler_ctx = listener->ctx;
 	conn->passive = 1;
+
+	if (conn->accept_handler) {
+		conn->rx_cap = TCP_ACTIVE_RX_CAP;
+		conn->rx_buf = kzalloc(conn->rx_cap);
+		if (!conn->rx_buf) {
+			kfree(conn);
+			tcp_send_reset(dev, src_mac, ip, tcp);
+			return;
+		}
+	}
 	conn->heap_allocated = 1;
 	tcp_conn_add(conn);
 
@@ -152,11 +177,12 @@ static int tcp_send_payload(tcp_conn_t *conn, const void *payload, size_t len)
 
 		conn->seq += (uint32_t)chunk;
 
-		log_debug("tcp", "send payload: %u.%u.%u.%u:%u -> local:%u seq=%u ack=%u len=%zu",
-				  (conn->remote_ip >> 24) & 0xff,
-				  (conn->remote_ip >> 16) & 0xff,
-				  (conn->remote_ip >> 8) & 0xff, conn->remote_ip & 0xff,
-				  conn->remote_port, conn->local_port, seq, conn->ack, chunk);
+		log_debug(
+			"tcp",
+			"send payload: %u.%u.%u.%u:%u -> local:%u seq=%u ack=%u len=%zu",
+			(conn->remote_ip >> 24) & 0xff, (conn->remote_ip >> 16) & 0xff,
+			(conn->remote_ip >> 8) & 0xff, conn->remote_ip & 0xff,
+			conn->remote_port, conn->local_port, seq, conn->ack, chunk);
 
 		int r = net_send_ipv4_tcp(conn->dev, conn->peer_mac, conn->remote_ip,
 								  conn->local_port, conn->remote_port, seq,
@@ -176,6 +202,9 @@ static int tcp_send_payload(tcp_conn_t *conn, const void *payload, size_t len)
 static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
 									   size_t payload_len)
 {
+	if (!conn->handler)
+		return;
+
 	char *response = kzalloc(TCP_PASSIVE_RESPONSE_CAP);
 	if (!response)
 		return;
@@ -226,13 +255,15 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 	tcp_conn_t *conn = tcp_conn_find(dev, ip, tcp);
 	if (!conn) {
 		uint16_t local_port = ntohs(tcp->dst_port);
-		tcp_listener_t *listener = tcp_listener_find(local_port);
-		log_debug("tcp", "rx no conn: src=%u.%u.%u.%u:%u dst_port=%u flags=0x%x listener=%s",
-				  (ntohl(ip->src) >> 24) & 0xff,
-				  (ntohl(ip->src) >> 16) & 0xff,
-				  (ntohl(ip->src) >> 8) & 0xff, ntohl(ip->src) & 0xff,
-				  ntohs(tcp->src_port), local_port, tcp->flags,
-				  listener ? "yes" : "no");
+		uint32_t local_ip = ntohl(ip->dst);
+		tcp_listener_t *listener = tcp_listener_find(local_ip, local_port);
+		log_debug(
+			"tcp",
+			"rx no conn: src=%u.%u.%u.%u:%u dst_port=%u flags=0x%x listener=%s",
+			(ntohl(ip->src) >> 24) & 0xff, (ntohl(ip->src) >> 16) & 0xff,
+			(ntohl(ip->src) >> 8) & 0xff, ntohl(ip->src) & 0xff,
+			ntohs(tcp->src_port), local_port, tcp->flags,
+			listener ? "yes" : "no");
 		if (listener && (tcp->flags & TCP_SYN)) {
 			tcp_handle_listen_syn(dev, src_mac, ip, tcp, listener);
 			return;
@@ -252,13 +283,14 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 	size_t payload_len = ip_len - ihl - tcp_hlen;
 	const uint8_t *payload = (const uint8_t *)tcp + tcp_hlen;
 
-	log_debug("tcp", "rx: %u.%u.%u.%u:%u -> local:%u flags=0x%x seq=%u ack=%u payload=%zu passive=%d connected=%d closed=%d rx_len=%zu rx_cap=%zu",
-			  (ntohl(ip->src) >> 24) & 0xff,
-			  (ntohl(ip->src) >> 16) & 0xff,
-			  (ntohl(ip->src) >> 8) & 0xff, ntohl(ip->src) & 0xff,
-			  ntohs(tcp->src_port), ntohs(tcp->dst_port), flags, seq, ack,
-			  payload_len, conn->passive, conn->connected, conn->closed,
-			  conn->rx_len, conn->rx_cap);
+	log_debug(
+		"tcp",
+		"rx: %u.%u.%u.%u:%u -> local:%u flags=0x%x seq=%u ack=%u payload=%zu passive=%d connected=%d closed=%d rx_len=%zu rx_cap=%zu",
+		(ntohl(ip->src) >> 24) & 0xff, (ntohl(ip->src) >> 16) & 0xff,
+		(ntohl(ip->src) >> 8) & 0xff, ntohl(ip->src) & 0xff,
+		ntohs(tcp->src_port), ntohs(tcp->dst_port), flags, seq, ack,
+		payload_len, conn->passive, conn->connected, conn->closed, conn->rx_len,
+		conn->rx_cap);
 
 	if (flags & 0x04) {
 		conn->error = 1;
@@ -272,24 +304,39 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 		if (!conn->connected && (flags & TCP_ACK) && ack == conn->seq + 1) {
 			conn->seq++;
 			conn->connected = 1;
+
+			if (conn->accept_handler) {
+				int r = conn->accept_handler(conn->dev, conn->remote_ip,
+											 conn->remote_port, conn,
+											 conn->handler_ctx);
+				if (r != VFS_OK) {
+					tcp_close_passive(conn);
+					return;
+				}
+
+				/* Hand accepted sockets to the normal connected TCP path. */
+				conn->passive = 0;
+			}
 		}
 
-		if (!conn->connected || seq != conn->ack)
+		if (conn->passive) {
+			if (!conn->connected || seq != conn->ack)
+				return;
+
+			if (payload_len) {
+				conn->ack += (uint32_t)payload_len;
+				tcp_handle_passive_payload(conn, payload, payload_len);
+			} else if (flags & TCP_FIN) {
+				conn->ack++;
+				net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
+								  conn->local_port, conn->remote_port,
+								  conn->seq, conn->ack, TCP_ACK, NULL, 0);
+				tcp_close_passive(conn);
+			} else if (conn->closed && (flags & TCP_ACK)) {
+				tcp_close_passive(conn);
+			}
 			return;
-
-		if (payload_len) {
-			conn->ack += (uint32_t)payload_len;
-			tcp_handle_passive_payload(conn, payload, payload_len);
-		} else if (flags & TCP_FIN) {
-			conn->ack++;
-			net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
-							  conn->local_port, conn->remote_port, conn->seq,
-							  conn->ack, TCP_ACK, NULL, 0);
-			tcp_close_passive(conn);
-		} else if (conn->closed && (flags & TCP_ACK)) {
-			tcp_close_passive(conn);
 		}
-		return;
 	}
 
 	if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK) &&
@@ -316,8 +363,10 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 			memcpy(conn->rx_buf + conn->rx_len, payload, copy);
 			conn->rx_len += copy;
 		}
-		log_debug("tcp", "active queued payload: got=%zu copied=%zu queued=%zu cap=%zu",
-				  payload_len, copy, conn->rx_len, conn->rx_cap);
+		log_debug(
+			"tcp",
+			"active queued payload: got=%zu copied=%zu queued=%zu cap=%zu",
+			payload_len, copy, conn->rx_len, conn->rx_cap);
 		conn->ack += (uint32_t)payload_len;
 		net_send_ipv4_tcp(dev, conn->peer_mac, conn->remote_ip,
 						  conn->local_port, conn->remote_port, conn->seq,
@@ -507,8 +556,7 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 		if (done)
 			*done = copy;
 
-		log_debug("tcp",
-				  "recv: copied=%zu remaining=%zu closed=%d error=%d",
+		log_debug("tcp", "recv: copied=%zu remaining=%zu closed=%d error=%d",
 				  copy, conn->rx_len, conn->closed, conn->error);
 
 		return VFS_OK;
@@ -524,8 +572,8 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 		return VFS_OK;
 	}
 
-	log_debug("tcp", "recv: timeout/no data closed=%d error=%d",
-			  conn->closed, conn->error);
+	log_debug("tcp", "recv: timeout/no data closed=%d error=%d", conn->closed,
+			  conn->error);
 	return VFS_ERR_TIMEOUT;
 }
 
@@ -624,25 +672,68 @@ out:
 	return r;
 }
 
-int net_tcp_listen(uint16_t port, net_tcp_listen_handler_t handler, void *ctx)
+static int tcp_listener_conflicts(uint32_t local_ip, uint16_t port)
 {
-	if (!port || !handler)
-		return VFS_ERR_INVAL;
-
 	for (tcp_listener_t *listener = tcp_listeners; listener;
 		 listener = listener->next) {
-		if (listener->port == port)
-			return VFS_ERR_EXIST;
+		if (listener->port != port)
+			continue;
+
+		/* INADDR_ANY conflicts with every listener on that port. Exact binds
+		 * conflict only with the same exact address or with a wildcard bind. */
+		if (listener->local_ip == 0 || local_ip == 0 ||
+			listener->local_ip == local_ip)
+			return 1;
 	}
+
+	return 0;
+}
+
+static int tcp_listener_add(uint32_t local_ip, uint16_t port,
+							net_tcp_listen_handler_t handler,
+							net_tcp_accept_handler_t accept_handler, void *ctx)
+{
+	if (!port || (!handler && !accept_handler))
+		return VFS_ERR_INVAL;
+
+	if (tcp_listener_conflicts(local_ip, port))
+		return VFS_ERR_EXIST;
 
 	tcp_listener_t *listener = kzalloc(sizeof(*listener));
 	if (!listener)
 		return VFS_ERR_NOMEM;
+	listener->local_ip = local_ip;
 	listener->port = port;
 	listener->handler = handler;
+	listener->accept_handler = accept_handler;
 	listener->ctx = ctx;
 	listener->next = tcp_listeners;
 	tcp_listeners = listener;
-	log_info("tcp", "listening on port %u", port);
+	log_debug("tcp", "listening on %u.%u.%u.%u:%u", (local_ip >> 24) & 0xff,
+			  (local_ip >> 16) & 0xff, (local_ip >> 8) & 0xff, local_ip & 0xff,
+			  port);
 	return VFS_OK;
+}
+
+int net_tcp_listen(uint16_t port, net_tcp_listen_handler_t handler, void *ctx)
+{
+	return tcp_listener_add(0, port, handler, NULL, ctx);
+}
+
+int net_tcp_listen_addr(uint32_t local_ip, uint16_t port,
+						net_tcp_listen_handler_t handler, void *ctx)
+{
+	return tcp_listener_add(local_ip, port, handler, NULL, ctx);
+}
+
+int net_tcp_listen_accept(uint16_t port, net_tcp_accept_handler_t handler,
+						  void *ctx)
+{
+	return tcp_listener_add(0, port, NULL, handler, ctx);
+}
+
+int net_tcp_listen_accept_addr(uint32_t local_ip, uint16_t port,
+							   net_tcp_accept_handler_t handler, void *ctx)
+{
+	return tcp_listener_add(local_ip, port, NULL, handler, ctx);
 }

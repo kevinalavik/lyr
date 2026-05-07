@@ -4,6 +4,7 @@
 #include <lib/lyrterm.h>
 #include <lib/string.h>
 #include <util/kprintf.h>
+#include <dev/uart.h>
 
 #define LYR_NCCS 19
 
@@ -41,19 +42,10 @@ static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 	if (!buf)
 		return VFS_ERR_INVAL;
 
-	size_t pos = 0;
-	while (pos < len) {
-		size_t chunk = len - pos;
-		if (chunk > 255)
-			chunk = 255;
-
-		char tmp[256];
-		memcpy(tmp, (const char *)buf + pos, chunk);
-		tmp[chunk] = '\0';
-
-		kprintf("%s", tmp);
-		pos += chunk;
-	}
+	uart_wbuf(buf, len);
+	uart_drain(0);
+	lyrterm_wbuf(buf, len);
+	lyrterm_flush();
 
 	if (done)
 		*done = len;

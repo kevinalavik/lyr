@@ -123,6 +123,8 @@ void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
 					  size_t ip_len);
 void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 					 const ipv4_hdr_t *ip, size_t ihl, size_t ip_len);
+void net_socket_udp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
+							const udp_hdr_t *udp, size_t udp_len);
 int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 						 const char *path, char *buf, size_t len,
 						 size_t *done, uint64_t timeout_ms);

@@ -3,14 +3,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <errno.h>
 
 #define IPC_NAME_MAX 31
 #define IPC_SHM_NAME_MAX 31
 #define IPC_OK 0
-#define IPC_ERR_NOENT -2
-#define IPC_ERR_NOMEM -12
-#define IPC_ERR_EXIST -17
-#define IPC_ERR_INVAL -22
+#define IPC_ERR_NOENT (-ENOENT)
+#define IPC_ERR_NOMEM (-ENOMEM)
+#define IPC_ERR_EXIST (-EEXIST)
+#define IPC_ERR_INVAL (-EINVAL)
 
 typedef enum {
 	IPC_MSG_CALL = 1,

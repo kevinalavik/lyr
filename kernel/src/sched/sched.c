@@ -369,6 +369,56 @@ static void frame_init_user(tcb_t *thread, uint64_t rip, uint64_t user_rsp)
 	thread->mode = TCB_MODE_USER;
 }
 
+void process_setup_fds(pcb_t *process)
+{
+	int r = vfs_open("/dev/null", VFS_O_RDONLY, 0, &vfs_root_cred,
+					 &process->files[0]);
+	if (r != VFS_OK) {
+		log_err("sched",
+				"failed to open stdin /dev/null for process %s status=%s(%d)",
+				process->name, vfs_err_name(r), r);
+		atomic_store_explicit(&process->dying, true, memory_order_release);
+		return;
+	}
+
+	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, &vfs_root_cred,
+				 &process->files[1]);
+	if (r != VFS_OK) {
+		log_err(
+			"sched",
+			"failed to open stdout /dev/console for process %s status=%s(%d)",
+			process->name, vfs_err_name(r), r);
+		vfs_close(process->files[0]);
+		process->files[0] = NULL;
+		atomic_store_explicit(&process->dying, true, memory_order_release);
+		return;
+	}
+
+	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, &vfs_root_cred,
+				 &process->files[2]);
+	if (r != VFS_OK) {
+		log_err(
+			"sched",
+			"failed to open stderr /dev/console for process %s status=%s(%d)",
+			process->name, vfs_err_name(r), r);
+		vfs_close(process->files[0]);
+		vfs_close(process->files[1]);
+		process->files[0] = NULL;
+		process->files[1] = NULL;
+		atomic_store_explicit(&process->dying, true, memory_order_release);
+		return;
+	}
+
+	log_debug("sched", "setup fd table for PID %d", process->pid);
+	for (int i = 0; i < SCHED_FILE_MAX; i++) {
+		vfs_file_t *f = process->files[i];
+		if (!f)
+			break;
+
+		log_debug("sched", "fd[%d] -> %p", i, f);
+	}
+}
+
 static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 {
 	pcb_t *process = kzalloc(sizeof(pcb_t));
@@ -382,6 +432,8 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 		kfree(process);
 		return NULL;
 	}
+
+	process_setup_fds(process);
 
 	process->pml4 = process->vas->pml4;
 	process->owns_vas = process->vas != _lyr_kernel_vas;
@@ -656,44 +708,6 @@ pcb_t *sched_process_create(const char *name, vas_t *vas)
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
 
-	int r = vfs_open("/dev/null", VFS_O_RDONLY, 0, &vfs_root_cred,
-					 &process->files[0]);
-	if (r != VFS_OK) {
-		log_err("sched",
-				"failed to open stdin /dev/null for process %s status=%s(%d)",
-				process->name, vfs_err_name(r), r);
-		atomic_store_explicit(&process->dying, true, memory_order_release);
-		return NULL;
-	}
-
-	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, &vfs_root_cred,
-				 &process->files[1]);
-	if (r != VFS_OK) {
-		log_err(
-			"sched",
-			"failed to open stdout /dev/console for process %s status=%s(%d)",
-			process->name, vfs_err_name(r), r);
-		vfs_close(process->files[0]);
-		process->files[0] = NULL;
-		atomic_store_explicit(&process->dying, true, memory_order_release);
-		return NULL;
-	}
-
-	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, &vfs_root_cred,
-				 &process->files[2]);
-	if (r != VFS_OK) {
-		log_err(
-			"sched",
-			"failed to open stderr /dev/console for process %s status=%s(%d)",
-			process->name, vfs_err_name(r), r);
-		vfs_close(process->files[0]);
-		vfs_close(process->files[1]);
-		process->files[0] = NULL;
-		process->files[1] = NULL;
-		atomic_store_explicit(&process->dying, true, memory_order_release);
-		return NULL;
-	}
-
 	log_trace("sched", "created process pid=%d name=%s pml4=0x%llx",
 			  process->pid, process->name, (uint64_t)process->pml4);
 	return process;
@@ -768,6 +782,47 @@ tcb_t *sched_create_user_thread(pcb_t *process, const char *name, uint64_t rip,
 		"created user tid=%d pid=%d (%s) on cpu%u rip=0x%llx rsp=0x%llx load=%u",
 		thread->tid, process->pid, thread->name, cpu->cpu_index, rip, user_rsp,
 		atomic_load(&cpu->sched_load));
+	return thread;
+}
+
+
+tcb_t *sched_fork_thread(pcb_t *process, const char *name,
+                         interrupt_frame_t *parent_frame)
+{
+	if (!sched_is_initialized() || !process || !parent_frame ||
+		atomic_load_explicit(&process->dying, memory_order_acquire))
+		return NULL;
+
+	cpu_local_t *cpu = least_loaded_cpu();
+	if (!cpu)
+		return NULL;
+
+	uint64_t flags = irq_save();
+	tcb_t *thread = thread_alloc(process, name, NULL, NULL, false);
+	if (!thread) {
+		irq_restore(flags);
+		return NULL;
+	}
+
+	interrupt_frame_t *child_frame =
+		(interrupt_frame_t *)(thread->kstack_top - sizeof(interrupt_frame_t));
+	memcpy(child_frame, parent_frame, sizeof(*child_frame));
+	child_frame->rax = 0;
+	child_frame->cr3 = (uint64_t)process->pml4;
+	thread->rsp = (uint64_t)child_frame;
+	thread->mode = TCB_MODE_USER;
+	thread->fs_base = sched_current() ? sched_current()->fs_base : 0;
+	thread->user_entry_rsp = child_frame->rsp;
+
+	spinlock_acquire(&cpu->runq_lock);
+	runq_push_locked(cpu, thread);
+	atomic_fetch_add_explicit(&cpu->sched_load, 1, memory_order_release);
+	spinlock_release(&cpu->runq_lock);
+	irq_restore(flags);
+
+	log_trace("sched", "forked user tid=%d pid=%d (%s) on cpu%u rip=0x%llx rsp=0x%llx load=%u",
+			  thread->tid, process->pid, thread->name, cpu->cpu_index,
+			  child_frame->rip, child_frame->rsp, atomic_load(&cpu->sched_load));
 	return thread;
 }
 

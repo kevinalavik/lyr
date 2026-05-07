@@ -7,41 +7,9 @@ const vfs_cred_t vfs_root_cred = { .uid = 0, .gid = 0, .umask = 0022 };
 
 const char *vfs_err_name(int err)
 {
-	switch (err) {
-	case VFS_OK:
-		return "VFS_OK";
-	case VFS_ERR_PERM:
-		return "VFS_ERR_PERM";
-	case VFS_ERR_NOENT:
-		return "VFS_ERR_NOENT";
-	case VFS_ERR_BADF:
-		return "VFS_ERR_BADF";
-	case VFS_ERR_NOMEM:
-		return "VFS_ERR_NOMEM";
-	case VFS_ERR_ACCES:
-		return "VFS_ERR_ACCES";
-	case VFS_ERR_EXIST:
-		return "VFS_ERR_EXIST";
-	case VFS_ERR_NOTDIR:
-		return "VFS_ERR_NOTDIR";
-	case VFS_ERR_ISDIR:
-		return "VFS_ERR_ISDIR";
-	case VFS_ERR_INVAL:
-		return "VFS_ERR_INVAL";
-	case VFS_ERR_NOTTY:
-		return "VFS_ERR_NOTTY";
-	case VFS_ERR_NAMETOOLONG:
-		return "VFS_ERR_NAMETOOLONG";
-	case VFS_ERR_TIMEOUT:
-		return "VFS_ERR_TIMEOUT";
-	case VFS_ERR_NOSYS:
-		return "VFS_ERR_NOSYS";
-	case VFS_ERR_NOTEMPTY:
-		return "VFS_ERR_NOTEMPTY";
-	default:
-		return "VFS_ERR_UNKNOWN";
-	}
+	return errno_name(err);
 }
+
 
 typedef struct vfs_mount {
 	vfs_node_t *covered;

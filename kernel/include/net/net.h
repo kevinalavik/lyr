@@ -12,6 +12,7 @@
 #define NET_HTTP_HEADER_MAX 1024
 
 typedef struct netdev netdev_t;
+typedef struct tcp_conn net_tcp_conn_t;
 
 typedef struct {
 	uint32_t src_ip;
@@ -34,6 +35,9 @@ typedef int (*net_tcp_listen_handler_t)(netdev_t *dev, uint32_t remote_ip,
 										const void *request, size_t request_len,
 										void *response, size_t response_cap,
 										size_t *response_len, void *ctx);
+typedef int (*net_tcp_accept_handler_t)(netdev_t *dev, uint32_t remote_ip,
+										uint16_t remote_port, net_tcp_conn_t *conn,
+										void *ctx);
 
 struct netdev {
 	char name[NETDEV_NAME_MAX + 1];
@@ -88,14 +92,18 @@ int net_http_get_dev(netdev_t *dev, const char *host, const char *path,
 					 char *buf, size_t len, size_t *done,
 					 net_http_response_t *response, uint64_t timeout_ms);
 int net_tcp_listen(uint16_t port, net_tcp_listen_handler_t handler, void *ctx);
+int net_tcp_listen_addr(uint32_t local_ip, uint16_t port,
+						  net_tcp_listen_handler_t handler, void *ctx);
+int net_tcp_listen_accept(uint16_t port, net_tcp_accept_handler_t handler,
+						  void *ctx);
+int net_tcp_listen_accept_addr(uint32_t local_ip, uint16_t port,
+								 net_tcp_accept_handler_t handler, void *ctx);
 void net_poll_all(void);
 size_t netdev_count(void);
 uint32_t net_ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
 void net_ipv4_format(uint32_t ip, char *out, size_t len);
 uint32_t net_default_ipv4(void);
 uint32_t net_default_gateway(void);
-
-typedef struct tcp_conn net_tcp_conn_t;
 
 int net_tcp_connect(const char *host, uint16_t port, net_tcp_conn_t **out,
 					uint64_t timeout_ms);

@@ -11,6 +11,7 @@ typedef struct device device_t;
 typedef struct device_handler device_handler_t;
 
 typedef enum {
+	DEVICE_BUS_PLATFORM = 0,
 	DEVICE_BUS_PCI = 1,
 } device_bus_t;
 

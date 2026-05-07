@@ -670,12 +670,17 @@ static void lyrterm_putcp_raw_locked(uint32_t codepoint)
 		newline();
 		break;
 	case '\r':
-		cursor_x = term_x0();
 		break;
 	case '\t':
 		tab_advance();
 		break;
+	case '\b':
+		if (cursor_x > term_x0())
+			cursor_x -= _LYRTERM_LINE_WIDTH;
+		break;
 	default:
+		if (codepoint < 0x20)
+			break;
 		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, codepoint, current_fg,
 			   current_bg);
 		advance_cursor();

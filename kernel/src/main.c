@@ -24,6 +24,8 @@
 #include <dev/pit.h>
 #include <dev/block.h>
 #include <dev/device.h>
+#include <dev/time.h>
+#include <dev/rtc.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
 #include <fs/initrd.h>
@@ -199,6 +201,9 @@ void lyr_entry(void)
 
 	assert(device_system_init() == VFS_OK);
 	log_info("entry", "Device system ok");
+	assert(time_init() == VFS_OK);
+	assert(rtc_init() == VFS_OK);
+	log_info("entry", "RTC/time ok");
 	assert(block_system_init() == VFS_OK);
 	log_info("entry", "Block layer ok");
 	assert(net_init() == VFS_OK);

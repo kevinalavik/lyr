@@ -419,3 +419,50 @@ vas_t *vas_adopt(ptable_t *existing_pml4)
 	vas->user_start = VAS_USER_START;
 	return vas;
 }
+
+
+vas_t *vas_clone(vas_t *src)
+{
+	if (!src)
+		return NULL;
+
+	vas_t *dst = vas_create(NULL);
+	if (!dst)
+		return NULL;
+	dst->user_start = src->user_start;
+
+	for (vad_t *v = src->list_head; v; v = v->next) {
+		vad_t *nv = NULL;
+		if (v->flags & VAD_FILE)
+			nv = _vad_alloc_file(v->start, v->end, v->flags, v->file,
+								 v->file_offset);
+		else
+			nv = _vad_alloc(v->start, v->end, v->flags);
+		if (!nv) {
+			vas_destroy(dst);
+			return NULL;
+		}
+		_vad_insert(dst, nv);
+
+		uint64_t prot = v->flags & VAD_PROT_MASK;
+		for (uint64_t va = v->start; va < v->end; va += PAGE_SIZE) {
+			uint64_t src_phys = get_phys(src->pml4, va);
+			if (!src_phys)
+				continue;
+
+			page_t *page = palloc_page();
+			if (!page) {
+				vas_destroy(dst);
+				return NULL;
+			}
+			uint64_t dst_phys = pfndb_page_to_phys(page);
+			memcpy(PHYS_TO_VIRT(dst_phys),
+				   PHYS_TO_VIRT(src_phys & ~(uint64_t)(PAGE_SIZE - 1)),
+				   PAGE_SIZE);
+			map_page(dst->pml4, va, page, prot);
+			page_unref(page);
+		}
+	}
+
+	return dst;
+}

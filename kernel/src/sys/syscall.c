@@ -1,5 +1,6 @@
 #include <sys/syscall.h>
 #include <cpu/instr.h>
+#include <errno.h>
 #include <debug/log.h>
 #include <fs/mount.h>
 #include <fs/vfs.h>
@@ -12,6 +13,9 @@
 #include <mm/heap.h>
 #include <net/net.h>
 #include <net/socket.h>
+#include <dev/time.h>
+#include <dev/pit.h>
+#include <sys/poll.h>
 
 #define MSR_EFER 0xC0000080
 #define MSR_STAR 0xC0000081
@@ -57,6 +61,52 @@ typedef struct {
 	uint64_t size;
 	uint32_t nlink;
 } syscall_stat_t;
+
+
+typedef struct {
+	int64_t tv_sec;
+	long tv_nsec;
+} syscall_timespec_t;
+
+static void syscall_relax_until_interrupt(void)
+{
+	__asm__ volatile("sti; hlt; cli" ::: "memory");
+}
+
+static vfs_file_t *syscall_dup_file(vfs_file_t *file)
+{
+	if (!file)
+		return NULL;
+
+	vfs_file_t *dup = kzalloc(sizeof(*dup));
+	if (!dup)
+		return NULL;
+
+	*dup = *file;
+	if (dup->node)
+		vfs_node_ref(dup->node);
+	if (dup->private_data) {
+		if (net_socket_ref((socket_t *)dup->private_data) != NET_SOCK_OK) {
+			if (dup->node)
+				vfs_node_release(dup->node);
+			kfree(dup);
+			return NULL;
+		}
+	}
+	return dup;
+}
+
+static void syscall_close_file_slot(vfs_file_t **slot)
+{
+	if (!slot || !*slot)
+		return;
+	vfs_file_t *file = *slot;
+	if (file->private_data)
+		net_close((socket_t *)file->private_data);
+	vfs_close(file);
+	*slot = NULL;
+}
+
 
 static int syscall_copy_user_string(uint64_t user, char *out, size_t out_len)
 {
@@ -505,6 +555,8 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	vas_switch(new_vas);
 	if (old_vas)
 		vas_destroy(old_vas);
+
+	process_setup_fds(thread->process);
 
 	memset(frame, 0, sizeof(*frame));
 	frame->rip = image.entry;
@@ -1174,6 +1226,172 @@ static long sys_getsockopt_handler(interrupt_frame_t *frame)
 	return NET_SOCK_OK;
 }
 
+#define SYS_POLL_NFDS_MAX 1024
+
+static int sys_poll_scan(struct lyr_pollfd *fds, size_t nfds)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	int ready = 0;
+	net_poll_all();
+
+	for (size_t i = 0; i < nfds; i++) {
+		fds[i].revents = 0;
+
+		if (fds[i].fd < 0)
+			continue;
+
+		if (fds[i].fd >= SCHED_FILE_MAX) {
+			fds[i].revents = LYR_POLLNVAL;
+			ready++;
+			continue;
+		}
+
+		vfs_file_t *file = thread->process->files[fds[i].fd];
+		if (!file) {
+			fds[i].revents = LYR_POLLNVAL;
+			ready++;
+			continue;
+		}
+
+		if (file->private_data) {
+			fds[i].revents = (int16_t)net_poll_socket(
+				(socket_t *)file->private_data, fds[i].events);
+		} else {
+			/* wacky fix */
+			if (fds[i].events & LYR_POLL_READ_MASK)
+				fds[i].revents |= LYR_POLLIN | LYR_POLLRDNORM;
+			if (fds[i].events & LYR_POLL_WRITE_MASK)
+				fds[i].revents |= LYR_POLLOUT | LYR_POLLWRNORM;
+		}
+
+		if (fds[i].revents)
+			ready++;
+	}
+
+	return ready;
+}
+
+static uint64_t sys_poll_timeout_ticks(uint64_t timeout_ms)
+{
+	uint64_t hz = pit_get_hz();
+	uint64_t ticks = (timeout_ms * hz + 999) / 1000;
+	return ticks ? ticks : 1;
+}
+
+static long sys_clock_get_handler(interrupt_frame_t *frame)
+{
+	int clock_id = (int)frame->rdi;
+	uint64_t user_ts = frame->rsi;
+	if (!syscall_user_range_ok(user_ts, sizeof(syscall_timespec_t)))
+		return VFS_ERR_INVAL;
+
+	int64_t sec = 0;
+	long nsec = 0;
+	int r = time_get(clock_id, &sec, &nsec);
+	if (r != 0)
+		return r;
+
+	syscall_timespec_t ts = { .tv_sec = sec, .tv_nsec = nsec };
+	memcpy((void *)user_ts, &ts, sizeof(ts));
+	return VFS_OK;
+}
+
+static long sys_poll_handler(interrupt_frame_t *frame)
+{
+	uint64_t user_fds = frame->rdi;
+	size_t nfds = (size_t)frame->rsi;
+	int timeout_ms = (int)frame->rdx;
+
+	if (nfds > SYS_POLL_NFDS_MAX)
+		return VFS_ERR_INVAL;
+	if (nfds && !syscall_user_range_ok(user_fds, nfds * sizeof(struct lyr_pollfd)))
+		return VFS_ERR_INVAL;
+
+	struct lyr_pollfd *fds = NULL;
+	if (nfds) {
+		fds = kzalloc(nfds * sizeof(*fds));
+		if (!fds)
+			return VFS_ERR_NOMEM;
+		memcpy(fds, (void *)user_fds, nfds * sizeof(*fds));
+	}
+
+	uint64_t deadline = 0;
+	int finite_timeout = timeout_ms >= 0;
+	if (finite_timeout)
+		deadline = pit_get_ticks() + sys_poll_timeout_ticks((uint64_t)timeout_ms);
+
+	long ret = 0;
+	for (;;) {
+		ret = nfds ? sys_poll_scan(fds, nfds) : 0;
+		if (ret < 0 || ret > 0)
+			break;
+		if (finite_timeout && timeout_ms == 0)
+			break;
+		if (finite_timeout && pit_get_ticks() >= deadline)
+			break;
+		syscall_relax_until_interrupt();
+	}
+
+	if (nfds && ret >= 0)
+		memcpy((void *)user_fds, fds, nfds * sizeof(*fds));
+	if (fds)
+		kfree(fds);
+	return ret;
+}
+
+static long sys_getpid_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	return (long)thread->process->pid;
+}
+
+static long sys_fork_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process || !thread->process->vas)
+		return VFS_ERR_BADF;
+
+	vas_t *child_vas = vas_clone(thread->process->vas);
+	if (!child_vas)
+		return VFS_ERR_NOMEM;
+
+	pcb_t *child = sched_process_create(thread->process->name, child_vas);
+	if (!child) {
+		vas_destroy(child_vas);
+		return VFS_ERR_NOMEM;
+	}
+
+	for (int i = 0; i < SCHED_FILE_MAX; i++)
+		syscall_close_file_slot(&child->files[i]);
+
+	for (int i = 0; i < SCHED_FILE_MAX; i++) {
+		if (!thread->process->files[i])
+			continue;
+		child->files[i] = syscall_dup_file(thread->process->files[i]);
+		if (!child->files[i]) {
+			for (int j = 0; j < SCHED_FILE_MAX; j++)
+				syscall_close_file_slot(&child->files[j]);
+			return VFS_ERR_NOMEM;
+		}
+	}
+
+	tcb_t *child_thread = sched_fork_thread(child, thread->name, frame);
+	if (!child_thread) {
+		for (int i = 0; i < SCHED_FILE_MAX; i++)
+			syscall_close_file_slot(&child->files[i]);
+		return VFS_ERR_NOMEM;
+	}
+	child_thread->fs_base = thread->fs_base;
+
+	return (long)child->pid;
+}
+
 static syscall_handler_t syscall_table[] = {
 	[SYS_READ] = sys_read_handler,
 	[SYS_WRITE] = sys_write_handler,
@@ -1212,6 +1430,10 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_SHUTDOWN] = sys_shutdown_handler,
 	[SYS_SETSOCKOPT] = sys_setsockopt_handler,
 	[SYS_GETSOCKOPT] = sys_getsockopt_handler,
+	[SYS_CLOCK_GET] = sys_clock_get_handler,
+	[SYS_POLL] = sys_poll_handler,
+	[SYS_FORK] = sys_fork_handler,
+	[SYS_GETPID] = sys_getpid_handler,
 };
 
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
@@ -1232,5 +1454,6 @@ interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 	log_warn("syscall", "unhandled syscall rax=%llu from tid=%d", nr,
 			 thread ? thread->tid : -1);
+	frame->rax = (uint64_t)(int64_t)-ENOSYS;
 	return frame;
 }

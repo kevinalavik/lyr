@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <mm/page.h>
+#include <errno.h>
 
 #define VFS_NAME_MAX 255
 #define VFS_SUPP_GROUP_MAX 8
@@ -54,20 +55,20 @@
 #define VFS_SEEK_END 2
 
 #define VFS_OK 0
-#define VFS_ERR_PERM -1
-#define VFS_ERR_NOENT -2
-#define VFS_ERR_BADF -9
-#define VFS_ERR_NOMEM -12
-#define VFS_ERR_ACCES -13
-#define VFS_ERR_EXIST -17
-#define VFS_ERR_NOTDIR -20
-#define VFS_ERR_ISDIR -21
-#define VFS_ERR_INVAL -22
-#define VFS_ERR_NOTTY -25
-#define VFS_ERR_NOSYS -38
-#define VFS_ERR_NOTEMPTY -39
-#define VFS_ERR_NAMETOOLONG -36
-#define VFS_ERR_TIMEOUT -37
+#define VFS_ERR_PERM (-EPERM)
+#define VFS_ERR_NOENT (-ENOENT)
+#define VFS_ERR_BADF (-EBADF)
+#define VFS_ERR_NOMEM (-ENOMEM)
+#define VFS_ERR_ACCES (-EACCES)
+#define VFS_ERR_EXIST (-EEXIST)
+#define VFS_ERR_NOTDIR (-ENOTDIR)
+#define VFS_ERR_ISDIR (-EISDIR)
+#define VFS_ERR_INVAL (-EINVAL)
+#define VFS_ERR_NOTTY (-ENOTTY)
+#define VFS_ERR_NOSYS (-ENOSYS)
+#define VFS_ERR_NOTEMPTY (-ENOTEMPTY)
+#define VFS_ERR_NAMETOOLONG (-ENAMETOOLONG)
+#define VFS_ERR_TIMEOUT (-ETIMEDOUT)
 
 const char *vfs_err_name(int err);
 

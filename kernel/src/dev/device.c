@@ -43,6 +43,9 @@ static int device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 			dev->name, p->bus, p->slot, p->function, p->vendor_id, p->device_id,
 			p->class_code, p->subclass, p->prog_if, p->revision,
 			dev->handler ? dev->handler->name : "none");
+	} else if (dev->bus_type == DEVICE_BUS_PLATFORM) {
+		n = npf_snprintf(tmp, sizeof(tmp), "name=%s\nbus=platform\nhandler=%s\n",
+						 dev->name, dev->handler ? dev->handler->name : "none");
 	} else {
 		n = npf_snprintf(tmp, sizeof(tmp), "name=%s\nbus=unknown\nhandler=%s\n",
 						 dev->name, dev->handler ? dev->handler->name : "none");

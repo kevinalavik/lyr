@@ -1,0 +1,35 @@
+sources:
+  - name: init
+    subdir: sources
+
+packages:
+  - name: init
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: init
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    build:
+      - args:
+          - 'x86_64-lyr-gcc'
+          - '-g'
+          - '-O2'
+          - '-Wall'
+          - '-Wextra'
+          - '-std=gnu11'
+          - '-I'
+          - '@SOURCE_ROOT@/src/include'
+          - '-I'
+          - '@SOURCE_ROOT@/kernel/include/sys'
+          - '-isystem'
+          - '@SYSROOT_DIR@/usr/include'
+          - '-isystem'
+          - '@SYSROOT_DIR@/usr/include/lyr'
+          - '-o'
+          - '@THIS_BUILD_DIR@/init'
+          - '@THIS_SOURCE_DIR@/main.c'
+      - args: 'install -D @THIS_BUILD_DIR@/init @SYSROOT_DIR@/bin/init'

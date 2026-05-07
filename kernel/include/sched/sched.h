@@ -13,7 +13,7 @@
 
 #define SCHED_TIMER_HZ 1000
 #define SCHED_KERNEL_STACK_SIZE (64 * 1024ULL)
-#define SCHED_FILE_MAX 16
+#define SCHED_FILE_MAX 128
 
 typedef int32_t pid_t;
 typedef int32_t tid_t;
@@ -79,8 +79,10 @@ tcb_t *sched_create_thread(pcb_t *process, const char *name,
 tcb_t *sched_create_thread_on_cpu(pcb_t *process, const char *name,
 								  thread_entry_t entry, void *arg,
 								  cpu_local_t *cpu);
-tcb_t *sched_create_user_thread(pcb_t *process, const char *name,
-								uint64_t rip, uint64_t user_rsp);
+tcb_t *sched_create_user_thread(pcb_t *process, const char *name, uint64_t rip,
+								uint64_t user_rsp);
+tcb_t *sched_fork_thread(pcb_t *process, const char *name,
+						 interrupt_frame_t *parent_frame);
 
 tcb_t *sched_current(void);
 bool sched_process_exists(pid_t pid);
@@ -94,5 +96,7 @@ interrupt_frame_t *sched_tick(interrupt_frame_t *frame);
 interrupt_frame_t *sched_syscall_exit(interrupt_frame_t *frame, int status);
 void sched_thread_exit(int status) __attribute__((noreturn));
 void sched_exit(void) __attribute__((noreturn));
+
+void process_setup_fds(pcb_t *process);
 
 #endif /* _LYR_SCHED_SCHED_H */

@@ -49,5 +49,6 @@ vad_t *vas_find(vas_t *vas, uint64_t addr);
 
 void vas_switch(vas_t *vas);
 vas_t *vas_adopt(ptable_t *existing_pml4);
+vas_t *vas_clone(vas_t *src);
 
 #endif /* _LYR_MM_VMM_H */

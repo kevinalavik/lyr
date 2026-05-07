@@ -2,6 +2,7 @@ imports:
   - file: bootstrap.d/lyr-toolchain.yml
   - file: bootstrap.d/lyr-libc.yml
   - file: bootstrap.d/app-test.yml
+  - file: bootstrap.d/init.yml
 general:
   patch_author: Kevin Alavik and contributors
   patch_email: kevin@alavik.se
