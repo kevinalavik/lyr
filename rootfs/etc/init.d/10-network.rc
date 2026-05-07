@@ -1,0 +1,2 @@
+echo "Checking network interfaces"
+ifaces

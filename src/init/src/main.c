@@ -11,10 +11,11 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 
-#include <lyr/mount.h>
+#include "script.h"
+
+#define INIT_SCRIPT_PATH "/etc/initrc"
 
 #define PING_PKT_SIZE 64
-#define PING_TIMEOUT_SEC 1
 
 struct ping_packet {
 	struct icmphdr hdr;
@@ -119,7 +120,7 @@ static int get_field(const char *line, const char *key, char *out,
 	return 0;
 }
 
-static int check_ifaces(void)
+int check_ifaces(void)
 {
 	const char *iface_list = "/dev/net/devices";
 	FILE *fp;
@@ -158,13 +159,9 @@ static int check_ifaces(void)
 
 		if (strstr(line, "loopback") || strcmp(iface, "lo") == 0) {
 			strcpy(target, "127.0.0.1");
-		}
-
-		else if (gateway[0] && strcmp(gateway, "0.0.0.0") != 0) {
-			strncpy(target, gateway, sizeof(target));
-		}
-
-		else {
+		} else if (gateway[0] && strcmp(gateway, "0.0.0.0") != 0) {
+			snprintf(target, sizeof(target), "%s", gateway);
+		} else {
 			continue;
 		}
 
@@ -179,41 +176,47 @@ static int check_ifaces(void)
 	return found_working_iface;
 }
 
-static int mount_or_report(const char *source, const char *target,
-						   const char *filesystem, unsigned long flags,
-						   const void *data)
-{
-	if (mount(source, target, filesystem, flags, data) < 0) {
-		fprintf(stderr, "init: failed to mount %s at %s as %s: %s\n", source,
-				target, filesystem, strerror(errno));
-		return -1;
-	}
-
-	printf("init: mounted %s at %s\n", filesystem, target);
-	return 0;
-}
-
 int main(void)
 {
-	printf("init: Welcome to lyrOS v1.0 (mlibc)\n");
+	struct script script;
+	struct runtime runtime;
+	int ret;
 
-	if (mount_or_report("devfs", "/dev", "devfs", 0, NULL) < 0) {
-		return 1;
+	printf("init: Welcome to lyrOS v1.0\n");
+
+	script_init(&script);
+	runtime_init(&runtime);
+
+	ret = parse_file(INIT_SCRIPT_PATH, &script);
+	if (ret < 0) {
+		fprintf(stderr, "init: failed to parse %s\n", INIT_SCRIPT_PATH);
+		goto fallback;
 	}
 
-	if (mount_or_report("tmpfs", "/tmp", "tmpfs", 0, NULL) < 0) {
-		return 1;
+	ret = execute_script(&runtime, &script);
+	if (ret < 0)
+		fprintf(stderr, "init: one or more init commands failed\n");
+
+	fprintf(stderr, "init: script ended without exec; entering idle loop\n");
+
+	for (;;)
+		pause();
+
+fallback:
+	fprintf(stderr, "init: fallback exec /usr/bin/lyr-test\n");
+
+	{
+		static char path[] = "/usr/bin/lyr-test";
+		static char *const argv[] = { path, NULL };
+		static char *const envp[] = { NULL };
+
+		execve(path, argv, envp);
+
+		fprintf(stderr, "init: fallback exec failed: %s\n", strerror(errno));
 	}
 
-	check_ifaces();
+	runtime_destroy(&runtime);
+	script_destroy(&script);
 
-	static char path[] = "/usr/bin/lyr-test";
-	static char *const argv[] = { path, NULL };
-	static char *const envp[] = { NULL };
-
-	printf("init: executing %s\n", path);
-	execve(path, argv, envp);
-
-	fprintf(stderr, "init: execve(%s) failed: %s\n", path, strerror(errno));
 	return 127;
 }
