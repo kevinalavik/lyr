@@ -180,9 +180,6 @@ static int ping_once_ipv4(const char *ip, int seq, long *rtt_us_out,
 
 		gettimeofday(&end, NULL);
 
-		/*
-		 * Raw IPv4 sockets usually include the IPv4 header.
-		 */
 		if (n >= (ssize_t)(sizeof(struct iphdr) + sizeof(struct icmphdr))) {
 			struct iphdr *ip_hdr = (struct iphdr *)recv_buf;
 			size_t ip_hdr_len = ip_hdr->ihl * 4;
@@ -197,9 +194,6 @@ static int ping_once_ipv4(const char *ip, int seq, long *rtt_us_out,
 			icmp = (struct icmphdr *)(recv_buf + ip_hdr_len);
 		}
 
-		/*
-		 * Some small kernels may return only the ICMP payload.
-		 */
 		else if (n >= (ssize_t)sizeof(struct icmphdr)) {
 			icmp = (struct icmphdr *)recv_buf;
 		}
@@ -208,9 +202,6 @@ static int ping_once_ipv4(const char *ip, int seq, long *rtt_us_out,
 			continue;
 		}
 
-		/*
-		 * Ignore our own outgoing echo request if the raw socket sees it.
-		 */
 		if (icmp->type == ICMP_ECHO)
 			continue;
 
