@@ -198,16 +198,19 @@ int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 	dev->ipv4_netmask = dhcp_netmask ? dhcp_netmask : net_ipv4(255, 255, 255, 0);
 	dev->ipv4_gateway = dhcp_gateway ? dhcp_gateway : dhcp_server_ip;
 	dev->dns_server = dhcp_dns_server ? dhcp_dns_server : dev->ipv4_gateway;
+
 	dev->dhcp_configured = 1;
 
 	char ip[24];
 	char gw[24];
 	char srv[24];
+	char dns[24];
 	net_ipv4_format(dev->ipv4_addr, ip, sizeof(ip));
 	net_ipv4_format(dev->ipv4_gateway, gw, sizeof(gw));
 	net_ipv4_format(dev->dhcp_server, srv, sizeof(srv));
-	log_info("net", "%s DHCP lease ip=%s gateway=%s server=%s", dev->name, ip,
-			 gw, srv);
+	net_ipv4_format(dev->dns_server, dns, sizeof(dns));
+	log_info("net", "%s DHCP lease ip=%s gateway=%s server=%s dns=%s",
+			 dev->name, ip, gw, srv, dns);
 	return VFS_OK;
 }
 

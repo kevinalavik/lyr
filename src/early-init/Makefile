@@ -17,7 +17,7 @@ CFLAGS += -fno-stack-protector -fno-stack-check -fno-lto -fno-PIC
 CFLAGS += -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv
 CFLAGS += -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=small
 CFLAGS += -I ../include -I ../../kernel/include/sys -isystem ../../kernel/freestnd-c-hdrs/include
-LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 --gc-sections -T ../linker.ld
+LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 --gc-sections -T linker.ld
 
 .PHONY: all install clean distclean
 
@@ -44,5 +44,6 @@ $(OBJ_DIR)/crt0.S.o: ../crt0.S Makefile
 	mkdir -p "$(dir $@)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# special app so install to (prefix)/early-init
 install: all
-	install -D -m 755 $(OUTPUT_DIR)/$(PROJECT) $(DESTDIR)$(PREFIX)/sbin/$(PROJECT)
+	install -D -m 755 $(OUTPUT_DIR)/$(PROJECT) $(DESTDIR)$(PREFIX)/$(PROJECT)

@@ -59,6 +59,48 @@ int net_send_ipv4_udp(netdev_t *dev, const uint8_t dst_mac[6],
 	return dev->send(dev, frame, frame_len);
 }
 
+int net_send_ipv4_icmp(netdev_t *dev, const uint8_t dst_mac[6],
+					   uint32_t src_ip, uint32_t dst_ip,
+					   const void *payload, size_t payload_len)
+{
+	if (!dev || !payload || payload_len > 1400)
+		return VFS_ERR_INVAL;
+
+	uint8_t frame[NET_ETH_FRAME_MAX];
+	size_t ip_len = sizeof(ipv4_hdr_t) + payload_len;
+	size_t frame_len = sizeof(eth_hdr_t) + ip_len;
+	if (frame_len > sizeof(frame))
+		return VFS_ERR_INVAL;
+
+	eth_hdr_t *eth = (eth_hdr_t *)frame;
+	ipv4_hdr_t *ip = (ipv4_hdr_t *)(frame + sizeof(*eth));
+	uint8_t *body = (uint8_t *)ip + sizeof(*ip);
+
+	memcpy(eth->dst, dst_mac, NET_ETH_ALEN);
+	memcpy(eth->src, dev->mac, NET_ETH_ALEN);
+	eth->type = htons(ETH_P_IP);
+
+	memset(ip, 0, sizeof(*ip));
+	ip->ver_ihl = 0x45;
+	ip->total_len = htons(ip_len);
+	ip->id = htons(0x4943);
+	ip->ttl = 64;
+	ip->proto = IP_PROTO_ICMP;
+	ip->src = htonl(src_ip);
+	ip->dst = htonl(dst_ip);
+	ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
+
+	memcpy(body, payload, payload_len);
+
+	if (dst_ip == dev->ipv4_addr) {
+		dev->tx_packets++;
+		net_receive_frame(dev, frame, frame_len);
+		return VFS_OK;
+	}
+
+	return dev->send(dev, frame, frame_len);
+}
+
 int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
 					  uint32_t seq, uint32_t ack, uint8_t flags,
@@ -68,7 +110,9 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 		return VFS_ERR_INVAL;
 
 	uint8_t frame[NET_ETH_FRAME_MAX];
-	size_t tcp_len = sizeof(tcp_hdr_t) + payload_len;
+	size_t tcp_opt_len = (flags & TCP_SYN) ? 4 : 0;
+	size_t tcp_hlen = sizeof(tcp_hdr_t) + tcp_opt_len;
+	size_t tcp_len = tcp_hlen + payload_len;
 	size_t ip_len = sizeof(ipv4_hdr_t) + tcp_len;
 	size_t frame_len = sizeof(eth_hdr_t) + ip_len;
 	if (frame_len > sizeof(frame))
@@ -77,7 +121,8 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 	eth_hdr_t *eth = (eth_hdr_t *)frame;
 	ipv4_hdr_t *ip = (ipv4_hdr_t *)(frame + sizeof(*eth));
 	tcp_hdr_t *tcp = (tcp_hdr_t *)((uint8_t *)ip + sizeof(*ip));
-	uint8_t *body = (uint8_t *)tcp + sizeof(*tcp);
+	uint8_t *tcp_opts = (uint8_t *)tcp + sizeof(*tcp);
+	uint8_t *body = (uint8_t *)tcp + tcp_hlen;
 
 	memcpy(eth->dst, dst_mac, NET_ETH_ALEN);
 	memcpy(eth->src, dev->mac, NET_ETH_ALEN);
@@ -98,9 +143,18 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 	tcp->dst_port = htons(dst_port);
 	tcp->seq = htonl(seq);
 	tcp->ack = htonl(ack);
-	tcp->data_off = (uint8_t)(sizeof(*tcp) / 4) << 4;
+	tcp->data_off = (uint8_t)(tcp_hlen / 4) << 4;
 	tcp->flags = flags;
 	tcp->window = htons(TCP_WINDOW);
+	if (tcp_opt_len) {
+		/* TCP option 2: MSS.  This makes our SYN/SYN-ACK look like a normal
+		 * internet TCP endpoint and avoids peers falling back to awkward
+		 * defaults. */
+		tcp_opts[0] = 2;
+		tcp_opts[1] = 4;
+		tcp_opts[2] = 0x05;
+		tcp_opts[3] = 0xb4; /* 1460 */
+	}
 	if (payload_len)
 		memcpy(body, payload, payload_len);
 

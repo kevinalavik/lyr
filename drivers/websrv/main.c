@@ -884,27 +884,6 @@ static int send_raw(const void *data, size_t len, const char *content_type,
 	return VFS_OK;
 }
 
-static int send_file_raw(const char *path, void *resp, size_t cap, size_t *out)
-{
-	char *buf = NULL;
-	size_t len = 0;
-	int truncated = 0;
-
-	int r = read_file_limited(path, &buf, &len, &truncated);
-	if (r != VFS_OK)
-		return r;
-
-	if (truncated) {
-		kfree(buf);
-		return VFS_ERR_INVAL;
-	}
-
-	r = send_raw(buf, len, "text/html; charset=utf-8", resp, cap, out);
-
-	kfree(buf);
-	return r;
-}
-
 static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 						 const void *req, size_t len, void *resp, size_t cap,
 						 size_t *out, void *ctx)
@@ -972,10 +951,6 @@ static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 		if (!*path)
 			path = "/";
 		r = build_edit(path, &b);
-	} else if (!strncmp(url, "/roll", 4)) {
-		web_stat_raw++;
-		hb_free(&b);
-		return send_file_raw("/www/roll.html", resp, cap, out);
 	} else if (!strncmp(url, "/alive", 6)) {
 		web_stat_raw++;
 		hb_free(&b);

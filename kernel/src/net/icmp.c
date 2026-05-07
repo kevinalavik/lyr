@@ -69,6 +69,8 @@ void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
 		return;
 
 	const icmp_echo_t *icmp = (const icmp_echo_t *)((const uint8_t *)ip + ihl);
+	net_socket_raw_icmp_receive(dev, ip, ihl, ip_len);
+
 	if (icmp->type == ICMP_ECHO_REQUEST) {
 		send_icmp_echo_packet(dev, dev->mac, ntohl(ip->dst), ntohl(ip->src),
 							  ICMP_ECHO_REPLY, ntohs(icmp->ident),

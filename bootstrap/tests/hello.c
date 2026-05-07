@@ -405,18 +405,21 @@ static int web_server(void)
 int main(void)
 {
 	struct nist_time nt;
+	int failures = 0;
 
 	printf("\033[1;36mHello, World from mlibc!\033[0m\n");
 
-	if (tcpbin_echo_test() < 0)
-		return 1;
-
-	if (get_time(&nt) < 0) {
-		printf("\033[1;31mtime:\033[0m failed\n");
-		return 1;
+	if (tcpbin_echo_test() < 0) {
+		printf("\033[1;31mecho:\033[0m failed, continuing\n");
+		failures++;
 	}
 
-	print_time_result(&nt);
+	if (get_time(&nt) < 0) {
+		printf("\033[1;31mtime:\033[0m failed, continuing\n");
+		failures++;
+	} else {
+		print_time_result(&nt);
+	}
 
 	/* test local hostname, should resolve to local ip */
 	{
@@ -425,18 +428,26 @@ int main(void)
 		char ipstr[INET_ADDRSTRLEN];
 
 		he = gethostbyname("lyr.local");
-		if (!he)
-			return -1;
+		if (!he) {
+			printf("\033[1;31mlyr.local:\033[0m gethostbyname failed, continuing\n");
+			failures++;
+			goto after_localhost_test;
+		}
 
 		if (he->h_addrtype != AF_INET || he->h_length != sizeof(ip) ||
 			he->h_addr_list == NULL || he->h_addr_list[0] == NULL) {
-			return -1;
+			printf("\033[1;31mlyr.local:\033[0m invalid resolver result, continuing\n");
+			failures++;
+			goto after_localhost_test;
 		}
 
 		memcpy(&ip, he->h_addr_list[0], sizeof(ip));
 
-		if (inet_ntop(AF_INET, &ip, ipstr, sizeof(ipstr)) == NULL)
-			return -1;
+		if (inet_ntop(AF_INET, &ip, ipstr, sizeof(ipstr)) == NULL) {
+			print_errno("lyr.local inet_ntop");
+			failures++;
+			goto after_localhost_test;
+		}
 
 		printf("\033[1;36mlyr.local -> %s\033[0m\n", ipstr);
 
@@ -446,8 +457,9 @@ int main(void)
 
 			if (http_get_ip_port(ip, 6969, "lyr.local", "/alive") < 0) {
 				printf(
-					"\033[1;31mlyr.local:\033[0m port 6969 is not reachable or HTTP GET failed\n");
-				return -1;
+					"\033[1;31mlyr.local:\033[0m port 6969 is not reachable or HTTP GET failed, continuing\n");
+				failures++;
+				goto after_localhost_test;
 			}
 
 			printf(
@@ -455,8 +467,18 @@ int main(void)
 		}
 	}
 
-	if (web_server() < 0)
-		return 1;
+after_localhost_test:
 
+	if (web_server() < 0) {
+		printf("\033[1;31mweb:\033[0m failed\n");
+		failures++;
+	}
+
+	if (failures > 0) {
+		printf("\033[1;31mtests:\033[0m completed with %d failure(s)\n", failures);
+		return 1;
+	}
+
+	printf("\033[1;32mtests:\033[0m all tests passed\n");
 	return 0;
 }

@@ -22,7 +22,7 @@ system-root/
 
 *.so
 *.a
-rootfs/root/test
-rootfs/usr
 
 *.xbstrap
+
+initrd/early-init

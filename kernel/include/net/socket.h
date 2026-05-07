@@ -9,6 +9,11 @@
 #define AF_INET 2
 #define AF_INET6 10
 
+#define IPPROTO_IP 0
+#define IPPROTO_ICMP 1
+#define IPPROTO_TCP 6
+#define IPPROTO_UDP 17
+
 #define SOCK_STREAM 1
 #define SOCK_DGRAM 2
 #define SOCK_RAW 3
@@ -25,6 +30,10 @@
 #define SO_SNDBUF 5
 #define SO_RCVBUF 6
 #define SO_PRIORITY 7
+#define SO_RCVTIMEO 20
+#define SO_SNDTIMEO 21
+
+#define IP_TTL 2
 
 #define SHUT_RD 0
 #define SHUT_WR 1

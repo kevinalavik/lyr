@@ -108,6 +108,9 @@ int net_send_ipv4_udp(netdev_t *dev, const uint8_t dst_mac[6],
 					  uint32_t src_ip, uint32_t dst_ip, uint16_t src_port,
 					  uint16_t dst_port, const void *payload,
 					  size_t payload_len);
+int net_send_ipv4_icmp(netdev_t *dev, const uint8_t dst_mac[6],
+					   uint32_t src_ip, uint32_t dst_ip,
+					   const void *payload, size_t payload_len);
 int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
 					  uint32_t seq, uint32_t ack, uint8_t flags,
@@ -125,6 +128,8 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 					 const ipv4_hdr_t *ip, size_t ihl, size_t ip_len);
 void net_socket_udp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
 							const udp_hdr_t *udp, size_t udp_len);
+void net_socket_raw_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
+								 size_t ihl, size_t ip_len);
 int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 						 const char *path, char *buf, size_t len,
 						 size_t *done, uint64_t timeout_ms);

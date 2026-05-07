@@ -392,10 +392,17 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 			  timeout_ms);
 
 	uint32_t next_hop = dst_ip;
-	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask))
+	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask)) {
+		if (!dev->ipv4_gateway) {
+			log_debug("tcp", "connect: no gateway for off-link destination");
+			return VFS_ERR_NOENT;
+		}
 		next_hop = dev->ipv4_gateway;
+	}
 
-	log_debug("tcp", "connect: next_hop=%x", next_hop);
+	log_debug("tcp", "connect: dev=%s src=%u.%u.%u.%u next_hop=%x", dev->name,
+			  (dev->ipv4_addr >> 24) & 0xff, (dev->ipv4_addr >> 16) & 0xff,
+			  (dev->ipv4_addr >> 8) & 0xff, dev->ipv4_addr & 0xff, next_hop);
 
 	tcp_conn_t *conn = kzalloc(sizeof(*conn));
 	if (!conn)
@@ -610,8 +617,11 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 		return VFS_ERR_INVAL;
 
 	uint32_t next_hop = dst_ip;
-	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask))
+	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask)) {
+		if (!dev->ipv4_gateway)
+			return VFS_ERR_NOENT;
 		next_hop = dev->ipv4_gateway;
+	}
 
 	tcp_conn_t conn;
 	memset(&conn, 0, sizeof(conn));

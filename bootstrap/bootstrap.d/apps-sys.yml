@@ -1,0 +1,30 @@
+sources:
+  - name: init
+    subdir: sources
+
+packages:
+  - name: init
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: init
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    build:
+      - args: 'cp -a @SOURCE_ROOT@/../src/init/. @THIS_BUILD_DIR@/'
+      - args:
+          - make
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+          - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
+      - args:
+          - make
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+          - install
+          - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
+          - 'DESTDIR=@SYSROOT_DIR@'
+          - 'PREFIX=/'

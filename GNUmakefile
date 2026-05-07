@@ -1,8 +1,7 @@
 .SUFFIXES:
 
 TAP_IF ?= tap0
-QEMU_NET_USER := \
-  -netdev user,id=net0,net=10.0.2.0/24,hostfwd=tcp::6969-:6969,hostfwd=tcp::8080-:80 -device e1000,netdev=net0
+QEMU_NET_USER := -netdev user,id=net0,net=10.0.2.0/24,hostfwd=tcp::6969-:6969,hostfwd=tcp::8080-:80 -device e1000,netdev=net0
 ROOTFS_DISK := disk.img
 QEMU_NVME := -drive file=$(ROOTFS_DISK),if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=LYRNVME0
 QEMUFLAGS := -m 2G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME)
@@ -13,10 +12,8 @@ ROOTFS_DIR := rootfs
 SYSTEM_ROOT := system-root
 INITRD_IMAGE := initrd.cpio
 DRIVERS_ROOT := drivers
-APPS_ROOT := src
-APPS_BIN := $(APPS_ROOT)/bin
 EARLY_INIT := early-init
-EARLY_INIT_BIN := $(APPS_ROOT)/early-init/bin/$(EARLY_INIT)
+EARLY_INIT_DIR := src/early-init
 INITRD_FILES := $(filter-out $(INITRD_IMAGE),$(shell find $(INITRD_ROOT) -type f -o -type d 2>/dev/null | LC_ALL=C sort))
 DRIVER_SYS_FILES := $(shell find $(DRIVERS_ROOT)/bin -type f -name '*.sys' 2>/dev/null | LC_ALL=C sort)
 
@@ -27,13 +24,13 @@ HOST_LDFLAGS :=
 HOST_LIBS :=
 
 .PHONY: all
-all: $(IMAGE_NAME).iso rootfs-update disk-apps
+all: $(IMAGE_NAME).iso rootfs-update
 
 .PHONY: all-hdd
 all-hdd: $(IMAGE_NAME).hdd
 
 .PHONY: run
-run: $(IMAGE_NAME).iso rootfs-update disk-apps
+run: $(IMAGE_NAME).iso rootfs-update
 	qemu-system-x86_64 \
 		-M q35 \
 		-cdrom $(IMAGE_NAME).iso \
@@ -46,7 +43,7 @@ enable-usernet-icmp:
 	printf "%s %s\n" "$$gid" "$$gid" | sudo tee /proc/sys/net/ipv4/ping_group_range
 
 .PHONY: run-uefi
-run-uefi: edk2-ovmf $(IMAGE_NAME).iso rootfs-update disk-apps
+run-uefi: edk2-ovmf $(IMAGE_NAME).iso rootfs-update
 	qemu-system-x86_64 \
 		-M q35 \
 		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-x86_64.fd,readonly=on \
@@ -55,14 +52,14 @@ run-uefi: edk2-ovmf $(IMAGE_NAME).iso rootfs-update disk-apps
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd
-run-hdd: $(IMAGE_NAME).hdd rootfs-update disk-apps
+run-hdd: $(IMAGE_NAME).hdd rootfs-update
 	qemu-system-x86_64 \
 		-M q35 \
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-uefi
-run-hdd-uefi: edk2-ovmf $(IMAGE_NAME).hdd rootfs-update disk-apps
+run-hdd-uefi: edk2-ovmf $(IMAGE_NAME).hdd rootfs-update
 	qemu-system-x86_64 \
 		-M q35 \
 		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-x86_64.fd,readonly=on \
@@ -93,25 +90,11 @@ kernel: kernel/.deps-obtained
 drivers: kernel/.deps-obtained
 	$(MAKE) -C drivers
 
-.PHONY: apps
-apps: kernel/.deps-obtained
-	$(MAKE) -C $(APPS_ROOT)/early-init
-
-.PHONY: disk-apps
-disk-apps: apps
-	@if [ ! -f "$(ROOTFS_DISK)" ]; then \
-		$(MAKE) $(ROOTFS_DISK); \
-	fi
-	PATH=$$PATH:/usr/sbin:/sbin; \
-	debugfs -w -R "mkdir /bin" $(ROOTFS_DISK) >/dev/null 2>&1 || true; \
-	for app in $(APPS_BIN)/*; do \
-		[ -f "$$app" ] || continue; \
-		[ "$$(basename "$$app")" != "$(EARLY_INIT)" ] || continue; \
-		dst="/bin/$$(basename "$$app")"; \
-		echo "write: $$dst"; \
-		debugfs -w -R "rm $$dst" $(ROOTFS_DISK) >/dev/null 2>&1 || true; \
-		debugfs -w -R "write $$app $$dst" $(ROOTFS_DISK); \
-	done
+.PHONY: early-init
+early-init: kernel/.deps-obtained
+	$(MAKE) -C $(EARLY_INIT_DIR) install \
+		DESTDIR="$(abspath $(INITRD_ROOT))" \
+		PREFIX=/
 
 .PHONY: rootfs-update
 rootfs-update:
@@ -148,7 +131,7 @@ rootfs-update:
 		debugfs -w -R "rm /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
 		debugfs -w -R "write $$src /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1; \
 	done < "$$tmp/files"
-	
+
 .PHONY: rootfs-extract
 rootfs-extract: $(ROOTFS_DISK)
 	rm -rf $(ROOTFS_DIR)
@@ -165,8 +148,8 @@ $(ROOTFS_DISK):
 	dd if=/dev/zero of=$@ bs=1M count=128
 	PATH=$$PATH:/usr/sbin:/sbin mkfs.ext2 -q -F -L LYRTEST $@
 
-$(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers apps $(DRIVER_SYS_FILES)
-	python3 utils/mkinitrd.py $(INITRD_ROOT) $@ $(DRIVERS_ROOT)/bin:sys $(EARLY_INIT_BIN):/$(EARLY_INIT)
+$(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers early-init $(DRIVER_SYS_FILES)
+	python3 utils/mkinitrd.py $(INITRD_ROOT) $@ $(DRIVERS_ROOT)/bin:sys
 
 $(IMAGE_NAME).iso: limine/limine kernel $(INITRD_IMAGE)
 	rm -rf iso_root
@@ -202,12 +185,12 @@ $(IMAGE_NAME).hdd: limine/limine kernel
 clean:
 	$(MAKE) -C kernel clean
 	$(MAKE) -C drivers clean
-	$(MAKE) -C $(APPS_ROOT) clean
+	$(MAKE) -C $(EARLY_INIT_DIR) clean
 	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd $(INITRD_IMAGE)
 
 .PHONY: distclean
 distclean: clean
 	$(MAKE) -C kernel distclean
 	$(MAKE) -C drivers distclean
-	$(MAKE) -C $(APPS_ROOT) distclean
+	$(MAKE) -C $(EARLY_INIT_DIR) distclean
 	rm -rf limine edk2-ovmf $(ROOTFS_DISK)

@@ -1308,6 +1308,7 @@ static void sched_test(void)
 	log_debug("sched_test", "all tests passed");
 }
 
+
 #if _DEBUG_INIT
 #define INIT_SMOKE_LOG(fmt, ...) \
 	kprintf("\x1b[38;2;120;120;120minit-test: " fmt "\x1b[0m", ##__VA_ARGS__)
