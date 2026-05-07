@@ -44,8 +44,9 @@ static int device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 			p->class_code, p->subclass, p->prog_if, p->revision,
 			dev->handler ? dev->handler->name : "none");
 	} else if (dev->bus_type == DEVICE_BUS_PLATFORM) {
-		n = npf_snprintf(tmp, sizeof(tmp), "name=%s\nbus=platform\nhandler=%s\n",
-						 dev->name, dev->handler ? dev->handler->name : "none");
+		n = npf_snprintf(tmp, sizeof(tmp),
+						 "name=%s\nbus=platform\nhandler=%s\n", dev->name,
+						 dev->handler ? dev->handler->name : "none");
 	} else {
 		n = npf_snprintf(tmp, sizeof(tmp), "name=%s\nbus=unknown\nhandler=%s\n",
 						 dev->name, dev->handler ? dev->handler->name : "none");
@@ -65,6 +66,92 @@ static int device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 	memcpy(buf, tmp + off, copy);
 	if (done)
 		*done = copy;
+	return VFS_OK;
+}
+
+static void fill_pci_map_entry(device_pci_driver_map_entry_t *out,
+							   const device_t *dev)
+{
+	memset(out, 0, sizeof(*out));
+
+	out->abi_version = DEVICE_PCI_MAP_ABI_VERSION;
+	out->entry_size = sizeof(*out);
+
+	out->vendor_id = dev->pci.vendor_id;
+	out->device_id = dev->pci.device_id;
+
+	out->bus = dev->pci.bus;
+	out->slot = dev->pci.slot;
+	out->function = dev->pci.function;
+
+	out->class_code = dev->pci.class_code;
+	out->subclass = dev->pci.subclass;
+	out->prog_if = dev->pci.prog_if;
+	out->revision = dev->pci.revision;
+
+	out->bound = dev->handler ? 1 : 0;
+
+	copy_name(out->device_name, sizeof(out->device_name), dev->name);
+	copy_name(out->driver_name, sizeof(out->driver_name),
+			  dev->handler ? dev->handler->name : "none");
+}
+
+static int pci_map_read(void *ctx, uint64_t off, void *buf, size_t len,
+						size_t *done)
+{
+	(void)ctx;
+
+	if (done)
+		*done = 0;
+
+	if (!buf)
+		return VFS_ERR_INVAL;
+
+	if (len == 0)
+		return VFS_OK;
+
+	uint8_t *dst = buf;
+	size_t copied = 0;
+	uint64_t pos = 0;
+
+	spinlock_acquire(&device_lock);
+
+	for (device_t *dev = devices; dev; dev = dev->next) {
+		if (dev->bus_type != DEVICE_BUS_PCI)
+			continue;
+
+		device_pci_driver_map_entry_t ent;
+		fill_pci_map_entry(&ent, dev);
+
+		uint64_t ent_start = pos;
+		uint64_t ent_end = pos + sizeof(ent);
+
+		if (off < ent_end && (off + len) > ent_start) {
+			uint64_t src_start = off > ent_start ? off - ent_start : 0;
+			uint64_t dst_start = ent_start > off ? ent_start - off : 0;
+
+			size_t avail = sizeof(ent) - (size_t)src_start;
+			size_t want = len - (size_t)dst_start;
+
+			size_t n = avail < want ? avail : want;
+
+			memcpy(dst + dst_start, ((const uint8_t *)&ent) + src_start, n);
+
+			if ((size_t)dst_start + n > copied)
+				copied = (size_t)dst_start + n;
+		}
+
+		pos = ent_end;
+
+		if (pos >= off + len)
+			break;
+	}
+
+	spinlock_release(&device_lock);
+
+	if (done)
+		*done = copied;
+
 	return VFS_OK;
 }
 
@@ -102,6 +189,12 @@ int device_system_init(void)
 	int r = devfs_mkdir("/dev/devices", 0755);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
+
+	r = devfs_register_chr("/dev/devices/pci.map", 0444, pci_map_read, NULL,
+						   NULL);
+	if (r != VFS_OK && r != VFS_ERR_EXIST)
+		return r;
+
 	log_debug("device", "device registry ok");
 	return VFS_OK;
 }
