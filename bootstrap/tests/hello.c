@@ -7,6 +7,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <sys/time.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
 
 struct nist_time {
 	int mjd;
@@ -26,6 +29,15 @@ struct nist_time {
 	double ut1;
 	char zone[32];
 	char sync;
+};
+
+#define PING_DATA_SIZE 56
+#define PING_COUNT 4
+#define PING_TIMEOUT_SEC 1
+
+struct ping_packet {
+	struct icmphdr hdr;
+	unsigned char data[PING_DATA_SIZE];
 };
 
 static void print_errno(const char *where)
@@ -61,6 +73,201 @@ static int write_all(int fd, const void *buf, size_t len, const char *where)
 	}
 
 	return 0;
+}
+
+static unsigned short icmp_checksum(const void *buf, int len)
+{
+	const unsigned short *data = buf;
+	unsigned int sum = 0;
+
+	while (len > 1) {
+		sum += *data++;
+		len -= 2;
+	}
+
+	if (len == 1)
+		sum += *(const unsigned char *)data;
+
+	sum = (sum >> 16) + (sum & 0xffff);
+	sum += (sum >> 16);
+
+	return (unsigned short)~sum;
+}
+
+static long time_diff_us(const struct timeval *start, const struct timeval *end)
+{
+	return ((end->tv_sec - start->tv_sec) * 1000000L) +
+		   (end->tv_usec - start->tv_usec);
+}
+
+static int ping_once_ipv4(const char *ip, int seq, long *rtt_us_out,
+						  int *ttl_out)
+{
+	int s;
+	struct sockaddr_in addr;
+	struct sockaddr_in from;
+	socklen_t from_len;
+	struct timeval timeout;
+	struct timeval start;
+	struct timeval end;
+	struct ping_packet pkt;
+	char recv_buf[512];
+	ssize_t n;
+	unsigned short ident;
+
+	s = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+	if (s < 0) {
+		print_errno("ping socket");
+		return -1;
+	}
+
+	timeout.tv_sec = PING_TIMEOUT_SEC;
+	timeout.tv_usec = 0;
+
+	if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+		print_errno("ping setsockopt SO_RCVTIMEO");
+		close(s);
+		return -1;
+	}
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+
+	if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+		printf("\033[1;31mping:\033[0m invalid IPv4 address %s\n", ip);
+		close(s);
+		return -1;
+	}
+
+	memset(&pkt, 0, sizeof(pkt));
+
+	ident = (unsigned short)(getpid() & 0xffff);
+
+	pkt.hdr.type = ICMP_ECHO;
+	pkt.hdr.code = 0;
+	pkt.hdr.un.echo.id = htons(ident);
+	pkt.hdr.un.echo.sequence = htons((unsigned short)seq);
+
+	for (size_t i = 0; i < sizeof(pkt.data); i++)
+		pkt.data[i] = (unsigned char)i;
+
+	pkt.hdr.checksum = 0;
+	pkt.hdr.checksum = icmp_checksum(&pkt, sizeof(pkt));
+
+	gettimeofday(&start, NULL);
+
+	if (sendto(s, &pkt, sizeof(pkt), 0, (struct sockaddr *)&addr,
+			   sizeof(addr)) < 0) {
+		print_errno("ping sendto");
+		close(s);
+		return -1;
+	}
+
+	for (;;) {
+		struct icmphdr *icmp;
+		int ttl = -1;
+
+		from_len = sizeof(from);
+		memset(&from, 0, sizeof(from));
+
+		n = recvfrom(s, recv_buf, sizeof(recv_buf), 0, (struct sockaddr *)&from,
+					 &from_len);
+
+		if (n < 0) {
+			close(s);
+			return -1;
+		}
+
+		gettimeofday(&end, NULL);
+
+		/*
+		 * Raw IPv4 sockets usually include the IPv4 header.
+		 */
+		if (n >= (ssize_t)(sizeof(struct iphdr) + sizeof(struct icmphdr))) {
+			struct iphdr *ip_hdr = (struct iphdr *)recv_buf;
+			size_t ip_hdr_len = ip_hdr->ihl * 4;
+
+			if (ip_hdr_len < sizeof(struct iphdr))
+				continue;
+
+			if (n < (ssize_t)(ip_hdr_len + sizeof(struct icmphdr)))
+				continue;
+
+			ttl = ip_hdr->ttl;
+			icmp = (struct icmphdr *)(recv_buf + ip_hdr_len);
+		}
+
+		/*
+		 * Some small kernels may return only the ICMP payload.
+		 */
+		else if (n >= (ssize_t)sizeof(struct icmphdr)) {
+			icmp = (struct icmphdr *)recv_buf;
+		}
+
+		else {
+			continue;
+		}
+
+		/*
+		 * Ignore our own outgoing echo request if the raw socket sees it.
+		 */
+		if (icmp->type == ICMP_ECHO)
+			continue;
+
+		if (icmp->type == ICMP_ECHOREPLY && icmp->code == 0 &&
+			ntohs(icmp->un.echo.id) == ident &&
+			ntohs(icmp->un.echo.sequence) == seq) {
+			if (rtt_us_out)
+				*rtt_us_out = time_diff_us(&start, &end);
+
+			if (ttl_out)
+				*ttl_out = ttl;
+
+			close(s);
+			return 0;
+		}
+	}
+}
+
+static int ping(const char *ip)
+{
+	int transmitted = 0;
+	int received = 0;
+
+	printf("\033[1;34mping:\033[0m PING %s: %d data bytes\n", ip,
+		   PING_DATA_SIZE);
+
+	for (int seq = 1; seq <= PING_COUNT; seq++) {
+		long rtt_us = 0;
+		int ttl = -1;
+
+		transmitted++;
+
+		if (ping_once_ipv4(ip, seq, &rtt_us, &ttl) == 0) {
+			received++;
+
+			if (ttl >= 0) {
+				printf(
+					"%d bytes from %s: icmp_seq=%d ttl=%d time=%ld.%03ld ms\n",
+					PING_DATA_SIZE + 8, ip, seq, ttl, rtt_us / 1000,
+					rtt_us % 1000);
+			} else {
+				printf("%d bytes from %s: icmp_seq=%d time=%ld.%03ld ms\n",
+					   PING_DATA_SIZE + 8, ip, seq, rtt_us / 1000,
+					   rtt_us % 1000);
+			}
+		} else {
+			printf("Request timeout for icmp_seq %d\n", seq);
+		}
+	}
+
+	printf("--- %s ping statistics ---\n", ip);
+	printf("%d packets transmitted, %d packets received, %d%% packet loss\n",
+		   transmitted, received,
+		   transmitted == 0 ? 100 :
+							  ((transmitted - received) * 100) / transmitted);
+
+	return received > 0 ? 0 : -1;
 }
 
 static int http_get_ip_port(struct in_addr ip, unsigned short port,
@@ -414,6 +621,9 @@ int main(void)
 		failures++;
 	}
 
+	if (ping("8.8.8.8") < 0)
+		failures++;
+
 	if (get_time(&nt) < 0) {
 		printf("\033[1;31mtime:\033[0m failed, continuing\n");
 		failures++;
@@ -429,14 +639,16 @@ int main(void)
 
 		he = gethostbyname("lyr.local");
 		if (!he) {
-			printf("\033[1;31mlyr.local:\033[0m gethostbyname failed, continuing\n");
+			printf(
+				"\033[1;31mlyr.local:\033[0m gethostbyname failed, continuing\n");
 			failures++;
 			goto after_localhost_test;
 		}
 
 		if (he->h_addrtype != AF_INET || he->h_length != sizeof(ip) ||
 			he->h_addr_list == NULL || he->h_addr_list[0] == NULL) {
-			printf("\033[1;31mlyr.local:\033[0m invalid resolver result, continuing\n");
+			printf(
+				"\033[1;31mlyr.local:\033[0m invalid resolver result, continuing\n");
 			failures++;
 			goto after_localhost_test;
 		}
@@ -475,7 +687,8 @@ after_localhost_test:
 	}
 
 	if (failures > 0) {
-		printf("\033[1;31mtests:\033[0m completed with %d failure(s)\n", failures);
+		printf("\033[1;31mtests:\033[0m completed with %d failure(s)\n",
+			   failures);
 		return 1;
 	}
 
