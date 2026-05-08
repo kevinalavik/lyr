@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
 #include <lyr/pci.h>
 
 static int read_exact(FILE *f, void *buf, size_t len)
