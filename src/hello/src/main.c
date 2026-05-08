@@ -2,7 +2,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <limits.h>
 #include <lyr/pci.h>
+#include <pwd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+extern char **environ;
 
 static int read_exact(FILE *f, void *buf, size_t len)
 {
@@ -82,5 +91,58 @@ int main(void)
 	}
 
 	fclose(f);
+
+	printf("\nENVIRONMENT\n");
+
+	if (!environ) {
+		printf("(no environ)\n");
+	} else {
+		for (char **env = environ; *env; env++)
+			printf("%s\n", *env);
+	}
+
+	{
+		char cwd[PATH_MAX];
+
+		errno = 0;
+		if (!getcwd(cwd, sizeof(cwd))) {
+			fprintf(stderr, "\ngetcwd failed: %s\n", strerror(errno));
+		} else {
+			printf("\nCURRENT DIRECTORY\n");
+			printf("%s\n", cwd);
+		}
+	}
+
+	{
+		uid_t uid = getuid();
+		uid_t euid = geteuid();
+		gid_t gid = getgid();
+		gid_t egid = getegid();
+		struct passwd *pw;
+
+		printf("\nCURRENT USER\n");
+		printf("uid:   %lu\n", (unsigned long)uid);
+		printf("euid:  %lu\n", (unsigned long)euid);
+		printf("gid:   %lu\n", (unsigned long)gid);
+		printf("egid:  %lu\n", (unsigned long)egid);
+
+		errno = 0;
+		pw = getpwuid(uid);
+
+		if (!pw) {
+			if (errno) {
+				fprintf(stderr, "getpwuid(%lu) failed: %s\n",
+						(unsigned long)uid, strerror(errno));
+			} else {
+				fprintf(stderr, "getpwuid(%lu): user not found\n",
+						(unsigned long)uid);
+			}
+		} else {
+			printf("name:  %s\n", pw->pw_name);
+			printf("home:  %s\n", pw->pw_dir);
+			printf("shell: %s\n", pw->pw_shell);
+		}
+	}
+
 	return 0;
 }

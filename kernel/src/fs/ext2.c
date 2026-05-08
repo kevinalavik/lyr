@@ -91,6 +91,7 @@ typedef struct {
 
 struct ext2_fs {
 	block_device_t *dev;
+	uint64_t dev_id;
 	ext2_super_t sb;
 	uint32_t block_size;
 	uint32_t group_count;
@@ -104,6 +105,7 @@ struct ext2_fs {
 static ext2_fs_t *mounts;
 static int mounts_published;
 static uint32_t mount_count;
+static uint64_t next_ext2_dev_id = 1;
 
 static int ext2_lookup(vfs_node_t *dir, const char *name, size_t len,
 					   vfs_node_t **out);
@@ -248,6 +250,8 @@ static int alloc_ext2_node(ext2_fs_t *fs, uint32_t ino, vfs_node_t **out)
 	node->ino = ino;
 	vfs_node_init(&node->vnode, &ext2_ops, inode_mode(&node->inode),
 				  node->inode.uid, node->inode.gid);
+	node->vnode.dev = fs->dev_id;
+	node->vnode.ino = ino;
 	node->vnode.size = inode_size(&node->inode);
 	node->vnode.nlink = node->inode.links_count;
 	node->vnode.private_data = node;
@@ -932,6 +936,7 @@ int ext2_mount(block_device_t *dev, const char *path)
 	if (!fs)
 		return VFS_ERR_NOMEM;
 	fs->dev = dev;
+	fs->dev_id = next_ext2_dev_id++;
 	memcpy(&fs->sb, &sb, sizeof(sb));
 	fs->block_size = 1024u << sb.log_block_size;
 	fs->group_count =

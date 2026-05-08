@@ -41,6 +41,16 @@ static inline long lyr_access(const char *path, int mode)
 	return lyr_syscall3(SYS_ACCESS, (long)path, mode, 0);
 }
 
+static inline long lyr_chdir(const char *path)
+{
+	return lyr_syscall3(SYS_CHDIR, (long)path, 0, 0);
+}
+
+static inline long lyr_getcwd(char *buf, size_t size)
+{
+	return lyr_syscall3(SYS_GETCWD, (long)buf, (long)size, 0);
+}
+
 static inline long lyr_chmod(const char *path, long mode)
 {
 	return lyr_syscall3(SYS_CHMOD, (long)path, mode, 0);

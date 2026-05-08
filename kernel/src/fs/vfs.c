@@ -10,7 +10,6 @@ const char *vfs_err_name(int err)
 	return errno_name(err);
 }
 
-
 typedef struct vfs_mount {
 	vfs_node_t *covered;
 	vfs_node_t *root;
@@ -60,6 +59,8 @@ void vfs_node_init(vfs_node_t *node, const vfs_ops_t *ops, vfs_mode_t mode,
 {
 	memset(node, 0, sizeof(*node));
 	node->ops = ops;
+	node->dev = 0;
+	node->ino = (uint64_t)(uintptr_t)node;
 	node->mode = mode;
 	node->uid = uid;
 	node->gid = gid;
@@ -121,17 +122,6 @@ int vfs_change_root(const char *path, const vfs_cred_t *cred)
 		return VFS_ERR_NOTDIR;
 	}
 
-	/*
-	 * After switching away from the initramfs/tmpfs root, stale absolute mount
-	 * paths such as /dev must not remain in the global mount table.  Otherwise
-	 * a later userspace mount("dev", "/dev", "devfs", ...) resolves /dev
-	 * through the old initramfs mount instead of the /dev directory in the new
-	 * root.
-	 *
-	 * The new root vnode has its own reference from vfs_resolve().  Drop all old
-	 * mount records, including the /newroot mount record, but do not release
-	 * new_root through root_node until some later chroot/change_root replaces it.
-	 */
 	root_node = new_root;
 
 	vfs_mount_t *mnt = mounts;
@@ -155,12 +145,6 @@ static int _path_eq(const char *a, const char *b)
 
 static vfs_node_t *_mounted_root(vfs_node_t *node, const char *path)
 {
-	/*
-	 * Prefer path matching.  Disk filesystems may allocate a fresh vnode for the
-	 * same directory on each lookup, so pointer equality alone misses mounts such
-	 * as /dev after change_root.  The newest mount is first in the list, which
-	 * gives the expected result when /dev is remounted in the real root.
-	 */
 	for (vfs_mount_t *mnt = mounts; mnt; mnt = mnt->next) {
 		if (_path_eq(mnt->path, path))
 			return mnt->root;
@@ -711,11 +695,16 @@ int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st)
 	int r = vfs_resolve(path, cred, &node);
 	if (r != VFS_OK)
 		return r;
+	memset(st, 0, sizeof(*st));
+	st->dev = node->dev;
+	st->ino = node->ino;
 	st->mode = node->mode;
 	st->uid = node->uid;
 	st->gid = node->gid;
 	st->size = node->size;
 	st->nlink = node->nlink;
+	st->blksize = 4096;
+	st->blocks = (node->size + 511) / 512;
 	vfs_node_release(node);
 	return VFS_OK;
 }

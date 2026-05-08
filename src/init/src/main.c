@@ -6,6 +6,7 @@
 
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
 #include <arpa/inet.h>
@@ -15,12 +16,77 @@
 
 #define INIT_SCRIPT_PATH "/etc/initrc"
 
+#define ENV_ALLOW_NOT_PID1 "ALLOW_NOT_PID1"
+#define ENV_ALLOW_NOT_ROOT "ALLOW_NOT_ROOT"
+
 #define PING_PKT_SIZE 64
 
 struct ping_packet {
 	struct icmphdr hdr;
 	char payload[PING_PKT_SIZE - sizeof(struct icmphdr)];
 };
+
+static int env_enabled(const char *name)
+{
+	const char *v = getenv(name);
+
+	if (!v)
+		return 0;
+
+	return strcmp(v, "1") == 0 || strcmp(v, "yes") == 0 ||
+		   strcmp(v, "true") == 0 || strcmp(v, "on") == 0;
+}
+
+static int check_init_identity(void)
+{
+	pid_t pid = getpid();
+	uid_t uid = geteuid();
+
+	if (pid != 1 && !env_enabled(ENV_ALLOW_NOT_PID1)) {
+		fprintf(stderr, "init: refusing to run as pid %ld; expected pid 1\n",
+				(long)pid);
+		fprintf(stderr, "init: set %s=1 for test mode\n", ENV_ALLOW_NOT_PID1);
+		return -1;
+	}
+
+	if (uid != 0 && !env_enabled(ENV_ALLOW_NOT_ROOT)) {
+		fprintf(stderr,
+				"init: refusing to run as uid %lu; expected root uid 0\n",
+				(unsigned long)uid);
+		fprintf(stderr, "init: set %s=1 for test mode\n", ENV_ALLOW_NOT_ROOT);
+		return -1;
+	}
+
+	if (pid != 1)
+		fprintf(stderr, "init: warning: running outside pid 1 test mode\n");
+
+	if (uid != 0)
+		fprintf(stderr, "init: warning: running as non-root test mode\n");
+
+	return 0;
+}
+
+static int check_init_script_path(const char *path)
+{
+	struct stat st;
+
+	if (stat(path, &st) < 0) {
+		fprintf(stderr, "init: cannot stat %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	if (!S_ISREG(st.st_mode)) {
+		fprintf(stderr, "init: %s is not a regular file\n", path);
+		return -1;
+	}
+
+	if (access(path, R_OK) < 0) {
+		fprintf(stderr, "init: cannot read %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
 
 static unsigned short icmp_checksum(void *buf, int len)
 {
@@ -172,6 +238,13 @@ int check_ifaces(void)
 		}
 	}
 
+	if (ferror(fp)) {
+		fprintf(stderr, "init: failed reading %s: %s\n", iface_list,
+				strerror(errno));
+		fclose(fp);
+		return -1;
+	}
+
 	fclose(fp);
 	return found_working_iface;
 }
@@ -184,8 +257,16 @@ int main(void)
 
 	printf("init: Welcome to lyrOS v1.0\n");
 
+	if (check_init_identity() < 0)
+		return 126;
+
 	script_init(&script);
 	runtime_init(&runtime);
+
+	if (check_init_script_path(INIT_SCRIPT_PATH) < 0)
+		goto fallback;
+
+	printf("init: loading script %s\n", INIT_SCRIPT_PATH);
 
 	ret = parse_file(INIT_SCRIPT_PATH, &script);
 	if (ret < 0) {
@@ -193,9 +274,13 @@ int main(void)
 		goto fallback;
 	}
 
+	printf("init: executing script %s\n", INIT_SCRIPT_PATH);
+
 	ret = execute_script(&runtime, &script);
-	if (ret < 0)
-		fprintf(stderr, "init: one or more init commands failed\n");
+	if (ret < 0) {
+		fprintf(stderr, "init: script execution failed\n");
+		goto fallback;
+	}
 
 	fprintf(stderr, "init: script ended without exec; entering idle loop\n");
 
@@ -203,18 +288,7 @@ int main(void)
 		pause();
 
 fallback:
-	fprintf(stderr, "init: fallback exec /usr/bin/lyr-test\n");
-
-	{
-		static char path[] = "/usr/bin/lyr-test";
-		static char *const argv[] = { path, NULL };
-		static char *const envp[] = { NULL };
-
-		execve(path, argv, envp);
-
-		fprintf(stderr, "init: fallback exec failed: %s\n", strerror(errno));
-	}
-
+	fprintf(stderr, "init: failed to exec\n");
 	runtime_destroy(&runtime);
 	script_destroy(&script);
 

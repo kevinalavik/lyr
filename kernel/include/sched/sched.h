@@ -2,6 +2,7 @@
 #define _LYR_SCHED_SCHED_H
 
 #include <cpu/idt.h>
+#include <fs/vfs.h>
 #include <mm/paging.h>
 #include <mm/vmm.h>
 #include <stddef.h>
@@ -14,10 +15,10 @@
 #define SCHED_TIMER_HZ 1000
 #define SCHED_KERNEL_STACK_SIZE (64 * 1024ULL)
 #define SCHED_FILE_MAX 128
+#define SCHED_CWD_MAX 512
 
 typedef int32_t pid_t;
 typedef int32_t tid_t;
-typedef struct vfs_file vfs_file_t;
 
 typedef enum {
 	TCB_READY = 0,
@@ -35,6 +36,7 @@ typedef void (*thread_entry_t)(void *);
 
 typedef struct pcb {
 	pid_t pid;
+	pid_t ppid;
 	char name[32];
 	ptable_t *pml4;
 	vas_t *vas;
@@ -43,6 +45,14 @@ typedef struct pcb {
 	spinlock_t lock;
 	struct tcb *threads;
 	atomic_uint thread_count;
+	vfs_cred_t cred;
+	vfs_uid_t ruid;
+	vfs_gid_t rgid;
+	vfs_uid_t suid;
+	vfs_gid_t sgid;
+	vfs_uid_t euid;
+	vfs_gid_t egid;
+	char cwd[SCHED_CWD_MAX];
 	vfs_file_t *files[SCHED_FILE_MAX];
 	struct pcb *next;
 } pcb_t;
@@ -86,6 +96,16 @@ tcb_t *sched_fork_thread(pcb_t *process, const char *name,
 
 tcb_t *sched_current(void);
 bool sched_process_exists(pid_t pid);
+const char *sched_process_cwd(const pcb_t *process);
+int sched_process_setcwd(pcb_t *process, const char *path);
+void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src);
+const vfs_cred_t *sched_process_cred(const pcb_t *process);
+void sched_process_set_parent(pcb_t *process, pid_t ppid);
+void sched_process_copy_ids(pcb_t *dst, const pcb_t *src);
+int sched_process_setuid(pcb_t *process, vfs_uid_t uid);
+int sched_process_setgid(pcb_t *process, vfs_gid_t gid);
+int sched_process_seteuid(pcb_t *process, vfs_uid_t uid);
+int sched_process_setegid(pcb_t *process, vfs_gid_t gid);
 bool sched_reap_pending(void);
 void sched_idle_loop(void) __attribute__((noreturn));
 void sched_prepare_user(tcb_t *thread, uint64_t rip, uint64_t user_rsp);

@@ -1,0 +1,14 @@
+echo "Setting user environment"
+
+set USER=root
+set LOGNAME=root
+set HOME=/root
+set SHELL=/bin/sh
+set PATH=/usr/bin:/bin:/usr/sbin:/sbin
+set TERM=lyr
+set PWD=/root
+
+mkdir /root 0755
+chmod 0755 /root
+
+cd /root

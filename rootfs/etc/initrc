@@ -1,5 +1,6 @@
-set PATH=/usr/bin:/bin
+set PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 include /etc/init.d/00-mounts.rc
 include /etc/init.d/10-network.rc
+include /etc/init.d/20-user-env.rc
 include /etc/init.d/99-user.rc

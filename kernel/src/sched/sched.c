@@ -71,6 +71,127 @@ static void name_set(char *dst, size_t dst_len, const char *src)
 	dst[i] = '\0';
 }
 
+
+static void process_refresh_cred(pcb_t *process)
+{
+	if (!process)
+		return;
+
+	process->cred.uid = process->euid;
+	process->cred.gid = process->egid;
+	process->cred.group_count = 0;
+	process->cred.umask = 0022;
+}
+
+const vfs_cred_t *sched_process_cred(const pcb_t *process)
+{
+	return process ? &process->cred : &vfs_root_cred;
+}
+
+void sched_process_set_parent(pcb_t *process, pid_t ppid)
+{
+	if (!process)
+		return;
+	spinlock_acquire(&process->lock);
+	process->ppid = ppid;
+	spinlock_release(&process->lock);
+}
+
+void sched_process_copy_ids(pcb_t *dst, const pcb_t *src)
+{
+	if (!dst || !src)
+		return;
+
+	spinlock_acquire(&dst->lock);
+	dst->ppid = src->pid;
+	dst->ruid = src->ruid;
+	dst->rgid = src->rgid;
+	dst->suid = src->suid;
+	dst->sgid = src->sgid;
+	dst->euid = src->euid;
+	dst->egid = src->egid;
+	dst->cred = src->cred;
+	spinlock_release(&dst->lock);
+}
+
+int sched_process_setuid(pcb_t *process, vfs_uid_t uid)
+{
+	if (!process)
+		return VFS_ERR_INVAL;
+
+	spinlock_acquire(&process->lock);
+	if (process->euid != 0 && uid != process->ruid && uid != process->euid &&
+		uid != process->suid) {
+		spinlock_release(&process->lock);
+		return VFS_ERR_PERM;
+	}
+
+	if (process->euid == 0) {
+		process->ruid = uid;
+		process->suid = uid;
+	}
+	process->euid = uid;
+	process_refresh_cred(process);
+	spinlock_release(&process->lock);
+	return VFS_OK;
+}
+
+int sched_process_setgid(pcb_t *process, vfs_gid_t gid)
+{
+	if (!process)
+		return VFS_ERR_INVAL;
+
+	spinlock_acquire(&process->lock);
+	if (process->euid != 0 && gid != process->rgid && gid != process->egid &&
+		gid != process->sgid) {
+		spinlock_release(&process->lock);
+		return VFS_ERR_PERM;
+	}
+
+	if (process->euid == 0) {
+		process->rgid = gid;
+		process->sgid = gid;
+	}
+	process->egid = gid;
+	process_refresh_cred(process);
+	spinlock_release(&process->lock);
+	return VFS_OK;
+}
+
+int sched_process_seteuid(pcb_t *process, vfs_uid_t uid)
+{
+	if (!process)
+		return VFS_ERR_INVAL;
+
+	spinlock_acquire(&process->lock);
+	if (process->euid != 0 && uid != process->ruid && uid != process->suid) {
+		spinlock_release(&process->lock);
+		return VFS_ERR_PERM;
+	}
+
+	process->euid = uid;
+	process_refresh_cred(process);
+	spinlock_release(&process->lock);
+	return VFS_OK;
+}
+
+int sched_process_setegid(pcb_t *process, vfs_gid_t gid)
+{
+	if (!process)
+		return VFS_ERR_INVAL;
+
+	spinlock_acquire(&process->lock);
+	if (process->euid != 0 && gid != process->rgid && gid != process->sgid) {
+		spinlock_release(&process->lock);
+		return VFS_ERR_PERM;
+	}
+
+	process->egid = gid;
+	process_refresh_cred(process);
+	spinlock_release(&process->lock);
+	return VFS_OK;
+}
+
 static void runq_push_locked(cpu_local_t *cpu, tcb_t *thread)
 {
 	thread->runq_next = NULL;
@@ -371,7 +492,7 @@ static void frame_init_user(tcb_t *thread, uint64_t rip, uint64_t user_rsp)
 
 void process_setup_fds(pcb_t *process)
 {
-	int r = vfs_open("/dev/null", VFS_O_RDONLY, 0, &vfs_root_cred,
+	int r = vfs_open("/dev/null", VFS_O_RDONLY, 0, sched_process_cred(process),
 					 &process->files[0]);
 	if (r != VFS_OK) {
 		log_err("sched",
@@ -381,7 +502,7 @@ void process_setup_fds(pcb_t *process)
 		return;
 	}
 
-	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, &vfs_root_cred,
+	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[1]);
 	if (r != VFS_OK) {
 		log_err(
@@ -394,7 +515,7 @@ void process_setup_fds(pcb_t *process)
 		return;
 	}
 
-	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, &vfs_root_cred,
+	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[2]);
 	if (r != VFS_OK) {
 		log_err(
@@ -426,6 +547,7 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 		return NULL;
 
 	process->pid = pid;
+	process->ppid = 0;
 	name_set(process->name, sizeof(process->name), name ? name : "process");
 	process->vas = vas ? vas : vas_create(NULL);
 	if (!process->vas) {
@@ -433,13 +555,22 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 		return NULL;
 	}
 
+	spinlock_init(&process->lock);
+	atomic_init(&process->thread_count, 0);
+	atomic_init(&process->dying, false);
+	process->ruid = 0;
+	process->rgid = 0;
+	process->suid = 0;
+	process->sgid = 0;
+	process->euid = 0;
+	process->egid = 0;
+	memcpy(process->cwd, "/", 2);
+	process_refresh_cred(process);
+
 	process_setup_fds(process);
 
 	process->pml4 = process->vas->pml4;
 	process->owns_vas = process->vas != _lyr_kernel_vas;
-	spinlock_init(&process->lock);
-	atomic_init(&process->thread_count, 0);
-	atomic_init(&process->dying, false);
 	return process;
 }
 
@@ -848,6 +979,39 @@ bool sched_process_exists(pid_t pid)
 	irq_restore(flags);
 
 	return found;
+}
+
+const char *sched_process_cwd(const pcb_t *process)
+{
+	if (!process || process->cwd[0] == '\0')
+		return "/";
+	return process->cwd;
+}
+
+int sched_process_setcwd(pcb_t *process, const char *path)
+{
+	if (!process || !path || path[0] != '/')
+		return VFS_ERR_INVAL;
+
+	size_t len = strlen(path);
+	if (len == 0 || len >= sizeof(process->cwd))
+		return VFS_ERR_NAMETOOLONG;
+
+	spinlock_acquire(&process->lock);
+	memcpy(process->cwd, path, len + 1);
+	spinlock_release(&process->lock);
+	return VFS_OK;
+}
+
+void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src)
+{
+	if (!dst || !src)
+		return;
+
+	spinlock_acquire(&dst->lock);
+	memcpy(dst->cwd, sched_process_cwd(src), sizeof(dst->cwd));
+	dst->cwd[sizeof(dst->cwd) - 1] = '\0';
+	spinlock_release(&dst->lock);
 }
 
 bool sched_reap_pending(void)

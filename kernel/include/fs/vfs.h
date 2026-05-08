@@ -98,11 +98,15 @@ typedef struct {
 } vfs_cred_t;
 
 typedef struct {
+	uint64_t dev;
+	uint64_t ino;
 	vfs_mode_t mode;
 	vfs_uid_t uid;
 	vfs_gid_t gid;
 	uint64_t size;
 	uint32_t nlink;
+	uint64_t blksize;
+	uint64_t blocks;
 } vfs_stat_t;
 
 struct vfs_ops {
@@ -128,6 +132,8 @@ struct vfs_ops {
 
 struct vfs_node {
 	const vfs_ops_t *ops;
+	uint64_t dev;
+	uint64_t ino;
 	vfs_mode_t mode;
 	vfs_uid_t uid;
 	vfs_gid_t gid;

@@ -29,6 +29,7 @@
 #define ARCH_GET_FS 0x1003
 #define EXEC_ARG_MAX 32
 #define EXEC_STR_MAX 256
+#define SYS_PATH_MAX 512
 
 extern void syscall_entry(void);
 
@@ -55,18 +56,39 @@ typedef struct {
 } syscall_dirent_t;
 
 typedef struct {
-	vfs_mode_t mode;
-	vfs_uid_t uid;
-	vfs_gid_t gid;
-	uint64_t size;
-	uint32_t nlink;
-} syscall_stat_t;
-
-
-typedef struct {
 	int64_t tv_sec;
 	long tv_nsec;
 } syscall_timespec_t;
+
+typedef struct {
+	uint64_t st_dev;
+	uint64_t st_ino;
+	uint64_t st_nlink;
+	vfs_mode_t st_mode;
+	vfs_uid_t st_uid;
+	vfs_gid_t st_gid;
+	uint32_t __pad0;
+	uint64_t st_rdev;
+	int64_t st_size;
+	int64_t st_blksize;
+	int64_t st_blocks;
+	syscall_timespec_t st_atim;
+	syscall_timespec_t st_mtim;
+	syscall_timespec_t st_ctim;
+	int64_t __unused[3];
+} syscall_stat_t;
+
+
+static pcb_t *syscall_current_process(void)
+{
+	tcb_t *thread = sched_current();
+	return thread ? thread->process : NULL;
+}
+
+static const vfs_cred_t *syscall_current_cred(void)
+{
+	return sched_process_cred(syscall_current_process());
+}
 
 static void syscall_relax_until_interrupt(void)
 {
@@ -133,6 +155,90 @@ static int syscall_user_range_ok(uint64_t addr, size_t len)
 	return len <= VAS_USER_END - addr;
 }
 
+static int syscall_normalize_path(const char *input, char *out, size_t out_len)
+{
+	char tmp[SYS_PATH_MAX];
+	size_t pos = 0;
+
+	if (!input || !out || out_len < 2 || input[0] == '\0')
+		return VFS_ERR_INVAL;
+
+	if (input[0] == '/') {
+		size_t len = strlen(input);
+		if (len >= sizeof(tmp))
+			return VFS_ERR_NAMETOOLONG;
+		memcpy(tmp, input, len + 1);
+	} else {
+		pcb_t *process = syscall_current_process();
+		const char *cwd = sched_process_cwd(process);
+		size_t cwd_len = strlen(cwd);
+		size_t input_len = strlen(input);
+		int need_slash = !(cwd_len == 1 && cwd[0] == '/');
+
+		if (cwd_len + (size_t)need_slash + input_len >= sizeof(tmp))
+			return VFS_ERR_NAMETOOLONG;
+
+		memcpy(tmp, cwd, cwd_len);
+		pos = cwd_len;
+		if (need_slash)
+			tmp[pos++] = '/';
+		memcpy(tmp + pos, input, input_len + 1);
+	}
+
+	out[0] = '/';
+	out[1] = '\0';
+	pos = 1;
+
+	const char *p = tmp;
+	while (*p) {
+		while (*p == '/')
+			p++;
+		if (!*p)
+			break;
+
+		const char *start = p;
+		while (*p && *p != '/')
+			p++;
+		size_t len = (size_t)(p - start);
+
+		if (len == 1 && start[0] == '.')
+			continue;
+
+		if (len == 2 && start[0] == '.' && start[1] == '.') {
+			if (pos > 1) {
+				if (out[pos - 1] == '/')
+					pos--;
+				while (pos > 1 && out[pos - 1] != '/')
+					pos--;
+				out[pos] = '\0';
+			}
+			continue;
+		}
+
+		if (pos > 1) {
+			if (pos + 1 >= out_len)
+				return VFS_ERR_NAMETOOLONG;
+			out[pos++] = '/';
+		}
+		if (pos + len >= out_len)
+			return VFS_ERR_NAMETOOLONG;
+		memcpy(out + pos, start, len);
+		pos += len;
+		out[pos] = '\0';
+	}
+
+	return VFS_OK;
+}
+
+static int syscall_copy_user_path_abs(uint64_t user, char *out, size_t out_len)
+{
+	char raw[SYS_PATH_MAX];
+	int r = syscall_copy_user_string(user, raw, sizeof(raw));
+	if (r != VFS_OK)
+		return r;
+	return syscall_normalize_path(raw, out, out_len);
+}
+
 static int syscall_copy_user_ptrs(uint64_t user, uint64_t *out, size_t cap,
 								  size_t *count_out)
 {
@@ -172,13 +278,18 @@ static long syscall_copy_stat_out(uint64_t user, const vfs_stat_t *st)
 	if (!st || !syscall_user_range_ok(user, sizeof(syscall_stat_t)))
 		return VFS_ERR_INVAL;
 
-	syscall_stat_t out = {
-		.mode = st->mode,
-		.uid = st->uid,
-		.gid = st->gid,
-		.size = st->size,
-		.nlink = st->nlink,
-	};
+	syscall_stat_t out;
+	memset(&out, 0, sizeof(out));
+	out.st_dev = st->dev;
+	out.st_ino = st->ino;
+	out.st_nlink = st->nlink ? st->nlink : 1;
+	out.st_mode = st->mode;
+	out.st_uid = st->uid;
+	out.st_gid = st->gid;
+	out.st_rdev = 0;
+	out.st_size = (int64_t)st->size;
+	out.st_blksize = st->blksize ? (int64_t)st->blksize : 4096;
+	out.st_blocks = (int64_t)st->blocks;
 	memcpy((void *)user, &out, sizeof(out));
 	return VFS_OK;
 }
@@ -257,8 +368,8 @@ static long sys_open_handler(interrupt_frame_t *frame)
 	if (!thread || !thread->process)
 		return VFS_ERR_BADF;
 
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
 
@@ -268,7 +379,7 @@ static long sys_open_handler(interrupt_frame_t *frame)
 
 		vfs_file_t *file = NULL;
 		r = vfs_open(path, (uint32_t)frame->rsi, (vfs_mode_t)frame->rdx,
-					 &vfs_root_cred, &file);
+					 syscall_current_cred(), &file);
 		if (r != VFS_OK)
 			return r;
 
@@ -301,13 +412,13 @@ static long sys_close_handler(interrupt_frame_t *frame)
 
 static long sys_stat_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
 
 	vfs_stat_t st;
-	r = vfs_stat(path, &vfs_root_cred, &st);
+	r = vfs_stat(path, syscall_current_cred(), &st);
 	if (r != VFS_OK)
 		return r;
 	return syscall_copy_stat_out(frame->rsi, &st);
@@ -335,16 +446,16 @@ static long sys_lseek_handler(interrupt_frame_t *frame)
 
 static long sys_access_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
 
 	vfs_node_t *node = NULL;
-	r = vfs_resolve(path, &vfs_root_cred, &node);
+	r = vfs_resolve(path, syscall_current_cred(), &node);
 	if (r != VFS_OK)
 		return r;
-	r = vfs_access(node, &vfs_root_cred, (int)frame->rsi);
+	r = vfs_access(node, syscall_current_cred(), (int)frame->rsi);
 	vfs_node_release(node);
 	return r;
 }
@@ -392,22 +503,26 @@ static long sys_getdents_handler(interrupt_frame_t *frame)
 
 static long sys_chroot_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
-	return vfs_chroot(path, &vfs_root_cred);
+	return vfs_chroot(path, syscall_current_cred());
 }
 
 static long sys_mount_handler(interrupt_frame_t *frame)
 {
 	char source[256];
-	char target[256];
+	char target_raw[SYS_PATH_MAX];
+	char target[SYS_PATH_MAX];
 	char fstype[32];
 	int r = syscall_copy_user_string(frame->rdi, source, sizeof(source));
 	if (r != VFS_OK)
 		return r;
-	r = syscall_copy_user_string(frame->rsi, target, sizeof(target));
+	r = syscall_copy_user_string(frame->rsi, target_raw, sizeof(target_raw));
+	if (r != VFS_OK)
+		return r;
+	r = syscall_normalize_path(target_raw, target, sizeof(target));
 	if (r != VFS_OK)
 		return r;
 	r = syscall_copy_user_string(frame->rdx, fstype, sizeof(fstype));
@@ -436,7 +551,7 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 	if (r != VFS_OK)
 		return r;
 
-	r = vfs_mkdir("/newroot", 0755, &vfs_root_cred);
+	r = vfs_mkdir("/newroot", 0755, syscall_current_cred());
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 
@@ -444,7 +559,7 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 	if (r != VFS_OK)
 		return r;
 
-	r = vfs_change_root("/newroot", &vfs_root_cred);
+	r = vfs_change_root("/newroot", syscall_current_cred());
 	if (r != VFS_OK)
 		return r;
 
@@ -471,8 +586,8 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	if (!thread || !thread->process || !thread->process->vas)
 		return VFS_ERR_BADF;
 
-	char path[EXEC_STR_MAX];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
 
@@ -642,48 +757,48 @@ static long sys_mprotect_handler(interrupt_frame_t *frame)
 
 static long sys_mkdir_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
-	return vfs_mkdir(path, (vfs_mode_t)frame->rsi, &vfs_root_cred);
+	return vfs_mkdir(path, (vfs_mode_t)frame->rsi, syscall_current_cred());
 }
 
 static long sys_rmdir_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
-	return vfs_rmdir(path, &vfs_root_cred);
+	return vfs_rmdir(path, syscall_current_cred());
 }
 
 static long sys_unlink_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
-	return vfs_unlink(path, &vfs_root_cred);
+	return vfs_unlink(path, syscall_current_cred());
 }
 
 static long sys_chmod_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
-	return vfs_chmod(path, (vfs_mode_t)frame->rsi, &vfs_root_cred);
+	return vfs_chmod(path, (vfs_mode_t)frame->rsi, syscall_current_cred());
 }
 
 static long sys_chown_handler(interrupt_frame_t *frame)
 {
-	char path[256];
-	int r = syscall_copy_user_string(frame->rdi, path, sizeof(path));
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 	if (r != VFS_OK)
 		return r;
 	return vfs_chown(path, (vfs_uid_t)frame->rsi, (vfs_gid_t)frame->rdx,
-					 &vfs_root_cred);
+					 syscall_current_cred());
 }
 
 static long sys_exit_handler(interrupt_frame_t *frame)
@@ -1342,13 +1457,136 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 	return ret;
 }
 
+static long sys_chdir_handler(interrupt_frame_t *frame)
+{
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
+	if (r != VFS_OK)
+		return r;
+
+	vfs_node_t *node = NULL;
+	r = vfs_resolve(path, syscall_current_cred(), &node);
+	if (r != VFS_OK)
+		return r;
+
+	if (!VFS_S_ISDIR(node->mode)) {
+		vfs_node_release(node);
+		return VFS_ERR_NOTDIR;
+	}
+
+	r = vfs_access(node, syscall_current_cred(), VFS_X_OK);
+	vfs_node_release(node);
+	if (r != VFS_OK)
+		return r;
+
+	return sched_process_setcwd(syscall_current_process(), path);
+}
+
+static long sys_getcwd_handler(interrupt_frame_t *frame)
+{
+	uint64_t user = frame->rdi;
+	size_t len = (size_t)frame->rsi;
+	pcb_t *process = syscall_current_process();
+	const char *cwd = sched_process_cwd(process);
+	size_t needed = strlen(cwd) + 1;
+
+	if (!user || len == 0 || !syscall_user_range_ok(user, len))
+		return VFS_ERR_INVAL;
+	if (len < needed)
+		return VFS_ERR_NAMETOOLONG;
+
+	memcpy((void *)user, cwd, needed);
+	return (long)needed;
+}
+
 static long sys_getpid_handler(interrupt_frame_t *frame)
 {
-	tcb_t *thread = sched_current();
-	if (!thread || !thread->process)
+	(void)frame;
+	pcb_t *process = syscall_current_process();
+	if (!process)
 		return VFS_ERR_BADF;
 
-	return (long)thread->process->pid;
+	return (long)process->pid;
+}
+
+static long sys_getppid_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	pcb_t *process = syscall_current_process();
+	if (!process)
+		return VFS_ERR_BADF;
+
+	return (long)process->ppid;
+}
+
+static long sys_gettid_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	tcb_t *thread = sched_current();
+	if (!thread)
+		return VFS_ERR_BADF;
+
+	return (long)thread->tid;
+}
+
+static long sys_getuid_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	pcb_t *process = syscall_current_process();
+	if (!process)
+		return VFS_ERR_BADF;
+
+	return (long)process->ruid;
+}
+
+static long sys_geteuid_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	pcb_t *process = syscall_current_process();
+	if (!process)
+		return VFS_ERR_BADF;
+
+	return (long)process->euid;
+}
+
+static long sys_getgid_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	pcb_t *process = syscall_current_process();
+	if (!process)
+		return VFS_ERR_BADF;
+
+	return (long)process->rgid;
+}
+
+static long sys_getegid_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	pcb_t *process = syscall_current_process();
+	if (!process)
+		return VFS_ERR_BADF;
+
+	return (long)process->egid;
+}
+
+static long sys_setuid_handler(interrupt_frame_t *frame)
+{
+	return sched_process_setuid(syscall_current_process(), (vfs_uid_t)frame->rdi);
+}
+
+static long sys_seteuid_handler(interrupt_frame_t *frame)
+{
+	return sched_process_seteuid(syscall_current_process(), (vfs_uid_t)frame->rdi);
+}
+
+static long sys_setgid_handler(interrupt_frame_t *frame)
+{
+	return sched_process_setgid(syscall_current_process(), (vfs_gid_t)frame->rdi);
+}
+
+static long sys_setegid_handler(interrupt_frame_t *frame)
+{
+	return sched_process_setegid(syscall_current_process(), (vfs_gid_t)frame->rdi);
 }
 
 static long sys_fork_handler(interrupt_frame_t *frame)
@@ -1366,6 +1604,7 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 		vas_destroy(child_vas);
 		return VFS_ERR_NOMEM;
 	}
+	sched_process_copy_ids(child, thread->process);
 
 	for (int i = 0; i < SCHED_FILE_MAX; i++)
 		syscall_close_file_slot(&child->files[i]);
@@ -1434,6 +1673,18 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_POLL] = sys_poll_handler,
 	[SYS_FORK] = sys_fork_handler,
 	[SYS_GETPID] = sys_getpid_handler,
+	[SYS_GETPPID] = sys_getppid_handler,
+	[SYS_GETUID] = sys_getuid_handler,
+	[SYS_GETEUID] = sys_geteuid_handler,
+	[SYS_GETGID] = sys_getgid_handler,
+	[SYS_GETEGID] = sys_getegid_handler,
+	[SYS_SETUID] = sys_setuid_handler,
+	[SYS_SETEUID] = sys_seteuid_handler,
+	[SYS_SETGID] = sys_setgid_handler,
+	[SYS_SETEGID] = sys_setegid_handler,
+	[SYS_GETTID] = sys_gettid_handler,
+	[SYS_CHDIR] = sys_chdir_handler,
+	[SYS_GETCWD] = sys_getcwd_handler,
 };
 
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
