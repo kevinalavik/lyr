@@ -26,3 +26,6 @@ system-root/
 *.xbstrap
 
 initrd/early-init
+
+*.orig
+*.rej

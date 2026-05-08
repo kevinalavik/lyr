@@ -1,6 +1,6 @@
 .SUFFIXES:
 
-DRIVERS := pci nvme e1000 websrv
+DRIVERS := pci nvme e1000 websrv ps2
 OUTPUT_DIR := bin
 OBJ_DIR := obj
 

@@ -492,22 +492,25 @@ static void frame_init_user(tcb_t *thread, uint64_t rip, uint64_t user_rsp)
 
 void process_setup_fds(pcb_t *process)
 {
-	int r = vfs_open("/dev/null", VFS_O_RDONLY, 0, sched_process_cred(process),
+	int r = vfs_open("/dev/stdin", VFS_O_RDONLY, 0, sched_process_cred(process),
+					 &process->files[0]);
+	if (r != VFS_OK)
+		r = vfs_open("/dev/null", VFS_O_RDONLY, 0, sched_process_cred(process),
 					 &process->files[0]);
 	if (r != VFS_OK) {
 		log_err("sched",
-				"failed to open stdin /dev/null for process %s status=%s(%d)",
+				"failed to open stdin for process %s status=%s(%d)",
 				process->name, vfs_err_name(r), r);
 		atomic_store_explicit(&process->dying, true, memory_order_release);
 		return;
 	}
 
-	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, sched_process_cred(process),
+	r = vfs_open("/dev/stdout", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[1]);
 	if (r != VFS_OK) {
 		log_err(
 			"sched",
-			"failed to open stdout /dev/console for process %s status=%s(%d)",
+			"failed to open stdout for process %s status=%s(%d)",
 			process->name, vfs_err_name(r), r);
 		vfs_close(process->files[0]);
 		process->files[0] = NULL;
@@ -515,12 +518,12 @@ void process_setup_fds(pcb_t *process)
 		return;
 	}
 
-	r = vfs_open("/dev/console", VFS_O_WRONLY, 0, sched_process_cred(process),
+	r = vfs_open("/dev/stderr", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[2]);
 	if (r != VFS_OK) {
 		log_err(
 			"sched",
-			"failed to open stderr /dev/console for process %s status=%s(%d)",
+			"failed to open stderr for process %s status=%s(%d)",
 			process->name, vfs_err_name(r), r);
 		vfs_close(process->files[0]);
 		vfs_close(process->files[1]);

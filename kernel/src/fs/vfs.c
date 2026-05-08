@@ -541,6 +541,19 @@ int vfs_ioctl(vfs_file_t *file, unsigned long request, void *arg)
 	return r;
 }
 
+int vfs_poll(vfs_file_t *file, int events)
+{
+	if (!file || !file->node)
+		return VFS_ERR_BADF;
+	if (!file->node->ops || !file->node->ops->poll)
+		return 0;
+
+	int r = file->node->ops->poll(file, events);
+	log_trace("vfs", "poll node=%p events=0x%x revents=0x%x", file->node,
+			  events, r);
+	return r;
+}
+
 int vfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out)
 {
 	if (!dir || !out)

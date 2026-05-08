@@ -55,6 +55,7 @@ enum {
 	SYS_GETTID,
 	SYS_CHDIR,
 	SYS_GETCWD,
+	SYS_PSELECT,
 };
 
 #ifdef LYR_KERNEL

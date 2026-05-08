@@ -1,2 +1,2 @@
-echo "Starting user program"
-exec /usr/bin/hello
+echo "Starting user shell"
+exec /bin/sh

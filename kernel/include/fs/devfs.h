@@ -10,6 +10,7 @@ typedef int (*devfs_read_t)(void *ctx, uint64_t off, void *buf, size_t len,
 typedef int (*devfs_write_t)(void *ctx, uint64_t off, const void *buf,
 							 size_t len, size_t *done);
 typedef int (*devfs_ioctl_t)(void *ctx, unsigned long request, void *arg);
+typedef int (*devfs_poll_t)(void *ctx, int events);
 
 int devfs_init(void);
 int devfs_mount(const char *target);
@@ -20,6 +21,10 @@ int devfs_register_chr(const char *path, vfs_mode_t mode, devfs_read_t read,
 
 int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
 						  devfs_write_t write, devfs_ioctl_t ioctl, void *ctx);
+
+int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read,
+							devfs_write_t write, devfs_ioctl_t ioctl,
+							devfs_poll_t poll, void *ctx);
 
 int devfs_unregister(const char *path);
 

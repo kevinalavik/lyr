@@ -13,6 +13,7 @@ typedef struct devfs_node {
 	devfs_read_t read;
 	devfs_write_t write;
 	devfs_ioctl_t ioctl;
+	devfs_poll_t poll;
 	void *ctx;
 } devfs_node_t;
 
@@ -28,6 +29,7 @@ static int devfs_read_op(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 static int devfs_write_op(vfs_node_t *node, uint64_t off, const void *buf,
 						  size_t len, size_t *done);
 static int devfs_ioctl_op(vfs_file_t *file, unsigned long request, void *arg);
+static int devfs_poll_op(vfs_file_t *file, int events);
 static int devfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 static void devfs_release(vfs_node_t *node);
 
@@ -39,6 +41,7 @@ static const vfs_ops_t devfs_ops = {
 	.read = devfs_read_op,
 	.write = devfs_write_op,
 	.ioctl = devfs_ioctl_op,
+	.poll = devfs_poll_op,
 	.readdir = devfs_readdir,
 	.release = devfs_release,
 };
@@ -345,6 +348,18 @@ static int devfs_ioctl_op(vfs_file_t *file, unsigned long request, void *arg)
 	return dn->ioctl(dn->ctx, request, arg);
 }
 
+static int devfs_poll_op(vfs_file_t *file, int events)
+{
+	if (!file || !file->node)
+		return VFS_ERR_BADF;
+	if (VFS_S_ISDIR(file->node->mode))
+		return VFS_ERR_ISDIR;
+	devfs_node_t *dn = to_devfs(file->node);
+	if (!dn->poll)
+		return 0;
+	return dn->poll(dn->ctx, events);
+}
+
 static int devfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
@@ -434,8 +449,9 @@ int devfs_mkdir(const char *path, vfs_mode_t mode)
 						VFS_S_IFDIR | (mode & VFS_S_PERM), NULL);
 }
 
-int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
-					  devfs_write_t write, devfs_ioctl_t ioctl, void *ctx)
+int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read,
+							devfs_write_t write, devfs_ioctl_t ioctl,
+							devfs_poll_t poll, void *ctx)
 {
 	devfs_node_t *parent = NULL;
 	const char *name = NULL;
@@ -454,9 +470,16 @@ int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
 	node->read = read;
 	node->write = write;
 	node->ioctl = ioctl;
+	node->poll = poll;
 	node->ctx = ctx;
 	log_debug("devfs", "registered char %s", path);
 	return VFS_OK;
+}
+
+int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
+					  devfs_write_t write, devfs_ioctl_t ioctl, void *ctx)
+{
+	return devfs_register_chr_poll(path, mode, read, write, ioctl, NULL, ctx);
 }
 
 int devfs_register_chr(const char *path, vfs_mode_t mode, devfs_read_t read,

@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <lyr/pci.h>
 #include <pwd.h>
+#include <sys/select.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -144,5 +145,45 @@ int main(void)
 		}
 	}
 
+	printf("\nKEYBOARD POLL TEST (press keys to see them):\n");
+
+	FILE *kbd = fopen("/dev/input/kbd", "rb");
+	if (!kbd) {
+		fprintf(stderr, "failed to open /dev/input/kbd: %s\n", strerror(errno));
+		return 1;
+	}
+
+	while (1) {
+		fd_set readfds;
+		FD_ZERO(&readfds);
+		FD_SET(fileno(kbd), &readfds);
+		struct timeval timeout = { .tv_sec = 2, .tv_usec = 0 };
+		int r = select(fileno(kbd) + 1, &readfds, NULL, NULL, &timeout);
+		if (r < 0) {
+			fprintf(stderr, "select failed: %s\n", strerror(errno));
+			break;
+		}
+		if (r == 0)
+			continue;
+		char buf[64];
+		size_t n = fread(buf, 1, sizeof(buf) - 1, kbd);
+		if (n > 0) {
+			buf[n] = '\0';
+			printf("read: ");
+			for (size_t i = 0; i < n; i++) {
+				if (buf[i] >= 32 && buf[i] < 127)
+					putchar(buf[i]);
+				else if (buf[i] == 13)
+					printf("\\r");
+				else if (buf[i] == 10)
+					printf("\\n");
+				else
+					printf("[0x%02x]", (unsigned char)buf[i]);
+			}
+			printf("\n");
+		}
+	}
+
+	fclose(kbd);
 	return 0;
 }

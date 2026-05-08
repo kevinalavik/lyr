@@ -123,6 +123,7 @@ struct vfs_ops {
 	int (*write)(vfs_node_t *node, uint64_t off, const void *buf, size_t len,
 				 size_t *done);
 	int (*ioctl)(vfs_file_t *file, unsigned long request, void *arg);
+	int (*poll)(vfs_file_t *file, int events);
 	int (*readdir)(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 	int (*truncate)(vfs_node_t *node, uint64_t size);
 	int (*get_page)(vfs_node_t *node, uint64_t page_index, int for_write,
@@ -170,6 +171,7 @@ int vfs_close(vfs_file_t *file);
 int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done);
 int vfs_write(vfs_file_t *file, const void *buf, size_t len, size_t *done);
 int vfs_ioctl(vfs_file_t *file, unsigned long request, void *arg);
+int vfs_poll(vfs_file_t *file, int events);
 int vfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off);
 int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);

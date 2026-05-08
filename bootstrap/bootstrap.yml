@@ -3,6 +3,7 @@ imports:
   - file: bootstrap.d/lyr-libc.yml
   - file: bootstrap.d/apps-test.yml
   - file: bootstrap.d/apps-sys.yml
+  - file: bootstrap.d/apps-shell.yml
 general:
   patch_author: Kevin Alavik and contributors
   patch_email: kevin@alavik.se
