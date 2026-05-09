@@ -131,6 +131,21 @@ rootfs-update:
 		debugfs -w -R "rm /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
 		debugfs -w -R "write $$src /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1; \
 	done < "$$tmp/files"
+		@PATH=$$PATH:/usr/sbin:/sbin; \
+	debugfs -w -R "mkdir /home" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "mkdir /home/lyr" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field / uid 0" "$(ROOTFS_DISK)" >/dev/null; \
+	debugfs -w -R "set_inode_field / gid 0" "$(ROOTFS_DISK)" >/dev/null; \
+	debugfs -w -R "set_inode_field / mode 040755" "$(ROOTFS_DISK)" >/dev/null; \
+	debugfs -w -R "set_inode_field /root uid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /root gid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /root mode 040700" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /home uid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /home gid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /home mode 040755" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /home/lyr uid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /home/lyr gid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+	debugfs -w -R "set_inode_field /home/lyr mode 040755" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true
 
 .PHONY: rootfs-extract
 rootfs-extract: $(ROOTFS_DISK)

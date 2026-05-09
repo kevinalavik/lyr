@@ -108,6 +108,122 @@ int sh_builtin_which(int argc, char **argv)
 	return status;
 }
 
+static const char *ls_uid_name(uid_t uid, char *buf, size_t buf_len)
+{
+	FILE *fp = fopen("/etc/passwd", "r");
+
+	if (!fp) {
+		snprintf(buf, buf_len, "%lu", (unsigned long)uid);
+		return buf;
+	}
+
+	char line[512];
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (line[0] == '\0' || line[0] == '\n' || line[0] == '#') {
+			continue;
+		}
+
+		char *fields[8];
+		char *p = line;
+
+		for (int i = 0; i < 8; i++) {
+			fields[i] = p;
+
+			if (i < 7) {
+				char *colon = strchr(p, ':');
+				if (!colon) {
+					fields[0] = NULL;
+					break;
+				}
+
+				*colon = '\0';
+				p = colon + 1;
+			}
+		}
+
+		if (!fields[0]) {
+			continue;
+		}
+
+		char *end = NULL;
+		unsigned long parsed_uid = strtoul(fields[2], &end, 10);
+
+		if (end == fields[2] || *end != '\0') {
+			continue;
+		}
+
+		if ((uid_t)parsed_uid == uid) {
+			snprintf(buf, buf_len, "%s", fields[0]);
+			fclose(fp);
+			return buf;
+		}
+	}
+
+	fclose(fp);
+
+	snprintf(buf, buf_len, "%lu", (unsigned long)uid);
+	return buf;
+}
+
+static const char *ls_gid_name(gid_t gid, char *buf, size_t buf_len)
+{
+	FILE *fp = fopen("/etc/group", "r");
+
+	if (!fp) {
+		snprintf(buf, buf_len, "%lu", (unsigned long)gid);
+		return buf;
+	}
+
+	char line[512];
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (line[0] == '\0' || line[0] == '\n' || line[0] == '#') {
+			continue;
+		}
+
+		char *fields[4];
+		char *p = line;
+
+		for (int i = 0; i < 4; i++) {
+			fields[i] = p;
+
+			if (i < 3) {
+				char *colon = strchr(p, ':');
+				if (!colon) {
+					fields[0] = NULL;
+					break;
+				}
+
+				*colon = '\0';
+				p = colon + 1;
+			}
+		}
+
+		if (!fields[0]) {
+			continue;
+		}
+
+		char *end = NULL;
+		unsigned long parsed_gid = strtoul(fields[2], &end, 10);
+
+		if (end == fields[2] || *end != '\0') {
+			continue;
+		}
+
+		if ((gid_t)parsed_gid == gid) {
+			snprintf(buf, buf_len, "%s", fields[0]);
+			fclose(fp);
+			return buf;
+		}
+	}
+
+	fclose(fp);
+
+	snprintf(buf, buf_len, "%lu", (unsigned long)gid);
+	return buf;
+}
+
 int sh_builtin_id(void)
 {
 	uid_t uid = getuid();
@@ -118,13 +234,12 @@ int sh_builtin_id(void)
 	char uid_buf[32];
 	char euid_buf[32];
 	char gid_buf[32];
+	char egid_buf[32];
 
 	const char *user = ls_uid_name(uid, uid_buf, sizeof(uid_buf));
 	const char *euser = ls_uid_name(euid, euid_buf, sizeof(euid_buf));
-	char egid_name_buf[32];
-	const char *group = ls_uid_name(gid, gid_buf, sizeof(gid_buf));
-	const char *egroup =
-		ls_uid_name(egid, egid_name_buf, sizeof(egid_name_buf));
+	const char *group = ls_gid_name(gid, gid_buf, sizeof(gid_buf));
+	const char *egroup = ls_gid_name(egid, egid_buf, sizeof(egid_buf));
 
 	printf("uid=%lu(%s) gid=%lu(%s) euid=%lu(%s) egid=%lu(%s)\n",
 		   (unsigned long)uid, user, (unsigned long)gid, group,
@@ -574,27 +689,15 @@ int sh_builtin_ping(int argc, char **argv)
 	return received > 0 ? 0 : 1;
 }
 
-static const char *ls_uid_name(uid_t uid, char *buf, size_t buf_len)
-{
-	struct passwd *pw = getpwuid(uid);
-
-	if (pw && pw->pw_name)
-		return pw->pw_name;
-
-	snprintf(buf, buf_len, "%lu", (unsigned long)uid);
-	return buf;
-}
-
 int sh_is_builtin_name(const char *name)
 {
 	static const char *const builtin_names[] = {
-		"cat",	  "cd",		"clear",   "echo",	  "env",  "exit",  "export",
-		"false",  "help",	"hexdump", "history", "id",	  "ls",	   "loadkeys",
-		"mkdir",
-		"pgrep",  "pidof",  "pinfo",   "ping",   "printf", "ps",    "pwd",
-		"read",   "rm",     "rmdir",   "set",
-		"source", ".",		"stat",	   "touch",	  "true", "type",  "unset",
-		"which",  "whoami", "nfetch",  NULL,
+		"cat",	  "cd",	   "clear",	  "echo",	 "env",	  "exit",	"export",
+		"false",  "help",  "hexdump", "history", "id",	  "ls",		"loadkeys",
+		"mkdir",  "pgrep", "pidof",	  "pinfo",	 "ping",  "printf", "ps",
+		"pwd",	  "read",  "rm",	  "rmdir",	 "set",	  "source", ".",
+		"stat",	  "touch", "true",	  "type",	 "unset", "which",	"whoami",
+		"nfetch", NULL,
 	};
 
 	for (size_t i = 0; builtin_names[i]; i++) {

@@ -1,3 +1,3 @@
-echo "Starting user shell"
-spawn /bin/sh
+echo "Starting login manaer"
+spawn /usr/bin/login
 wait

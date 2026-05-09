@@ -22,6 +22,7 @@
 #define ANSI_MAX_PARAMS 16
 #define LYRTERM_Q_SIZE 8192
 #define LYRTERM_DRAIN_BUDGET 256
+#define OSC_MAX 256
 
 static uint8_t *fb_base;
 static uint32_t fb_width;
@@ -83,6 +84,7 @@ typedef enum {
 	ANSI_STATE_NORMAL,
 	ANSI_STATE_ESC,
 	ANSI_STATE_CSI,
+	ANSI_STATE_OSC,
 } ansi_state_t;
 
 typedef void (*ansi_handler_t)(int *params, int nparams);
@@ -95,6 +97,12 @@ typedef struct {
 static ansi_state_t ansi_state = ANSI_STATE_NORMAL;
 static int ansi_params[ANSI_MAX_PARAMS];
 static int ansi_nparams;
+
+/* OSC accumulation buffer */
+static char osc_buf[OSC_MAX];
+static size_t osc_len;
+/* Tracks whether we just saw an ESC inside an OSC (for ESC \ / ST terminator) */
+static bool osc_saw_esc;
 
 typedef struct {
 	uint32_t codepoint;
@@ -631,6 +639,28 @@ static void ansi_dispatch_csi(char final)
 	}
 }
 
+/*
+ * OSC dispatcher.
+ *
+ * The buffer contains everything between "ESC ]" and the terminator
+ * (BEL or ESC \).  Format is "Ps;text" where Ps is a numeric parameter.
+ *
+ * Supported sequences:
+ *   OSC 0 ; text ST  — set icon name and window title (text ignored)
+ *   OSC 1 ; text ST  — set icon name               (text ignored)
+ *   OSC 2 ; text ST  — set window title             (text ignored)
+ *
+ * All are silently consumed; lyrterm is a framebuffer terminal with no
+ * window manager, so the title string has nowhere to go.  Consuming the
+ * sequence cleanly prevents the raw bytes from appearing on screen.
+ */
+static void ansi_dispatch_osc(const char *buf, size_t len)
+{
+	(void)buf;
+	(void)len;
+	/* No-op: sequence consumed, nothing rendered. */
+}
+
 static uint32_t utf8_feed(uint8_t byte)
 {
 	if (utf8.bytes_left == 0) {
@@ -789,17 +819,65 @@ static void lyrterm_putch_locked(char raw)
 
 	uint8_t byte = (uint8_t)raw;
 
-	if (ansi_state == ANSI_STATE_ESC) {
-		ansi_state = (raw == '[') ? ANSI_STATE_CSI : ANSI_STATE_NORMAL;
-
-		if (ansi_state == ANSI_STATE_CSI) {
-			ansi_nparams = 0;
-			ansi_params[0] = 0;
+	/* ------------------------------------------------------------------ */
+	/* OSC state: accumulate until BEL (0x07) or ST (ESC \)               */
+	/* ------------------------------------------------------------------ */
+	if (ansi_state == ANSI_STATE_OSC) {
+		if (osc_saw_esc) {
+			osc_saw_esc = false;
+			if (raw == '\\') {
+				/* ESC \ — String Terminator */
+				osc_buf[osc_len] = '\0';
+				ansi_dispatch_osc(osc_buf, osc_len);
+				ansi_state = ANSI_STATE_NORMAL;
+			} else {
+				/*
+				 * The ESC was not followed by '\'; treat it as an
+				 * abort and re-process the current byte normally.
+				 */
+				ansi_state = ANSI_STATE_NORMAL;
+				lyrterm_putch_locked(raw);
+			}
+			return;
 		}
 
+		if (raw == '\007') {
+			/* BEL — terminates OSC */
+			osc_buf[osc_len] = '\0';
+			ansi_dispatch_osc(osc_buf, osc_len);
+			ansi_state = ANSI_STATE_NORMAL;
+		} else if (raw == '\033') {
+			/* Possible start of ESC \ */
+			osc_saw_esc = true;
+		} else {
+			if (osc_len + 1 < OSC_MAX)
+				osc_buf[osc_len++] = raw;
+		}
 		return;
 	}
 
+	/* ------------------------------------------------------------------ */
+	/* ESC state                                                           */
+	/* ------------------------------------------------------------------ */
+	if (ansi_state == ANSI_STATE_ESC) {
+		if (raw == '[') {
+			ansi_state = ANSI_STATE_CSI;
+			ansi_nparams = 0;
+			ansi_params[0] = 0;
+		} else if (raw == ']') {
+			ansi_state = ANSI_STATE_OSC;
+			osc_len = 0;
+			osc_saw_esc = false;
+			osc_buf[0] = '\0';
+		} else {
+			ansi_state = ANSI_STATE_NORMAL;
+		}
+		return;
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* CSI state                                                           */
+	/* ------------------------------------------------------------------ */
 	if (ansi_state == ANSI_STATE_CSI) {
 		if (raw >= '0' && raw <= '9') {
 			ansi_params[ansi_nparams] =
@@ -816,7 +894,10 @@ static void lyrterm_putch_locked(char raw)
 		return;
 	}
 
-	if (raw == '\e') {
+	/* ------------------------------------------------------------------ */
+	/* Normal state                                                        */
+	/* ------------------------------------------------------------------ */
+	if (raw == '\033') {
 		ansi_state = ANSI_STATE_ESC;
 		utf8.codepoint = 0;
 		utf8.bytes_left = 0;
