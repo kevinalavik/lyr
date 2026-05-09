@@ -4,7 +4,7 @@ PREFIX ?= /usr
 DESTDIR ?=
 
 PROJECT := sh
-PROJECT_SRC := $(wildcard src/*.c)
+PROJECT_SRC := $(wildcard src/*.c) $(wildcard src/builtin/*.c) $(wildcard src/nfetch/*.c)
 
 TOOLCHAIN_PREFIX ?= x86_64-lyr-
 CC := $(TOOLCHAIN_PREFIX)gcc
@@ -15,7 +15,7 @@ OBJ_DIR := obj
 PROJECT_OBJ := $(patsubst %.c,$(OBJ_DIR)/%.c.o,$(PROJECT_SRC))
 
 CFLAGS := -g -O2 -pipe -Wall -Wextra -Werror -std=gnu11
-CFLAGS += -I include -I ../../kernel/include/sys -isystem $(shell $(TOOLCHAIN_PREFIX)gcc -print-sysroot)/usr/include
+CFLAGS += -I include -I src/builtin -I ../../kernel/include/sys -isystem $(shell $(TOOLCHAIN_PREFIX)gcc -print-sysroot)/usr/include
 
 LDFLAGS :=
 

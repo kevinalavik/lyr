@@ -30,6 +30,16 @@
 #define ARCH_SET_FS 0x1002
 #define ARCH_GET_FS 0x1003
 
+#define SYS_F_DUPFD 0
+#define SYS_F_GETFD 1
+#define SYS_F_SETFD 2
+#define SYS_F_GETFL 3
+#define SYS_F_SETFL 4
+#define SYS_F_DUPFD_CLOEXEC 1030
+
+#define SYS_FD_CLOEXEC 1
+#define SYS_O_NONBLOCK SOCK_NONBLOCK
+
 #define EXEC_ARG_MAX 32
 #define EXEC_STR_MAX 256
 #define SYS_PATH_MAX 512
@@ -512,7 +522,138 @@ static long sys_close_handler(interrupt_frame_t *frame)
 
 	vfs_close(file);
 	thread->process->files[fd] = NULL;
+	thread->process->fd_flags[fd] = 0;
 
+	return VFS_OK;
+}
+
+static long sys_fcntl_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process)
+		return VFS_ERR_BADF;
+
+	uint64_t user_ret = frame->rdi;
+	int fd = (int)frame->rsi;
+	int cmd = (int)frame->rdx;
+	long arg = (long)frame->r10;
+	pcb_t *process = thread->process;
+
+	if (!user_ret || !syscall_user_range_ok(user_ret, sizeof(long)))
+		return VFS_ERR_INVAL;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX || !process->files[fd])
+		return VFS_ERR_BADF;
+
+	long ret = 0;
+	long err = VFS_OK;
+
+	switch (cmd) {
+	case SYS_F_DUPFD:
+	case SYS_F_DUPFD_CLOEXEC: {
+		int minfd = (int)arg;
+
+		if (minfd < 0) {
+			err = VFS_ERR_INVAL;
+			break;
+		}
+
+		if (minfd >= SCHED_FILE_MAX) {
+			err = VFS_ERR_BADF;
+			break;
+		}
+
+		err = VFS_ERR_NOMEM;
+
+		for (int newfd = minfd; newfd < SCHED_FILE_MAX; newfd++) {
+			if (process->files[newfd])
+				continue;
+
+			vfs_file_t *dup = syscall_dup_file(process->files[fd]);
+			if (!dup) {
+				err = VFS_ERR_NOMEM;
+				break;
+			}
+
+			process->files[newfd] = dup;
+			process->fd_flags[newfd] =
+				(cmd == SYS_F_DUPFD_CLOEXEC) ? SYS_FD_CLOEXEC : 0;
+
+			ret = newfd;
+			err = VFS_OK;
+			break;
+		}
+
+		break;
+	}
+
+	case SYS_F_GETFD:
+		ret = (long)(process->fd_flags[fd] & SYS_FD_CLOEXEC);
+		err = VFS_OK;
+		break;
+
+	case SYS_F_SETFD:
+		process->fd_flags[fd] = (uint32_t)arg & SYS_FD_CLOEXEC;
+		ret = 0;
+		err = VFS_OK;
+		break;
+
+	case SYS_F_GETFL: {
+		vfs_file_t *file = process->files[fd];
+		uint32_t flags = file->flags;
+
+		if (file->private_data) {
+			uint32_t sock_flags = 0;
+			int r = net_socket_get_status_flags((socket_t *)file->private_data,
+												&sock_flags);
+
+			if (r != NET_SOCK_OK) {
+				err = r;
+				break;
+			}
+
+			flags |= sock_flags;
+		}
+
+		ret = (long)flags;
+		err = VFS_OK;
+		break;
+	}
+
+	case SYS_F_SETFL: {
+		vfs_file_t *file = process->files[fd];
+		uint32_t flags = (uint32_t)arg;
+
+		if (file->private_data) {
+			int r = net_socket_set_status_flags((socket_t *)file->private_data,
+												flags);
+
+			if (r != NET_SOCK_OK) {
+				err = r;
+				break;
+			}
+		} else {
+			if (flags & SYS_O_NONBLOCK)
+				file->flags |= SYS_O_NONBLOCK;
+			else
+				file->flags &= ~SYS_O_NONBLOCK;
+		}
+
+		ret = 0;
+		err = VFS_OK;
+		break;
+	}
+
+	default:
+		err = VFS_ERR_INVAL;
+		break;
+	}
+
+	if (err != VFS_OK)
+		return err;
+
+	*(long *)user_ret = ret;
 	return VFS_OK;
 }
 
@@ -1112,6 +1253,8 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 
 			return VFS_ERR_NOMEM;
 		}
+
+		child->fd_flags[i] = thread->process->fd_flags[i];
 	}
 
 	tcb_t *child_thread = sched_fork_thread(child, thread->name, frame);
@@ -2135,6 +2278,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_MUNMAP] = sys_munmap_handler,
 	[SYS_MPROTECT] = sys_mprotect_handler,
 	[SYS_IOCTL] = sys_ioctl_handler,
+	[SYS_FCNTL] = sys_fcntl_handler,
 
 	[SYS_SOCKET] = sys_socket_handler,
 	[SYS_BIND] = sys_bind_handler,

@@ -129,6 +129,8 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 				 sockaddr_t *addr, socklen_t *addrlen);
 int net_shutdown(socket_t *sock, int how);
 int net_socket_ref(socket_t *sock);
+int net_socket_get_status_flags(socket_t *sock, uint32_t *flags);
+int net_socket_set_status_flags(socket_t *sock, uint32_t flags);
 int net_close(socket_t *sock);
 int net_getsockname(socket_t *sock, sockaddr_t *addr, socklen_t *addrlen);
 int net_getpeername(socket_t *sock, sockaddr_t *addr, socklen_t *addrlen);

@@ -4,7 +4,7 @@ TAP_IF ?= tap0
 QEMU_NET_USER := -netdev user,id=net0,net=10.0.2.0/24,hostfwd=tcp::6969-:6969,hostfwd=tcp::8080-:80 -device e1000,netdev=net0
 ROOTFS_DISK := disk.img
 QEMU_NVME := -drive file=$(ROOTFS_DISK),if=none,id=nvme0,format=raw -device nvme,drive=nvme0,serial=LYRNVME0
-QEMUFLAGS := -m 2G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME)
+QEMUFLAGS := -m 8G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME)
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd
@@ -145,7 +145,7 @@ rootfs-extract: $(ROOTFS_DISK)
 FORCE:
 
 $(ROOTFS_DISK):
-	dd if=/dev/zero of=$@ bs=1M count=128
+	truncate -s 1G $@
 	PATH=$$PATH:/usr/sbin:/sbin mkfs.ext2 -q -F -L LYRTEST $@
 
 $(INITRD_IMAGE): FORCE utils/mkinitrd.py $(INITRD_FILES) drivers early-init $(DRIVER_SYS_FILES)

@@ -1,3 +1,5 @@
 echo "Mounting filesystems"
+mkdir /dev
+mkdir /tmp
 mount devfs /dev devfs
 mount tmpfs /tmp tmpfs

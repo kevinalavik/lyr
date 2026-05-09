@@ -56,6 +56,7 @@ enum {
 	SYS_CHDIR,
 	SYS_GETCWD,
 	SYS_PSELECT,
+	SYS_FCNTL,
 };
 
 #ifdef LYR_KERNEL

@@ -2,7 +2,7 @@
 #include <fs/vfs.h>
 #include <lib/string.h>
 
-#define TCP_WINDOW 4096
+#define TCP_WINDOW 65535
 
 int net_send_ipv4_udp(netdev_t *dev, const uint8_t dst_mac[6],
 					  uint32_t src_ip, uint32_t dst_ip, uint16_t src_port,
@@ -101,16 +101,30 @@ int net_send_ipv4_icmp(netdev_t *dev, const uint8_t dst_mac[6],
 	return dev->send(dev, frame, frame_len);
 }
 
-int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
-					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
-					  uint32_t seq, uint32_t ack, uint8_t flags,
-					  const void *payload, size_t payload_len)
+static int net_send_ipv4_tcp_with_window_opts_impl(
+	netdev_t *dev, const uint8_t dst_mac[6], uint32_t dst_ip,
+	uint16_t src_port, uint16_t dst_port, uint32_t seq, uint32_t ack,
+	uint8_t flags, uint16_t window, int include_mss, int include_wscale,
+	uint8_t wscale, int include_sack_permitted, const void *payload,
+	size_t payload_len)
 {
 	if (!dev || !dst_mac || payload_len > 1400)
 		return VFS_ERR_INVAL;
 
 	uint8_t frame[NET_ETH_FRAME_MAX];
-	size_t tcp_opt_len = (flags & TCP_SYN) ? 4 : 0;
+	size_t tcp_opt_len = 0;
+
+	if (flags & TCP_SYN) {
+		if (include_mss)
+			tcp_opt_len += 4;
+		if (include_sack_permitted)
+			tcp_opt_len += 2;
+		if (include_wscale)
+			tcp_opt_len += 4; /* NOP, kind, len, shift */
+		if (tcp_opt_len & 3)
+			tcp_opt_len = (tcp_opt_len + 3) & ~(size_t)3;
+	}
+
 	size_t tcp_hlen = sizeof(tcp_hdr_t) + tcp_opt_len;
 	size_t tcp_len = tcp_hlen + payload_len;
 	size_t ip_len = sizeof(ipv4_hdr_t) + tcp_len;
@@ -145,15 +159,33 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 	tcp->ack = htonl(ack);
 	tcp->data_off = (uint8_t)(tcp_hlen / 4) << 4;
 	tcp->flags = flags;
-	tcp->window = htons(TCP_WINDOW);
+	tcp->window = htons(window);
 	if (tcp_opt_len) {
-		/* TCP option 2: MSS.  This makes our SYN/SYN-ACK look like a normal
-		 * internet TCP endpoint and avoids peers falling back to awkward
-		 * defaults. */
-		tcp_opts[0] = 2;
-		tcp_opts[1] = 4;
-		tcp_opts[2] = 0x05;
-		tcp_opts[3] = 0xb4; /* 1460 */
+		size_t opt = 0;
+
+		if (include_mss) {
+			tcp_opts[opt++] = 2;  /* MSS */
+			tcp_opts[opt++] = 4;
+			tcp_opts[opt++] = 0x05;
+			tcp_opts[opt++] = 0xb4; /* 1460 */
+		}
+
+		if (include_sack_permitted) {
+			tcp_opts[opt++] = 4;  /* SACK permitted */
+			tcp_opts[opt++] = 2;
+		}
+
+		if (include_wscale) {
+			if (wscale > 14)
+				wscale = 14;
+			tcp_opts[opt++] = 1;  /* NOP for alignment */
+			tcp_opts[opt++] = 3;  /* window scale */
+			tcp_opts[opt++] = 3;
+			tcp_opts[opt++] = wscale;
+		}
+
+		while (opt < tcp_opt_len)
+			tcp_opts[opt++] = 0; /* EOL/padding */
 	}
 	if (payload_len)
 		memcpy(body, payload, payload_len);
@@ -179,4 +211,38 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 	}
 
 	return dev->send(dev, frame, frame_len);
+}
+
+
+int net_send_ipv4_tcp_window_opts(netdev_t *dev, const uint8_t dst_mac[6],
+					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
+					  uint32_t seq, uint32_t ack, uint8_t flags, uint16_t window,
+					  int include_mss, int include_wscale, uint8_t wscale,
+					  int include_sack_permitted, const void *payload,
+					  size_t payload_len)
+{
+	return net_send_ipv4_tcp_with_window_opts_impl(
+		dev, dst_mac, dst_ip, src_port, dst_port, seq, ack, flags, window,
+		include_mss, include_wscale, wscale, include_sack_permitted, payload,
+		payload_len);
+}
+
+int net_send_ipv4_tcp_window(netdev_t *dev, const uint8_t dst_mac[6],
+					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
+					  uint32_t seq, uint32_t ack, uint8_t flags, uint16_t window,
+					  const void *payload, size_t payload_len)
+{
+	return net_send_ipv4_tcp_with_window_opts_impl(
+		dev, dst_mac, dst_ip, src_port, dst_port, seq, ack, flags, window,
+		(flags & TCP_SYN) != 0, 0, 0, 0, payload, payload_len);
+}
+
+int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
+					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
+					  uint32_t seq, uint32_t ack, uint8_t flags,
+					  const void *payload, size_t payload_len)
+{
+	return net_send_ipv4_tcp_with_window_opts_impl(
+		dev, dst_mac, dst_ip, src_port, dst_port, seq, ack, flags, TCP_WINDOW,
+		(flags & TCP_SYN) != 0, 0, 0, 0, payload, payload_len);
 }

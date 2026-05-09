@@ -61,5 +61,6 @@ int sh_run_line(sh_shell_t *sh, const char *line);
 int sh_run_file(sh_shell_t *sh, const char *path);
 void sh_history_add(sh_shell_t *sh, const char *line);
 void sh_history_free(sh_shell_t *sh);
+int sh_is_builtin_name(const char *name);
 
 #endif

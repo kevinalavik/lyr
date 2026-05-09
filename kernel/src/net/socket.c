@@ -986,6 +986,9 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 			return NET_SOCK_ERR_WOULDBLOCK;
 
 		if (sock->inet_data->rx_len == 0) {
+			if (sock->flags & NET_SOCK_NONBLOCK)
+				return NET_SOCK_ERR_WOULDBLOCK;
+
 			size_t done = 0;
 			int r =
 				net_tcp_recv(sock->inet_data->tcp_conn, sock->inet_data->rx_buf,
@@ -1031,6 +1034,31 @@ int net_socket_ref(socket_t *sock)
 	if (!sock)
 		return NET_SOCK_ERR_INVAL;
 	sock->refcount++;
+	return NET_SOCK_OK;
+}
+
+int net_socket_get_status_flags(socket_t *sock, uint32_t *flags)
+{
+	if (!sock || !flags)
+		return NET_SOCK_ERR_INVAL;
+
+	*flags = 0;
+	if (sock->flags & NET_SOCK_NONBLOCK)
+		*flags |= SOCK_NONBLOCK;
+
+	return NET_SOCK_OK;
+}
+
+int net_socket_set_status_flags(socket_t *sock, uint32_t flags)
+{
+	if (!sock)
+		return NET_SOCK_ERR_INVAL;
+
+	if (flags & SOCK_NONBLOCK)
+		sock->flags |= NET_SOCK_NONBLOCK;
+	else
+		sock->flags &= ~NET_SOCK_NONBLOCK;
+
 	return NET_SOCK_OK;
 }
 

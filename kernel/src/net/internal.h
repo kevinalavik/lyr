@@ -115,6 +115,16 @@ int net_send_ipv4_tcp(netdev_t *dev, const uint8_t dst_mac[6],
 					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
 					  uint32_t seq, uint32_t ack, uint8_t flags,
 					  const void *payload, size_t payload_len);
+int net_send_ipv4_tcp_window(netdev_t *dev, const uint8_t dst_mac[6],
+					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
+					  uint32_t seq, uint32_t ack, uint8_t flags, uint16_t window,
+					  const void *payload, size_t payload_len);
+int net_send_ipv4_tcp_window_opts(netdev_t *dev, const uint8_t dst_mac[6],
+					  uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
+					  uint32_t seq, uint32_t ack, uint8_t flags, uint16_t window,
+					  int include_mss, int include_wscale, uint8_t wscale,
+					  int include_sack_permitted, const void *payload,
+					  size_t payload_len);
 
 int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 					uint8_t out_mac[NET_ETH_ALEN]);

@@ -54,6 +54,7 @@ typedef struct pcb {
 	vfs_gid_t egid;
 	char cwd[SCHED_CWD_MAX];
 	vfs_file_t *files[SCHED_FILE_MAX];
+	uint32_t fd_flags[SCHED_FILE_MAX];
 	struct pcb *next;
 } pcb_t;
 

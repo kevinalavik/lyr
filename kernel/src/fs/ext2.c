@@ -343,9 +343,59 @@ static int alloc_inode(ext2_fs_t *fs, uint32_t *out)
 	return VFS_ERR_NOSYS;
 }
 
+static uint64_t ext2_index_span(uint32_t ptrs_per_block, unsigned depth)
+{
+	uint64_t span = 1;
+
+	while (depth-- > 1)
+		span *= ptrs_per_block;
+
+	return span;
+}
+
+static int file_block_indirect(ext2_node_t *node, uint32_t block,
+							   unsigned depth, uint32_t file_block,
+							   uint32_t *out)
+{
+	*out = 0;
+
+	if (!block)
+		return VFS_OK;
+
+	uint32_t ptrs_per_block = node->fs->block_size / sizeof(uint32_t);
+	uint64_t span = ext2_index_span(ptrs_per_block, depth);
+
+	if ((uint64_t)file_block >= span * ptrs_per_block)
+		return VFS_ERR_NOSYS;
+
+	uint32_t *ptrs = kzalloc(node->fs->block_size);
+	if (!ptrs)
+		return VFS_ERR_NOMEM;
+
+	int r = read_block(node->fs, block, ptrs);
+	if (r != VFS_OK) {
+		kfree(ptrs);
+		return r;
+	}
+
+	if (depth == 1) {
+		*out = ptrs[file_block];
+		kfree(ptrs);
+		return VFS_OK;
+	}
+
+	uint32_t slot = (uint32_t)((uint64_t)file_block / span);
+	uint32_t next_index = (uint32_t)((uint64_t)file_block % span);
+	uint32_t next_block = ptrs[slot];
+	kfree(ptrs);
+
+	return file_block_indirect(node, next_block, depth - 1, next_index, out);
+}
+
 static int file_block(ext2_node_t *node, uint32_t file_block, uint32_t *out)
 {
 	*out = 0;
+
 	if (file_block < 12) {
 		*out = node->inode.block[file_block];
 		return VFS_OK;
@@ -353,19 +403,98 @@ static int file_block(ext2_node_t *node, uint32_t file_block, uint32_t *out)
 
 	file_block -= 12;
 	uint32_t ptrs_per_block = node->fs->block_size / sizeof(uint32_t);
-	if (file_block >= ptrs_per_block)
+
+	if (file_block < ptrs_per_block)
+		return file_block_indirect(node, node->inode.block[12], 1,
+								   file_block, out);
+
+	file_block -= ptrs_per_block;
+	uint64_t double_blocks = (uint64_t)ptrs_per_block * ptrs_per_block;
+	if ((uint64_t)file_block < double_blocks)
+		return file_block_indirect(node, node->inode.block[13], 2,
+								   file_block, out);
+
+	file_block -= (uint32_t)double_blocks;
+	uint64_t triple_blocks = double_blocks * ptrs_per_block;
+	if ((uint64_t)file_block < triple_blocks)
+		return file_block_indirect(node, node->inode.block[14], 3,
+								   file_block, out);
+
+	return VFS_ERR_NOSYS;
+}
+
+static int ensure_file_block_indirect(ext2_node_t *node, uint32_t *root,
+								  unsigned depth, uint32_t file_block,
+								  uint32_t *out)
+{
+	uint32_t ptrs_per_block = node->fs->block_size / sizeof(uint32_t);
+	uint64_t span = ext2_index_span(ptrs_per_block, depth);
+
+	if ((uint64_t)file_block >= span * ptrs_per_block)
 		return VFS_ERR_NOSYS;
-	if (!node->inode.block[12])
-		return VFS_OK;
+
+	if (!*root) {
+		int r = alloc_block(node->fs, root);
+		if (r != VFS_OK)
+			return r;
+
+		node->inode.blocks += node->fs->block_size / 512;
+		r = write_inode(node->fs, node->ino, &node->inode);
+		if (r != VFS_OK)
+			return r;
+	}
 
 	uint32_t *ptrs = kzalloc(node->fs->block_size);
 	if (!ptrs)
 		return VFS_ERR_NOMEM;
-	int r = read_block(node->fs, node->inode.block[12], ptrs);
-	if (r == VFS_OK)
-		*out = ptrs[file_block];
+
+	int r = read_block(node->fs, *root, ptrs);
+	if (r != VFS_OK) {
+		kfree(ptrs);
+		return r;
+	}
+
+	if (depth == 1) {
+		if (!ptrs[file_block]) {
+			r = alloc_block(node->fs, &ptrs[file_block]);
+			if (r == VFS_OK) {
+				node->inode.blocks += node->fs->block_size / 512;
+				r = write_block(node->fs, *root, ptrs);
+				if (r == VFS_OK)
+					r = write_inode(node->fs, node->ino, &node->inode);
+			}
+		}
+
+		if (r == VFS_OK)
+			*out = ptrs[file_block];
+		kfree(ptrs);
+		return r;
+	}
+
+	uint32_t slot = (uint32_t)((uint64_t)file_block / span);
+	uint32_t next_index = (uint32_t)((uint64_t)file_block % span);
+
+	if (!ptrs[slot]) {
+		r = alloc_block(node->fs, &ptrs[slot]);
+		if (r != VFS_OK) {
+			kfree(ptrs);
+			return r;
+		}
+
+		node->inode.blocks += node->fs->block_size / 512;
+		r = write_block(node->fs, *root, ptrs);
+		if (r == VFS_OK)
+			r = write_inode(node->fs, node->ino, &node->inode);
+		if (r != VFS_OK) {
+			kfree(ptrs);
+			return r;
+		}
+	}
+
+	uint32_t child = ptrs[slot];
 	kfree(ptrs);
-	return r;
+
+	return ensure_file_block_indirect(node, &child, depth - 1, next_index, out);
 }
 
 static int ensure_file_block(ext2_node_t *node, uint32_t file_block_index,
@@ -386,39 +515,42 @@ static int ensure_file_block(ext2_node_t *node, uint32_t file_block_index,
 
 	file_block_index -= 12;
 	uint32_t ptrs_per_block = node->fs->block_size / sizeof(uint32_t);
-	if (file_block_index >= ptrs_per_block)
-		return VFS_ERR_NOSYS;
 
-	uint32_t *ptrs = kzalloc(node->fs->block_size);
-	if (!ptrs)
-		return VFS_ERR_NOMEM;
-	if (!node->inode.block[12]) {
-		uint32_t indirect_block = 0;
-		r = alloc_block(node->fs, &indirect_block);
-		if (r != VFS_OK) {
-			kfree(ptrs);
-			return r;
-		}
-		node->inode.block[12] = indirect_block;
-		node->inode.blocks += node->fs->block_size / 512;
-	} else {
-		r = read_block(node->fs, node->inode.block[12], ptrs);
-		if (r != VFS_OK) {
-			kfree(ptrs);
-			return r;
-		}
-	}
-
-	r = alloc_block(node->fs, out);
-	if (r == VFS_OK) {
-		ptrs[file_block_index] = *out;
-		node->inode.blocks += node->fs->block_size / 512;
-		r = write_block(node->fs, node->inode.block[12], ptrs);
-		if (r == VFS_OK)
+	if (file_block_index < ptrs_per_block) {
+		uint32_t root = node->inode.block[12];
+		r = ensure_file_block_indirect(node, &root, 1, file_block_index, out);
+		if (r == VFS_OK && node->inode.block[12] != root) {
+			node->inode.block[12] = root;
 			r = write_inode(node->fs, node->ino, &node->inode);
+		}
+		return r;
 	}
-	kfree(ptrs);
-	return r;
+
+	file_block_index -= ptrs_per_block;
+	uint64_t double_blocks = (uint64_t)ptrs_per_block * ptrs_per_block;
+	if ((uint64_t)file_block_index < double_blocks) {
+		uint32_t root = node->inode.block[13];
+		r = ensure_file_block_indirect(node, &root, 2, file_block_index, out);
+		if (r == VFS_OK && node->inode.block[13] != root) {
+			node->inode.block[13] = root;
+			r = write_inode(node->fs, node->ino, &node->inode);
+		}
+		return r;
+	}
+
+	file_block_index -= (uint32_t)double_blocks;
+	uint64_t triple_blocks = double_blocks * ptrs_per_block;
+	if ((uint64_t)file_block_index < triple_blocks) {
+		uint32_t root = node->inode.block[14];
+		r = ensure_file_block_indirect(node, &root, 3, file_block_index, out);
+		if (r == VFS_OK && node->inode.block[14] != root) {
+			node->inode.block[14] = root;
+			r = write_inode(node->fs, node->ino, &node->inode);
+		}
+		return r;
+	}
+
+	return VFS_ERR_NOSYS;
 }
 
 static int ext2_read(vfs_node_t *vnode, uint64_t off, void *buf, size_t len,

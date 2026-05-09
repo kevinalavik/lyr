@@ -50,7 +50,14 @@ uint64_t time_monotonic_ns(void)
 
 uint64_t time_ms_to_ns(uint64_t ms)
 {
-	if (ms > UINT64_MAX / (uint64_t)MSEC_PER_SEC / (uint64_t)NSEC_PER_MSEC)
+	/*
+	 * Convert milliseconds to nanoseconds.
+	 *
+	 * The old overflow check divided by MSEC_PER_SEC and NSEC_PER_MSEC,
+	 * which is not the conversion being performed. 1 ms is exactly
+	 * 1,000,000 ns.
+	 */
+	if (ms > UINT64_MAX / (uint64_t)NSEC_PER_MSEC)
 		return UINT64_MAX;
 
 	return ms * (uint64_t)NSEC_PER_MSEC;
