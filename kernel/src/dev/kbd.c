@@ -98,7 +98,8 @@ static int layout_symbol_set_utf8_codepoint(layout_symbol_t *out, unsigned cp)
 	return -1;
 }
 
-static int layout_symbol_set_token(layout_symbol_t *out, const char *s, int dash_is_none)
+static int layout_symbol_set_token(layout_symbol_t *out, const char *s,
+								   int dash_is_none)
 {
 	if (!out || !s)
 		return -1;
@@ -114,16 +115,16 @@ static int layout_symbol_set_token(layout_symbol_t *out, const char *s, int dash
 		const char *name;
 		uint8_t val;
 	} syms[] = {
-		{ "nul", 0 },       { "backspace", 8 }, { "tab", 9 },
+		{ "nul", 0 },	   { "backspace", 8 }, { "tab", 9 },
 		{ "enter", '\n' }, { "escape", 27 },   { "space", ' ' },
-		{ "delete", 127 },  { "minus", '-' },
+		{ "delete", 127 }, { "minus", '-' },
 	};
 	for (unsigned i = 0; i < sizeof(syms) / sizeof(syms[0]); i++)
 		if (strcmp(s, syms[i].name) == 0)
 			return layout_symbol_set_byte(out, syms[i].val);
 
-	/* Decimal Unicode codepoint. */
-	if (s[0] >= '0' && s[0] <= '9') {
+	/* Decimal Unicode codepoint (only for multi-digit numbers). */
+	if (s[0] >= '0' && s[0] <= '9' && s[1] != '\0') {
 		unsigned cp = 0;
 		for (int i = 0; s[i]; i++) {
 			if (s[i] < '0' || s[i] > '9')
@@ -178,7 +179,10 @@ static int split_line(char *line, char *toks[], int max_toks)
 	while (*p && n < max_toks) {
 		while (*p == ' ' || *p == '\t')
 			p++;
-		if (*p == '\0' || *p == '#' || *p == '\n' || *p == '\r')
+		if (*p == '\0' || *p == '\n' || *p == '\r')
+			break;
+
+		if (*p == '#' && n == 0)
 			break;
 		toks[n++] = p;
 		while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
@@ -329,7 +333,8 @@ void kbd_submit_event(const lyr_key_event_t *ev)
 
 	int shift_active = (kbd_mods & LYR_KBD_MOD_SHIFT) != 0;
 	/* Caps-lock flips shift for ASCII alphabetic keys. */
-	if ((kbd_mods & LYR_KBD_MOD_CAPS) && layout_symbol_is_ascii_lower(&le->normal))
+	if ((kbd_mods & LYR_KBD_MOD_CAPS) &&
+		layout_symbol_is_ascii_lower(&le->normal))
 		shift_active = !shift_active;
 
 	if ((kbd_mods & LYR_KBD_MOD_ALT) && le->altgr.len)
@@ -396,7 +401,8 @@ int kbd_read_byte(uint8_t *ch)
 		layout_symbol_t ctrl_sym;
 
 		int shift_active = (ev.mods & LYR_KBD_MOD_SHIFT) != 0;
-		if ((ev.mods & LYR_KBD_MOD_CAPS) && layout_symbol_is_ascii_lower(&le->normal))
+		if ((ev.mods & LYR_KBD_MOD_CAPS) &&
+			layout_symbol_is_ascii_lower(&le->normal))
 			shift_active = !shift_active;
 
 		if ((ev.mods & LYR_KBD_MOD_ALT) && le->altgr.len)
