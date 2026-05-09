@@ -9,6 +9,9 @@
 #define LYR_TCSETSF 0x5404UL
 #define LYR_TIOCGWINSZ 0x5413UL
 #define LYR_TIOCSWINSZ 0x5414UL
+#define LYR_TIOCGNAME 0x4c590001UL
+
+#define LYR_TTY_NAME_MAX 64
 
 typedef struct lyr_winsize {
 	uint16_t ws_row;

@@ -95,7 +95,8 @@ static void console_input_backspace(void)
 	if (console_in.count == 0 || console_in.tail == console_in.head)
 		return;
 
-	uint16_t prev = console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
+	uint16_t prev =
+		console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
 	uint8_t old = console_in.buf[prev];
 	if (old == '\n' || old == '\r')
 		return;
@@ -124,21 +125,27 @@ static void console_input_backspace(void)
 
 void console_input_put(uint8_t ch)
 {
+	int canonical = (console_termios.c_lflag & LYR_ICANON) != 0;
+	int echo = (console_termios.c_lflag & LYR_ECHO) != 0;
+
 	if (ch == '\r')
 		ch = '\n';
 
-	if (ch == 8 || ch == 127) {
+	if (canonical && (ch == 8 || ch == 127)) {
 		console_input_backspace();
 		return;
 	}
 
 	console_input_push(ch);
 
-	if (console_termios.c_lflag & LYR_ECHO) {
-		if (ch == '\n')
+	if (echo) {
+		if (ch == '\n') {
 			console_write(NULL, 0, "\r\n", 2, NULL);
-		else
+		} else if (canonical && (ch == 8 || ch == 127)) {
+			return;
+		} else {
 			console_write(NULL, 0, &ch, 1, NULL);
+		}
 	}
 }
 
@@ -204,7 +211,7 @@ static int console_poll(void *ctx, int events)
 	int revents = 0;
 	if (events & LYR_POLL_READ_MASK) {
 		if ((console_termios.c_lflag & LYR_ICANON) ? console_in.lines > 0 :
-											  console_in.count > 0)
+													 console_in.count > 0)
 			revents |= LYR_POLLIN | LYR_POLLRDNORM;
 	}
 	if (events & LYR_POLL_WRITE_MASK)
@@ -257,6 +264,12 @@ static int console_ioctl(void *ctx, unsigned long request, void *arg)
 	case LYR_TIOCSWINSZ:
 		return arg ? VFS_OK : VFS_ERR_INVAL;
 
+	case LYR_TIOCGNAME:
+		if (!arg)
+			return VFS_ERR_INVAL;
+		memcpy(arg, "tty", sizeof("tty"));
+		return VFS_OK;
+
 	default:
 		return VFS_ERR_NOTTY;
 	}
@@ -268,27 +281,28 @@ int console_init(void)
 	console_termios.c_cc[LYR_VTIME] = 0;
 
 	int r = devfs_register_chr_poll("/dev/console", 0666, console_read,
-								  console_write, console_ioctl, console_poll, NULL);
+									console_write, console_ioctl, console_poll,
+									NULL);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/tty", 0666, console_read, console_write,
-								 console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll, NULL);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stdin", 0444, console_read, NULL,
-								 console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll, NULL);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stdout", 0222, NULL, console_write,
-								 console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll, NULL);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stderr", 0222, NULL, console_write,
-								 console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll, NULL);
 	if (r != VFS_OK && r != VFS_ERR_EXIST)
 		return r;
 

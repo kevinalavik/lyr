@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 #include <sh.h>
@@ -222,6 +223,147 @@ static const char *ls_gid_name(gid_t gid, char *buf, size_t buf_len)
 
 	snprintf(buf, buf_len, "%lu", (unsigned long)gid);
 	return buf;
+}
+
+static void uname_print_field(const char *s, int *first)
+{
+	if (!*first)
+		putchar(' ');
+
+	fputs(s, stdout);
+	*first = 0;
+}
+
+int sh_builtin_uname(int argc, char **argv)
+{
+	int show_sysname = 0;
+	int show_nodename = 0;
+	int show_release = 0;
+	int show_version = 0;
+	int show_machine = 0;
+	int show_os = 0;
+	struct utsname uts;
+	int first = 1;
+
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--help") == 0) {
+			puts("usage: uname [-amnrvspio]");
+			puts("");
+			puts("Print system information.");
+			puts("");
+			puts("Options:");
+			puts("  -a, --all                 print all available information");
+			puts(
+				"  -s, --kernel-name         print kernel/system name (default)");
+			puts("  -n, --nodename            print network node hostname");
+			puts("  -r, --kernel-release      print kernel release");
+			puts("  -v, --kernel-version      print kernel version");
+			puts("  -m, --machine             print machine hardware name");
+			puts("  -o, --operating-system    print operating system");
+			return 0;
+		}
+
+		if (strcmp(argv[i], "--all") == 0) {
+			show_sysname = 1;
+			show_nodename = 1;
+			show_release = 1;
+			show_version = 1;
+			show_machine = 1;
+			show_os = 1;
+			continue;
+		}
+
+		if (strcmp(argv[i], "--kernel-name") == 0) {
+			show_sysname = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--nodename") == 0) {
+			show_nodename = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--kernel-release") == 0) {
+			show_release = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--kernel-version") == 0) {
+			show_version = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--machine") == 0) {
+			show_machine = 1;
+			continue;
+		}
+
+		if (strcmp(argv[i], "--operating-system") == 0) {
+			show_os = 1;
+			continue;
+		}
+
+		if (argv[i][0] != '-' || argv[i][1] == '\0') {
+			fprintf(stderr, "uname: extra operand: %s\n", argv[i]);
+			return 2;
+		}
+
+		for (size_t j = 1; argv[i][j]; j++) {
+			switch (argv[i][j]) {
+			case 'a':
+				show_sysname = 1;
+				show_nodename = 1;
+				show_release = 1;
+				show_version = 1;
+				show_machine = 1;
+				show_os = 1;
+				break;
+			case 's':
+				show_sysname = 1;
+				break;
+			case 'n':
+				show_nodename = 1;
+				break;
+			case 'r':
+				show_release = 1;
+				break;
+			case 'v':
+				show_version = 1;
+				break;
+			case 'm':
+				show_machine = 1;
+				break;
+			case 'o':
+				show_os = 1;
+				break;
+			default:
+				fprintf(stderr, "uname: invalid option -- '%c'\n", argv[i][j]);
+				fprintf(stderr, "usage: uname [-amnrvspio]\n");
+				return 2;
+			}
+		}
+	}
+
+	if (!show_sysname && !show_nodename && !show_release && !show_version &&
+		!show_machine && !show_os)
+		show_sysname = 1;
+
+	if (uname(&uts) < 0) {
+		fprintf(stderr, "uname: %s\n", strerror(errno));
+		return 1;
+	}
+
+	if (show_sysname)
+		uname_print_field(uts.sysname, &first);
+	if (show_nodename)
+		uname_print_field(uts.nodename, &first);
+	if (show_release)
+		uname_print_field(uts.release, &first);
+	if (show_version)
+		uname_print_field(uts.version, &first);
+	if (show_machine)
+		uname_print_field(uts.machine, &first);
+	if (show_os)
+		uname_print_field(uts.sysname, &first);
+
+	putchar('\n');
+	return 0;
 }
 
 int sh_builtin_id(void)
@@ -692,12 +834,12 @@ int sh_builtin_ping(int argc, char **argv)
 int sh_is_builtin_name(const char *name)
 {
 	static const char *const builtin_names[] = {
-		"cat",	  "cd",	   "clear",	  "echo",	 "env",	  "exit",	"export",
-		"false",  "help",  "hexdump", "history", "id",	  "ls",		"loadkeys",
-		"mkdir",  "pgrep", "pidof",	  "pinfo",	 "ping",  "printf", "ps",
-		"pwd",	  "read",  "rm",	  "rmdir",	 "set",	  "source", ".",
-		"stat",	  "touch", "true",	  "type",	 "unset", "which",	"whoami",
-		"nfetch", NULL,
+		"cat",		"cd",	  "clear",	 "echo",	"env",	 "exit",  "export",
+		"false",	"help",	  "hexdump", "history", "id",	 "kill",  "ls",
+		"loadkeys", "mkdir",  "pgrep",	 "pidof",	"pinfo", "ping",  "printf",
+		"ps",		"pwd",	  "read",	 "rm",		"rmdir", "set",	  "source",
+		".",		"stat",	  "touch",	 "true",	"type",	 "uname", "unset",
+		"which",	"whoami", "nfetch",	 NULL,
 	};
 
 	for (size_t i = 0; builtin_names[i]; i++) {

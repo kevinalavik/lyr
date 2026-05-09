@@ -16,6 +16,7 @@
 #include <dev/time.h>
 #include <dev/pit.h>
 #include <sys/poll.h>
+#include <stdarg.h>
 
 #define MSR_EFER 0xC0000080
 #define MSR_STAR 0xC0000081
@@ -99,6 +100,17 @@ typedef struct {
 	syscall_timespec_t st_ctim;
 	int64_t __unused[3];
 } syscall_stat_t;
+
+#define SYS_UTSNAME_FIELD_LEN 65
+
+typedef struct {
+	char sysname[SYS_UTSNAME_FIELD_LEN];
+	char nodename[SYS_UTSNAME_FIELD_LEN];
+	char release[SYS_UTSNAME_FIELD_LEN];
+	char version[SYS_UTSNAME_FIELD_LEN];
+	char machine[SYS_UTSNAME_FIELD_LEN];
+	char domainname[SYS_UTSNAME_FIELD_LEN];
+} syscall_utsname_t;
 
 void syscall_init(void)
 {
@@ -328,6 +340,38 @@ static size_t syscall_strnlen(const char *s, size_t max)
 static size_t syscall_align_up(size_t value, size_t align)
 {
 	return (value + align - 1) & ~(align - 1);
+}
+
+static void syscall_uts_copy(char dst[SYS_UTSNAME_FIELD_LEN], const char *src)
+{
+	size_t i = 0;
+
+	if (!src)
+		src = "";
+
+	while (i + 1 < SYS_UTSNAME_FIELD_LEN && src[i]) {
+		dst[i] = src[i];
+		i++;
+	}
+
+	dst[i] = '\0';
+}
+
+static void syscall_uts_copyf(char dst[SYS_UTSNAME_FIELD_LEN], const char *fmt,
+							  ...)
+{
+	va_list args;
+
+	if (!fmt) {
+		dst[0] = '\0';
+		return;
+	}
+
+	va_start(args, fmt);
+	vsnprintf(dst, SYS_UTSNAME_FIELD_LEN, fmt, args);
+	va_end(args);
+
+	dst[SYS_UTSNAME_FIELD_LEN - 1] = '\0';
 }
 
 static uint8_t syscall_dirent_type(vfs_mode_t mode)
@@ -1329,6 +1373,33 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 /* Misc/device syscalls                                                       */
 /* -------------------------------------------------------------------------- */
 
+static long sys_uname_handler(interrupt_frame_t *frame)
+{
+	uint64_t user = frame->rdi;
+
+	if (!user || !syscall_user_range_ok(user, sizeof(syscall_utsname_t)))
+		return VFS_ERR_INVAL;
+
+	syscall_utsname_t uts;
+	memset(&uts, 0, sizeof(uts));
+
+	syscall_uts_copy(uts.sysname, "lyrOS");
+	syscall_uts_copy(uts.nodename, "lyr");
+	syscall_uts_copy(uts.release, LYR_VERSION);
+	syscall_uts_copyf(uts.version, "lyr-%s", LYR_VERSION);
+
+#if defined(__x86_64__)
+	syscall_uts_copy(uts.machine, "x86_64");
+#else
+	syscall_uts_copy(uts.machine, "unknown");
+#endif
+
+	syscall_uts_copy(uts.domainname, "localdomain");
+
+	memcpy((void *)user, &uts, sizeof(uts));
+	return VFS_OK;
+}
+
 static long sys_ioctl_handler(interrupt_frame_t *frame)
 {
 	tcb_t *thread = sched_current();
@@ -2299,6 +2370,32 @@ static long sys_setegid_handler(interrupt_frame_t *frame)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Sleep syscall                                                              */
+/* -------------------------------------------------------------------------- */
+static long sys_nsleep_handler(interrupt_frame_t *frame)
+{
+	int64_t sec = (int64_t)frame->rdi;
+	long nsec = (long)frame->rsi;
+
+	if (sec < 0 || nsec < 0 || nsec >= SYS_NSEC_PER_SEC)
+		return -EINVAL;
+
+	if (sec == 0 && nsec == 0)
+		return VFS_OK;
+
+	time_timeout_t timeout;
+	int r = time_timeout_after_timespec(sec, nsec, &timeout);
+
+	if (r != 0)
+		return r;
+
+	while (!time_timeout_expired(&timeout))
+		time_sleep_until_interrupt_or_timeout(&timeout);
+
+	return VFS_OK;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Dispatch table                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -2316,6 +2413,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_FORK] = sys_fork_handler,
 	[SYS_EXECVE] = sys_execve_handler,
 	[SYS_WAITPID] = sys_waitpid_handler,
+	[SYS_NSLEEP] = sys_nsleep_handler,
 
 	[SYS_CHMOD] = sys_chmod_handler,
 	[SYS_CHOWN] = sys_chown_handler,
@@ -2334,6 +2432,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_MPROTECT] = sys_mprotect_handler,
 	[SYS_IOCTL] = sys_ioctl_handler,
 	[SYS_FCNTL] = sys_fcntl_handler,
+	[SYS_UNAME] = sys_uname_handler,
 
 	[SYS_SOCKET] = sys_socket_handler,
 	[SYS_BIND] = sys_bind_handler,

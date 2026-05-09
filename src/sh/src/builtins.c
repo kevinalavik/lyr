@@ -99,6 +99,9 @@ int sh_builtin_run(sh_shell_t *sh, int argc, char **argv, int *handled)
 	if (strcmp(argv[0], "id") == 0)
 		return sh_builtin_id();
 
+	if (strcmp(argv[0], "kill") == 0)
+		return sh_builtin_kill(argc, argv);
+
 	if (strcmp(argv[0], "ls") == 0)
 		return sh_builtin_ls(argc, argv);
 
@@ -164,6 +167,9 @@ int sh_builtin_run(sh_shell_t *sh, int argc, char **argv, int *handled)
 
 	if (strcmp(argv[0], "type") == 0)
 		return sh_builtin_type(argc, argv);
+
+	if (strcmp(argv[0], "uname") == 0)
+		return sh_builtin_uname(argc, argv);
 
 	if (strcmp(argv[0], "unset") == 0)
 		return sh_builtin_unset(argc, argv);

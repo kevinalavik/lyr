@@ -1,9 +1,11 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct ps_info {
 	int pid;
@@ -460,4 +462,290 @@ int sh_builtin_pidof(int argc, char **argv)
 		putchar('\n');
 
 	return found ? 0 : 1;
+}
+typedef struct kill_signal_name {
+	const char *name;
+	int number;
+} kill_signal_name_t;
+
+static const kill_signal_name_t kill_signal_names[] = {
+#ifdef SIGHUP
+	{ "HUP", SIGHUP },
+#endif
+#ifdef SIGINT
+	{ "INT", SIGINT },
+#endif
+#ifdef SIGQUIT
+	{ "QUIT", SIGQUIT },
+#endif
+#ifdef SIGILL
+	{ "ILL", SIGILL },
+#endif
+#ifdef SIGTRAP
+	{ "TRAP", SIGTRAP },
+#endif
+#ifdef SIGABRT
+	{ "ABRT", SIGABRT },
+#endif
+#ifdef SIGBUS
+	{ "BUS", SIGBUS },
+#endif
+#ifdef SIGFPE
+	{ "FPE", SIGFPE },
+#endif
+#ifdef SIGKILL
+	{ "KILL", SIGKILL },
+#endif
+#ifdef SIGUSR1
+	{ "USR1", SIGUSR1 },
+#endif
+#ifdef SIGSEGV
+	{ "SEGV", SIGSEGV },
+#endif
+#ifdef SIGUSR2
+	{ "USR2", SIGUSR2 },
+#endif
+#ifdef SIGPIPE
+	{ "PIPE", SIGPIPE },
+#endif
+#ifdef SIGALRM
+	{ "ALRM", SIGALRM },
+#endif
+#ifdef SIGTERM
+	{ "TERM", SIGTERM },
+#endif
+#ifdef SIGCHLD
+	{ "CHLD", SIGCHLD },
+#endif
+#ifdef SIGCONT
+	{ "CONT", SIGCONT },
+#endif
+#ifdef SIGSTOP
+	{ "STOP", SIGSTOP },
+#endif
+#ifdef SIGTSTP
+	{ "TSTP", SIGTSTP },
+#endif
+#ifdef SIGTTIN
+	{ "TTIN", SIGTTIN },
+#endif
+#ifdef SIGTTOU
+	{ "TTOU", SIGTTOU },
+#endif
+#ifdef SIGURG
+	{ "URG", SIGURG },
+#endif
+#ifdef SIGXCPU
+	{ "XCPU", SIGXCPU },
+#endif
+#ifdef SIGXFSZ
+	{ "XFSZ", SIGXFSZ },
+#endif
+#ifdef SIGVTALRM
+	{ "VTALRM", SIGVTALRM },
+#endif
+#ifdef SIGPROF
+	{ "PROF", SIGPROF },
+#endif
+#ifdef SIGWINCH
+	{ "WINCH", SIGWINCH },
+#endif
+#ifdef SIGIO
+	{ "IO", SIGIO },
+#endif
+#ifdef SIGPWR
+	{ "PWR", SIGPWR },
+#endif
+#ifdef SIGSYS
+	{ "SYS", SIGSYS },
+#endif
+	{ NULL, 0 },
+};
+
+static int kill_streq_ci(const char *a, const char *b)
+{
+	while (*a && *b) {
+		if (toupper((unsigned char)*a) != toupper((unsigned char)*b))
+			return 0;
+		a++;
+		b++;
+	}
+
+	return *a == '\0' && *b == '\0';
+}
+
+static int kill_parse_number(const char *s, long *out)
+{
+	char *end = NULL;
+	long v;
+
+	if (!s || !*s)
+		return -1;
+
+	errno = 0;
+	v = strtol(s, &end, 10);
+	if (errno || end == s || *end != '\0')
+		return -1;
+
+	*out = v;
+	return 0;
+}
+
+static int kill_signal_by_name(const char *name, int *sig)
+{
+	if (strncmp(name, "SIG", 3) == 0 || strncmp(name, "sig", 3) == 0)
+		name += 3;
+
+	for (size_t i = 0; kill_signal_names[i].name; i++) {
+		if (kill_streq_ci(name, kill_signal_names[i].name)) {
+			*sig = kill_signal_names[i].number;
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
+static int kill_parse_signal(const char *s, int *sig)
+{
+	long n;
+
+	if (kill_parse_number(s, &n) == 0) {
+		if (n < 0 || n > 255)
+			return -1;
+		*sig = (int)n;
+		return 0;
+	}
+
+	return kill_signal_by_name(s, sig);
+}
+
+static const char *kill_signal_name(int sig)
+{
+	for (size_t i = 0; kill_signal_names[i].name; i++) {
+		if (kill_signal_names[i].number == sig)
+			return kill_signal_names[i].name;
+	}
+
+	return NULL;
+}
+
+static void kill_list_signals(void)
+{
+	int col = 0;
+
+	for (size_t i = 0; kill_signal_names[i].name; i++) {
+		int n = kill_signal_names[i].number;
+
+		printf("%2d) SIG%-7s", n, kill_signal_names[i].name);
+		col++;
+
+		if (col == 4) {
+			putchar('\n');
+			col = 0;
+		}
+	}
+
+	if (col)
+		putchar('\n');
+}
+
+int sh_builtin_kill(int argc, char **argv)
+{
+	int sig = SIGTERM;
+	int first_pid = 1;
+	int status = 0;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: kill [-SIGNAL | -s SIGNAL] pid...\n");
+		return 2;
+	}
+
+	if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+		puts("usage: kill [-SIGNAL | -s SIGNAL] pid...");
+		puts("       kill -l [SIGNAL]");
+		puts("");
+		puts("Send a signal to one or more processes. SIGNAL may be a number,");
+		puts("a name such as TERM, or a SIG-prefixed name such as SIGKILL.");
+		puts("Use -- before a negative PID or process group id.");
+		return 0;
+	}
+
+	if (strcmp(argv[1], "-l") == 0 || strcmp(argv[1], "--list") == 0) {
+		if (argc == 2) {
+			kill_list_signals();
+			return 0;
+		}
+
+		for (int i = 2; i < argc; i++) {
+			long n;
+			const char *name;
+
+			if (kill_parse_number(argv[i], &n) < 0) {
+				int parsed;
+				if (kill_signal_by_name(argv[i], &parsed) < 0) {
+					fprintf(stderr, "kill: unknown signal: %s\n", argv[i]);
+					status = 2;
+					continue;
+				}
+				n = parsed;
+			}
+
+			name = kill_signal_name((int)n);
+			if (name)
+				puts(name);
+			else {
+				fprintf(stderr, "kill: unknown signal: %s\n", argv[i]);
+				status = 2;
+			}
+		}
+
+		return status;
+	}
+
+	if (strcmp(argv[1], "-s") == 0) {
+		if (argc < 4) {
+			fprintf(stderr, "kill: option requires an argument -- 's'\n");
+			return 2;
+		}
+
+		if (kill_parse_signal(argv[2], &sig) < 0) {
+			fprintf(stderr, "kill: unknown signal: %s\n", argv[2]);
+			return 2;
+		}
+
+		first_pid = 3;
+	} else if (argv[1][0] == '-' && argv[1][1] && strcmp(argv[1], "--") != 0) {
+		if (kill_parse_signal(argv[1] + 1, &sig) < 0) {
+			fprintf(stderr, "kill: unknown signal: %s\n", argv[1] + 1);
+			return 2;
+		}
+
+		first_pid = 2;
+	}
+
+	if (first_pid < argc && strcmp(argv[first_pid], "--") == 0)
+		first_pid++;
+
+	if (first_pid >= argc) {
+		fprintf(stderr, "kill: missing pid\n");
+		return 2;
+	}
+
+	for (int i = first_pid; i < argc; i++) {
+		long pid;
+
+		if (kill_parse_number(argv[i], &pid) < 0) {
+			fprintf(stderr, "kill: invalid pid: %s\n", argv[i]);
+			status = 2;
+			continue;
+		}
+
+		if (kill((pid_t)pid, sig) < 0) {
+			fprintf(stderr, "kill: %s: %s\n", argv[i], strerror(errno));
+			status = 1;
+		}
+	}
+
+	return status;
 }
