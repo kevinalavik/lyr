@@ -114,6 +114,13 @@ rootfs-update:
 	} | awk 'NF' | LC_ALL=C sort -u > "$$tmp/dirs"; \
 	while IFS= read -r dir; do \
 		debugfs -w -R "mkdir /$$dir" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+		case "$$dir" in \
+			home/lyr/*) \
+				debugfs -w -R "set_inode_field /$$dir uid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+				debugfs -w -R "set_inode_field /$$dir gid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+				debugfs -w -R "set_inode_field /$$dir mode 040755" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+			;; \
+		esac; \
 	done < "$$tmp/dirs"; \
 	{ \
 		if [ -d "$(ROOTFS_DIR)" ]; then \
@@ -130,8 +137,14 @@ rootfs-update:
 		fi; \
 		debugfs -w -R "rm /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
 		debugfs -w -R "write $$src /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1; \
+		case "$$rel" in \
+			home/lyr/*) \
+				debugfs -w -R "set_inode_field /$$rel uid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+				debugfs -w -R "set_inode_field /$$rel gid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+			;; \
+		esac; \
 	done < "$$tmp/files"
-		@PATH=$$PATH:/usr/sbin:/sbin; \
+	@PATH=$$PATH:/usr/sbin:/sbin; \
 	debugfs -w -R "mkdir /home" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
 	debugfs -w -R "mkdir /home/lyr" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
 	debugfs -w -R "set_inode_field / uid 0" "$(ROOTFS_DISK)" >/dev/null; \

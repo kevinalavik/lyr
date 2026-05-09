@@ -1385,7 +1385,7 @@ static long sys_uname_handler(interrupt_frame_t *frame)
 
 	syscall_uts_copy(uts.sysname, "lyrOS");
 	syscall_uts_copy(uts.nodename, "lyr");
-	syscall_uts_copy(uts.release, LYR_VERSION);
+	syscall_uts_copy(uts.release, "1.0-alpha (mlibc)");
 	syscall_uts_copyf(uts.version, "lyr-%s", LYR_VERSION);
 
 #if defined(__x86_64__)

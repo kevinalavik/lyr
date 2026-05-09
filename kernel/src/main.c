@@ -127,7 +127,7 @@ void lyr_entry(void)
 	struct limine_framebuffer *fb =
 		framebuffer_request.response->framebuffers[0];
 
-	lyrterm_apply_theme(&lyrterm_theme_gruvbox_dark);
+	lyrterm_apply_theme(&lyrterm_theme_neon);
 	lyrterm_init(fb);
 
 	/* etc requests */
