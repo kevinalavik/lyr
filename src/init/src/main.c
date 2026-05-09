@@ -282,10 +282,8 @@ int main(void)
 		goto fallback;
 	}
 
-	fprintf(stderr, "init: script ended without exec; entering idle loop\n");
-
-	for (;;)
-		pause();
+	fprintf(stderr, "init: script ended; entering PID 1 reaper loop\n");
+	init_reap_forever();
 
 fallback:
 	fprintf(stderr, "init: failed to exec\n");

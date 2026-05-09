@@ -97,6 +97,24 @@ void sched_process_set_parent(pcb_t *process, pid_t ppid)
 	spinlock_release(&process->lock);
 }
 
+void sched_process_set_name(pcb_t *process, const char *name)
+{
+	if (!process)
+		return;
+
+	spinlock_acquire(&process->lock);
+	name_set(process->name, sizeof(process->name), name ? name : "process");
+	spinlock_release(&process->lock);
+}
+
+void sched_thread_set_name(tcb_t *thread, const char *name)
+{
+	if (!thread)
+		return;
+
+	name_set(thread->name, sizeof(thread->name), name ? name : "thread");
+}
+
 void sched_process_copy_ids(pcb_t *dst, const pcb_t *src)
 {
 	if (!dst || !src)
@@ -336,6 +354,23 @@ static void process_unlink_locked(pcb_t *process)
 	}
 }
 
+static int waitpid_match(pid_t wanted, const pcb_t *child)
+{
+	if (!child)
+		return 0;
+
+	if (wanted == -1)
+		return 1;
+
+	return wanted > 0 && child->pid == wanted;
+}
+
+typedef enum process_exit_action {
+	PROCESS_EXIT_NONE,
+	PROCESS_EXIT_ZOMBIE,
+	PROCESS_EXIT_REAP,
+} process_exit_action_t;
+
 static bool process_add_thread(pcb_t *process, tcb_t *thread)
 {
 	bool added = false;
@@ -353,14 +388,14 @@ static bool process_add_thread(pcb_t *process, tcb_t *thread)
 	return added;
 }
 
-static bool process_remove_thread(tcb_t *thread)
+static process_exit_action_t process_remove_thread(tcb_t *thread, int status)
 {
 	pcb_t *process = thread->process;
 	if (!process)
-		return false;
+		return PROCESS_EXIT_NONE;
 
 	bool found = false;
-	bool destroy_process = false;
+	process_exit_action_t action = PROCESS_EXIT_NONE;
 
 	spinlock_acquire(&process->lock);
 	tcb_t **cur = &process->threads;
@@ -379,24 +414,53 @@ static bool process_remove_thread(tcb_t *thread)
 												 memory_order_acq_rel);
 		unsigned left = old ? old - 1 : 0;
 		if (left == 0 && process->pid != 0) {
+			process->exit_status = status;
 			atomic_store_explicit(&process->dying, true, memory_order_release);
-			destroy_process = true;
+
+			/*
+			 * Only processes with a waitable parent stay in the process list as
+			 * zombies. Kernel/internal processes are created with ppid == 0 and
+			 * have nobody that can collect them via waitpid(), so they must be
+			 * reaped by the scheduler as before.
+			 */
+			if (process->ppid > 0) {
+				process->zombie = true;
+				action = PROCESS_EXIT_ZOMBIE;
+			} else {
+				action = PROCESS_EXIT_REAP;
+			}
 		}
 	}
 	spinlock_release(&process->lock);
 
-	return destroy_process;
+	return action;
 }
 
-static void process_note_no_threads(pcb_t *process)
+
+static void process_reparent_children(pid_t old_parent, pid_t new_parent)
+{
+	if (old_parent <= 0)
+		return;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+	for (pcb_t *child = process_list; child; child = child->next) {
+		if (child->ppid == old_parent) {
+			child->ppid = new_parent;
+			log_trace("sched", "reparented pid=%d from ppid=%d to ppid=%d",
+					  child->pid, old_parent, new_parent);
+		}
+	}
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+}
+
+static void process_note_zombie(pcb_t *process)
 {
 	if (!process || process->pid == 0)
 		return;
 
-	spinlock_acquire(&sched_lock);
-	process_unlink_locked(process);
-	spinlock_release(&sched_lock);
-	log_trace("sched", "process pid=%d (%s) has no live threads", process->pid,
+	log_trace("sched", "process pid=%d (%s) became zombie", process->pid,
 			  process->name);
 }
 
@@ -561,6 +625,8 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 	spinlock_init(&process->lock);
 	atomic_init(&process->thread_count, 0);
 	atomic_init(&process->dying, false);
+	process->zombie = false;
+	process->exit_status = 0;
 	process->ruid = 0;
 	process->rgid = 0;
 	process->suid = 0;
@@ -593,6 +659,12 @@ static void process_destroy(pcb_t *process)
 {
 	if (!process || process->pid == 0)
 		return;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+	process_unlink_locked(process);
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
 
 	pid_t pid = process->pid;
 	char name[sizeof(process->name)];
@@ -685,11 +757,22 @@ static void thread_finish_current_locked(cpu_local_t *cpu,
 		thread->rsp = (uint64_t)frame;
 	thread->exit_status = status;
 	thread->state = TCB_ZOMBIE;
-	thread->reap_process = process_remove_thread(thread);
+	pcb_t *process = thread->process;
+	pid_t exited_pid = process ? process->pid : -1;
+	/*
+	 * Unix-like orphan handling: when a userspace process exits, its living
+	 * children become children of init (PID 1).  Kernel/internal tasks and
+	 * PID 1 itself remain root-owned with PPID 0.
+	 */
+	pid_t new_parent = (exited_pid > 1) ? 1 : 0;
+	process_exit_action_t action = process_remove_thread(thread, status);
+	if (action != PROCESS_EXIT_NONE)
+		process_reparent_children(exited_pid, new_parent);
+	thread->reap_process = action == PROCESS_EXIT_REAP;
 	atomic_fetch_sub_explicit(&cpu->sched_load, 1, memory_order_release);
 	thread_queue_reap(cpu, thread);
-	if (thread->reap_process)
-		process_note_no_threads(thread->process);
+	if (action == PROCESS_EXIT_ZOMBIE)
+		process_note_zombie(thread->process);
 
 	log_trace("sched", "tid=%d pid=%d exited%s on cpu%u status=%d", thread->tid,
 			  thread->process ? thread->process->pid : -1, how ? how : "",
@@ -966,6 +1049,73 @@ tcb_t *sched_current(void)
 	return cpu ? cpu->current_thread : NULL;
 }
 
+
+static void process_copy_info_locked(const pcb_t *process, sched_process_info_t *out)
+{
+	memset(out, 0, sizeof(*out));
+	out->pid = process->pid;
+	out->ppid = process->ppid;
+	memcpy(out->name, process->name, sizeof(out->name));
+	out->name[sizeof(out->name) - 1] = '\0';
+	out->zombie = process->zombie;
+	out->dying = atomic_load_explicit(&process->dying, memory_order_acquire);
+	out->exit_status = process->exit_status;
+	out->thread_count = atomic_load_explicit(&process->thread_count,
+										   memory_order_acquire);
+	out->ruid = process->ruid;
+	out->euid = process->euid;
+	out->rgid = process->rgid;
+	out->egid = process->egid;
+	memcpy(out->cwd, sched_process_cwd(process), sizeof(out->cwd));
+	out->cwd[sizeof(out->cwd) - 1] = '\0';
+}
+
+bool sched_process_get_info(pid_t pid, sched_process_info_t *out)
+{
+	if (!out)
+		return false;
+
+	bool found = false;
+	uint64_t flags = irq_save();
+
+	spinlock_acquire(&sched_lock);
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (process->pid == pid) {
+			process_copy_info_locked(process, out);
+			found = true;
+			break;
+		}
+	}
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	return found;
+}
+
+bool sched_process_get_nth(size_t index, sched_process_info_t *out)
+{
+	if (!out)
+		return false;
+
+	bool found = false;
+	uint64_t flags = irq_save();
+
+	spinlock_acquire(&sched_lock);
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (process->pid <= 0)
+			continue;
+		if (index-- != 0)
+			continue;
+		process_copy_info_locked(process, out);
+		found = true;
+		break;
+	}
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	return found;
+}
+
 bool sched_process_exists(pid_t pid)
 {
 	bool found = false;
@@ -982,6 +1132,57 @@ bool sched_process_exists(pid_t pid)
 	irq_restore(flags);
 
 	return found;
+}
+
+int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
+					   int *status_out)
+{
+	if (!parent || !pid_out || !status_out)
+		return VFS_ERR_INVAL;
+
+	/* Only WNOHANG is meaningful until job control exists. */
+	if (options & ~1)
+		return VFS_ERR_INVAL;
+
+	if (pid == 0 || pid < -1)
+		return VFS_ERR_NOSYS;
+
+	pcb_t *zombie = NULL;
+	bool have_child = false;
+	uint64_t flags = irq_save();
+
+	spinlock_acquire(&sched_lock);
+	for (pcb_t *child = process_list; child; child = child->next) {
+		if (child->ppid != parent->pid || !waitpid_match(pid, child))
+			continue;
+
+		have_child = true;
+		if (child->zombie) {
+			zombie = child;
+			process_unlink_locked(child);
+			break;
+		}
+	}
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	if (!have_child)
+		return -ECHILD;
+
+	if (!zombie) {
+		if (options & 1) {
+			*pid_out = 0;
+			*status_out = 0;
+			return VFS_OK;
+		}
+
+		return -EAGAIN;
+	}
+
+	*pid_out = zombie->pid;
+	*status_out = (zombie->exit_status & 0xff) << 8;
+	process_destroy(zombie);
+	return VFS_OK;
 }
 
 const char *sched_process_cwd(const pcb_t *process)

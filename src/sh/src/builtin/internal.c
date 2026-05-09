@@ -45,7 +45,11 @@ int sh_builtin_help(void)
 	puts("  ls [-alhR]      list directory contents");
 	puts("  mkdir DIR...    create directories");
 	puts("  nfetch URL      fetch HTTP or raw TCP data");
+	puts("  pgrep PATTERN   print PIDs whose command contains PATTERN");
+	puts("  pidof NAME      print PIDs whose command exactly matches NAME");
+	puts("  pinfo PID...    print /proc/PID/status");
 	puts("  ping HOST       send ICMP echo requests");
+	puts("  ps [-f] [PID]   list processes from /proc");
 	puts("  printf FMT ...  formatted output");
 	puts("  pwd             print current directory");
 	puts("  read NAME       read one line into variable");

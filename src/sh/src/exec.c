@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sh.h>
+#include <sys/wait.h>
 
 static void set_status_env(int status)
 {
@@ -59,9 +60,25 @@ static int run_external(char **argv)
 		_exit(126);
 	}
 
-	printf("[%lu] %s\n", (unsigned long)pid, argv[0]);
 	free(path);
-	return 0;
+
+	int status = 0;
+	pid_t waited;
+	do {
+		waited = waitpid(pid, &status, 0);
+	} while (waited < 0 && (errno == EINTR || errno == EAGAIN));
+
+	if (waited < 0) {
+		fprintf(stderr, "waitpid: %s\n", strerror(errno));
+		return 126;
+	}
+
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	if (WIFSIGNALED(status))
+		return 128 + WTERMSIG(status);
+
+	return 126;
 }
 
 int sh_execute(sh_shell_t *sh, sh_command_t *cmd)

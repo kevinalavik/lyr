@@ -153,6 +153,8 @@ static int cat_stream(FILE *fp, const char *name, int show_ends,
 	char buf[4096];
 	unsigned long line = 1;
 	int at_line_start = 1;
+	int last_was_newline = 1;
+	int wrote_any = 0;
 
 	for (;;) {
 		size_t n = fread(buf, 1, sizeof(buf), fp);
@@ -170,6 +172,8 @@ static int cat_stream(FILE *fp, const char *name, int show_ends,
 		for (size_t i = 0; i < n; i++) {
 			unsigned char c = (unsigned char)buf[i];
 
+			wrote_any = 1;
+
 			if (number_lines && at_line_start) {
 				printf("%6lu\t", line++);
 				at_line_start = 0;
@@ -178,12 +182,20 @@ static int cat_stream(FILE *fp, const char *name, int show_ends,
 			if (c == '\n') {
 				if (show_ends)
 					putchar('$');
+
 				putchar('\n');
 				at_line_start = 1;
+				last_was_newline = 1;
 			} else {
 				putchar(c);
+				at_line_start = 0;
+				last_was_newline = 0;
 			}
 		}
+	}
+
+	if (wrote_any && !last_was_newline) {
+		fputs("\033[7m%\033[0m\n", stdout);
 	}
 
 	return 0;

@@ -57,6 +57,7 @@ enum {
 	SYS_GETCWD,
 	SYS_PSELECT,
 	SYS_FCNTL,
+	SYS_WAITPID,
 };
 
 #ifdef LYR_KERNEL

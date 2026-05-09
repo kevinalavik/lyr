@@ -108,8 +108,20 @@ int sh_builtin_run(sh_shell_t *sh, int argc, char **argv, int *handled)
 	if (strcmp(argv[0], "nfetch") == 0)
 		return sh_builtin_nfetch(argc, argv);
 
+	if (strcmp(argv[0], "pgrep") == 0)
+		return sh_builtin_pgrep(argc, argv);
+
+	if (strcmp(argv[0], "pidof") == 0)
+		return sh_builtin_pidof(argc, argv);
+
+	if (strcmp(argv[0], "pinfo") == 0)
+		return sh_builtin_pinfo(argc, argv);
+
 	if (strcmp(argv[0], "ping") == 0)
 		return sh_builtin_ping(argc, argv);
+
+	if (strcmp(argv[0], "ps") == 0)
+		return sh_builtin_ps(argc, argv);
 
 	if (strcmp(argv[0], "printf") == 0)
 		return sh_builtin_printf(argc, argv);

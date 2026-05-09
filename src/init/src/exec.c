@@ -95,7 +95,6 @@ static const char *env_get(const struct env *env, const char *name)
 	return NULL;
 }
 
-
 static int env_unset(struct env *env, const char *name)
 {
 	size_t name_len;
@@ -149,8 +148,8 @@ static int builtin_mkdir(const struct command *cmd)
 	}
 
 	if (cmd->argc == 3 && parse_ulong_arg(cmd->argv[2], 8, &mode) < 0) {
-		fprintf(stderr, "init: line %d: invalid mkdir mode: %s\n",
-				cmd->line, cmd->argv[2]);
+		fprintf(stderr, "init: line %d: invalid mkdir mode: %s\n", cmd->line,
+				cmd->argv[2]);
 		return -1;
 	}
 
@@ -158,8 +157,8 @@ static int builtin_mkdir(const struct command *cmd)
 		if (errno == EEXIST)
 			return 0;
 
-		fprintf(stderr, "init: line %d: mkdir(%s) failed: %s\n",
-				cmd->line, cmd->argv[1], strerror(errno));
+		fprintf(stderr, "init: line %d: mkdir(%s) failed: %s\n", cmd->line,
+				cmd->argv[1], strerror(errno));
 		return -1;
 	}
 
@@ -175,8 +174,8 @@ static int builtin_rmdir(const struct command *cmd)
 	}
 
 	if (rmdir(cmd->argv[1]) < 0) {
-		fprintf(stderr, "init: line %d: rmdir(%s) failed: %s\n",
-				cmd->line, cmd->argv[1], strerror(errno));
+		fprintf(stderr, "init: line %d: rmdir(%s) failed: %s\n", cmd->line,
+				cmd->argv[1], strerror(errno));
 		return -1;
 	}
 
@@ -192,8 +191,8 @@ static int builtin_unlink(const struct command *cmd)
 	}
 
 	if (unlink(cmd->argv[1]) < 0) {
-		fprintf(stderr, "init: line %d: unlink(%s) failed: %s\n",
-				cmd->line, cmd->argv[1], strerror(errno));
+		fprintf(stderr, "init: line %d: unlink(%s) failed: %s\n", cmd->line,
+				cmd->argv[1], strerror(errno));
 		return -1;
 	}
 
@@ -212,8 +211,8 @@ static int builtin_touch(const struct command *cmd)
 
 	fd = open(cmd->argv[1], O_WRONLY | O_CREAT, 0644);
 	if (fd < 0) {
-		fprintf(stderr, "init: line %d: touch(%s) failed: %s\n",
-				cmd->line, cmd->argv[1], strerror(errno));
+		fprintf(stderr, "init: line %d: touch(%s) failed: %s\n", cmd->line,
+				cmd->argv[1], strerror(errno));
 		return -1;
 	}
 
@@ -232,14 +231,14 @@ static int builtin_chmod(const struct command *cmd)
 	}
 
 	if (parse_ulong_arg(cmd->argv[1], 8, &mode) < 0) {
-		fprintf(stderr, "init: line %d: invalid chmod mode: %s\n",
-				cmd->line, cmd->argv[1]);
+		fprintf(stderr, "init: line %d: invalid chmod mode: %s\n", cmd->line,
+				cmd->argv[1]);
 		return -1;
 	}
 
 	if (chmod(cmd->argv[2], (mode_t)mode) < 0) {
-		fprintf(stderr, "init: line %d: chmod(%s) failed: %s\n",
-				cmd->line, cmd->argv[2], strerror(errno));
+		fprintf(stderr, "init: line %d: chmod(%s) failed: %s\n", cmd->line,
+				cmd->argv[2], strerror(errno));
 		return -1;
 	}
 
@@ -252,7 +251,8 @@ static int builtin_chown(const struct command *cmd)
 	unsigned long gid;
 
 	if (cmd->argc != 4) {
-		fprintf(stderr, "init: line %d: chown usage: chown <uid> <gid> <path>\n",
+		fprintf(stderr,
+				"init: line %d: chown usage: chown <uid> <gid> <path>\n",
 				cmd->line);
 		return -1;
 	}
@@ -264,8 +264,8 @@ static int builtin_chown(const struct command *cmd)
 	}
 
 	if (chown(cmd->argv[3], (uid_t)uid, (gid_t)gid) < 0) {
-		fprintf(stderr, "init: line %d: chown(%s) failed: %s\n",
-				cmd->line, cmd->argv[3], strerror(errno));
+		fprintf(stderr, "init: line %d: chown(%s) failed: %s\n", cmd->line,
+				cmd->argv[3], strerror(errno));
 		return -1;
 	}
 
@@ -282,8 +282,8 @@ static int builtin_pwd(const struct command *cmd)
 	}
 
 	if (!getcwd(buf, sizeof(buf))) {
-		fprintf(stderr, "init: line %d: getcwd failed: %s\n",
-				cmd->line, strerror(errno));
+		fprintf(stderr, "init: line %d: getcwd failed: %s\n", cmd->line,
+				strerror(errno));
 		return -1;
 	}
 
@@ -358,10 +358,28 @@ static int mount_or_report(const char *source, const char *target,
 	return 0;
 }
 
-static int run_program(struct runtime *rt, char **argv)
+static int wait_for_child(pid_t pid)
+{
+	int status = 0;
+
+	for (;;) {
+		pid_t got = waitpid(pid, &status, 0);
+
+		if (got == pid)
+			return status;
+
+		if (got < 0 && errno == EINTR)
+			continue;
+
+		fprintf(stderr, "init: waitpid(%ld) failed: %s\n", (long)pid,
+				strerror(errno));
+		return -1;
+	}
+}
+
+static pid_t spawn_program(struct runtime *rt, char **argv)
 {
 	pid_t pid;
-	int status;
 	char **envp;
 
 	envp = envp_make(&rt->env);
@@ -389,13 +407,26 @@ static int run_program(struct runtime *rt, char **argv)
 	}
 
 	free(envp);
+	return pid;
+}
 
-	if (waitpid(pid, &status, 0) < 0) {
-		fprintf(stderr, "init: waitpid failed: %s\n", strerror(errno));
+static int run_program(struct runtime *rt, char **argv)
+{
+	pid_t pid = spawn_program(rt, argv);
+	if (pid < 0)
 		return -1;
-	}
 
-	return status;
+	return wait_for_child(pid);
+}
+
+static int start_program(struct runtime *rt, char **argv)
+{
+	pid_t pid = spawn_program(rt, argv);
+	if (pid < 0)
+		return -1;
+
+	printf("init: started pid %ld: %s\n", (long)pid, argv[0]);
+	return 0;
 }
 
 static int exec_program(struct runtime *rt, char **argv)
@@ -421,6 +452,32 @@ static int exec_program(struct runtime *rt, char **argv)
 
 	free(envp);
 	return -1;
+}
+
+void init_reap_forever(void)
+{
+	for (;;) {
+		int status = 0;
+		pid_t pid = waitpid(-1, &status, 0);
+
+		if (pid > 0) {
+			if (WIFEXITED(status)) {
+				printf("init: reaped pid %ld status %d\n", (long)pid,
+					   WEXITSTATUS(status));
+			} else if (WIFSIGNALED(status)) {
+				printf("init: reaped pid %ld signal %d\n", (long)pid,
+					   WTERMSIG(status));
+			} else {
+				printf("init: reaped pid %ld\n", (long)pid);
+			}
+			continue;
+		}
+
+		if (pid < 0 && errno == EINTR)
+			continue;
+
+		fprintf(stderr, "init: waitpid(-1) failed: %s\n", strerror(errno));
+	}
 }
 
 static int execute_include(struct runtime *rt, const char *path)
@@ -581,6 +638,27 @@ static int execute_command(struct runtime *rt, const struct command *cmd)
 		}
 
 		return run_program(rt, &argv[1]);
+	}
+
+	if (strcmp(argv[0], "spawn") == 0 || strcmp(argv[0], "start") == 0) {
+		if (cmd->argc < 2) {
+			fprintf(stderr,
+					"init: line %d: spawn usage: spawn <program> [args...]\n",
+					cmd->line);
+			return -1;
+		}
+
+		return start_program(rt, &argv[1]);
+	}
+
+	if (strcmp(argv[0], "wait") == 0 || strcmp(argv[0], "reap") == 0) {
+		if (cmd->argc != 1) {
+			fprintf(stderr, "init: line %d: wait usage: wait\n", cmd->line);
+			return -1;
+		}
+
+		printf("init: entering PID 1 reaper loop\n");
+		init_reap_forever();
 	}
 
 	if (strcmp(argv[0], "exec") == 0) {

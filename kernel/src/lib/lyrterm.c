@@ -48,6 +48,8 @@ static uint32_t default_bg;
 static uint32_t current_fg;
 static uint32_t current_bg;
 
+static bool reverse_video;
+
 typedef struct {
 	uint32_t codepoint;
 	uint32_t fg;
@@ -189,6 +191,16 @@ static inline void write_pixel(uint32_t x, uint32_t y, uint32_t packed)
 	}
 }
 
+static inline uint32_t effective_fg(void)
+{
+	return reverse_video ? current_bg : current_fg;
+}
+
+static inline uint32_t effective_bg(void)
+{
+	return reverse_video ? current_fg : current_bg;
+}
+
 static inline uint32_t term_x0(void)
 {
 	return _LYRTERM_MARGIN_X;
@@ -327,7 +339,7 @@ static void clear_line_from_cursor(void)
 	uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
 
 	fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
-			  _LYRTERM_LINE_HEIGHT, current_bg);
+			  _LYRTERM_LINE_HEIGHT, effective_bg());
 }
 
 static void cursor_set_pos(uint32_t row, uint32_t col)
@@ -446,6 +458,7 @@ static void ansi_handle_sgr(int *params, int nparams)
 	if (nparams == 0) {
 		current_fg = default_fg;
 		current_bg = default_bg;
+		reverse_video = false;
 		return;
 	}
 
@@ -454,6 +467,15 @@ static void ansi_handle_sgr(int *params, int nparams)
 
 		if (p == 0) {
 			current_fg = default_fg;
+			current_bg = default_bg;
+			reverse_video = false;
+		} else if (p == 7) {
+			reverse_video = true;
+		} else if (p == 27) {
+			reverse_video = false;
+		} else if (p == 39) {
+			current_fg = default_fg;
+		} else if (p == 49) {
 			current_bg = default_bg;
 		} else if (p >= 30 && p <= 37) {
 			current_fg = pack_color(ansi_colors[p - 30]);
@@ -493,12 +515,12 @@ static void ansi_handle_ed(int *params, int nparams)
 		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
 
 		fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
-				  _LYRTERM_LINE_HEIGHT, current_bg);
+				  _LYRTERM_LINE_HEIGHT, effective_bg());
 
 		if (y + _LYRTERM_LINE_HEIGHT < term_y0() + term_height()) {
 			fill_rect(term_x0(), y + _LYRTERM_LINE_HEIGHT, term_width(),
 					  term_y0() + term_height() - (y + _LYRTERM_LINE_HEIGHT),
-					  current_bg);
+					  effective_bg());
 		}
 	}
 }
@@ -509,7 +531,8 @@ static void ansi_handle_el(int *params, int nparams)
 
 	if (mode == 2) {
 		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
-		fill_rect(term_x0(), y, term_width(), _LYRTERM_LINE_HEIGHT, current_bg);
+		fill_rect(term_x0(), y, term_width(), _LYRTERM_LINE_HEIGHT,
+				  effective_bg());
 	} else {
 		clear_line_from_cursor();
 	}
@@ -707,6 +730,7 @@ void lyrterm_apply_theme(const lyrterm_theme_t *theme)
 	default_bg = pack_color(theme->bg);
 	current_fg = default_fg;
 	current_bg = default_bg;
+	reverse_video = false;
 }
 
 void lyrterm_set_colors(uint32_t fg, uint32_t bg)
@@ -715,6 +739,7 @@ void lyrterm_set_colors(uint32_t fg, uint32_t bg)
 	default_bg = pack_color(bg);
 	current_fg = default_fg;
 	current_bg = default_bg;
+	reverse_video = false;
 }
 
 static void tab_advance(void)
@@ -745,9 +770,11 @@ static void lyrterm_putcp_raw_locked(uint32_t codepoint)
 	default:
 		if (codepoint < 0x20)
 			break;
-		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, codepoint, current_fg,
-			   current_bg);
-		cell_set(cell_col(), cell_row(), codepoint, current_fg, current_bg);
+		uint32_t fg = effective_fg();
+		uint32_t bg = effective_bg();
+
+		drawch(cursor_x, cursor_y - _LYRTERM_FONT_ASCENT, codepoint, fg, bg);
+		cell_set(cell_col(), cell_row(), codepoint, fg, bg);
 		advance_cursor();
 		break;
 	}

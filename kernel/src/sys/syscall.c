@@ -534,14 +534,10 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 	if (!thread || !thread->process)
 		return VFS_ERR_BADF;
 
-	uint64_t user_ret = frame->rdi;
-	int fd = (int)frame->rsi;
-	int cmd = (int)frame->rdx;
-	long arg = (long)frame->r10;
+	int fd = (int)frame->rdi;
+	int cmd = (int)frame->rsi;
+	long arg = (long)frame->rdx;
 	pcb_t *process = thread->process;
-
-	if (!user_ret || !syscall_user_range_ok(user_ret, sizeof(long)))
-		return VFS_ERR_INVAL;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !process->files[fd])
 		return VFS_ERR_BADF;
@@ -653,8 +649,7 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 	if (err != VFS_OK)
 		return err;
 
-	*(long *)user_ret = ret;
-	return VFS_OK;
+	return ret;
 }
 
 static long sys_stat_handler(interrupt_frame_t *frame)
@@ -1001,6 +996,21 @@ static long sys_getcwd_handler(interrupt_frame_t *frame)
 /* Process and VM syscalls                                                    */
 /* -------------------------------------------------------------------------- */
 
+static const char *exec_comm_from_path(const char *path)
+{
+	const char *base = path;
+
+	if (!path)
+		return "process";
+
+	for (const char *p = path; *p; p++) {
+		if (*p == '/')
+			base = p + 1;
+	}
+
+	return base[0] ? base : path;
+}
+
 static long sys_execve_handler(interrupt_frame_t *frame)
 {
 	tcb_t *thread = sched_current();
@@ -1100,9 +1110,13 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 		path, image.entry, image.program_entry, image.program_phdr,
 		image.program_phnum, user_rsp);
 
+	const char *comm = exec_comm_from_path(path);
+
 	vas_t *old_vas = thread->process->vas;
 	thread->process->vas = new_vas;
 	thread->process->pml4 = new_vas->pml4;
+	sched_process_set_name(thread->process, comm);
+	sched_thread_set_name(thread, comm);
 	thread->fs_base = 0;
 	thread->user_entry_rsp = user_rsp;
 
@@ -1215,6 +1229,46 @@ static long sys_mprotect_handler(interrupt_frame_t *frame)
 static long sys_exit_handler(interrupt_frame_t *frame)
 {
 	return (long)(uintptr_t)sched_syscall_exit(frame, (int)frame->rdi);
+}
+
+static long sys_waitpid_handler(interrupt_frame_t *frame)
+{
+	pcb_t *process = syscall_current_process();
+	pid_t pid = (pid_t)frame->rdi;
+	uint64_t status_user = frame->rsi;
+	int options = (int)frame->rdx;
+
+	if (!process)
+		return VFS_ERR_BADF;
+
+	if (status_user && !syscall_user_range_ok(status_user, sizeof(int)))
+		return VFS_ERR_INVAL;
+
+	for (;;) {
+		pid_t waited = 0;
+		int status = 0;
+		int r = sched_process_wait(process, pid, options, &waited, &status);
+
+		if (r == VFS_OK) {
+			if (status_user && waited != 0)
+				*(int *)status_user = status;
+
+			return waited;
+		}
+
+		if (r == -EAGAIN) {
+			time_timeout_t timeout;
+			int tr = time_timeout_after_ms(-1, &timeout);
+
+			if (tr != 0)
+				return tr;
+
+			time_sleep_until_interrupt_or_timeout(&timeout);
+			continue;
+		}
+
+		return r;
+	}
 }
 
 static long sys_fork_handler(interrupt_frame_t *frame)
@@ -2261,6 +2315,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_EXIT] = sys_exit_handler,
 	[SYS_FORK] = sys_fork_handler,
 	[SYS_EXECVE] = sys_execve_handler,
+	[SYS_WAITPID] = sys_waitpid_handler,
 
 	[SYS_CHMOD] = sys_chmod_handler,
 	[SYS_CHOWN] = sys_chown_handler,

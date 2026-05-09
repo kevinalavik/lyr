@@ -65,6 +65,7 @@ void script_destroy(struct script *script);
 
 /* executor */
 int execute_script(struct runtime *rt, const struct script *script);
+void init_reap_forever(void);
 void runtime_init(struct runtime *rt);
 void runtime_destroy(struct runtime *rt);
 

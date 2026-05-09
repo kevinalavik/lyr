@@ -3,6 +3,7 @@
 #include <fs/ext2.h>
 #include <fs/devfs.h>
 #include <fs/tmpfs.h>
+#include <fs/procfs.h>
 #include <fs/vfs.h>
 #include <lib/string.h>
 
@@ -58,6 +59,13 @@ int fs_mount_spec(const char *source, const char *target, const char *fstype,
 		r = vfs_mount(target, root, &vfs_root_cred);
 		vfs_node_release(root);
 		return r;
+	}
+
+	if (strcmp(fstype, "procfs") == 0 || strcmp(fstype, "proc") == 0) {
+		int r = ensure_mountpoint(target);
+		if (r != VFS_OK)
+			return r;
+		return procfs_mount(target);
 	}
 
 	if (strcmp(fstype, "ext2") == 0) {

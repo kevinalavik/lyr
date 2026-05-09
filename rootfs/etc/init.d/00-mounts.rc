@@ -1,5 +1,7 @@
 echo "Mounting filesystems"
 mkdir /dev
 mkdir /tmp
+mkdir /proc
 mount devfs /dev devfs
 mount tmpfs /tmp tmpfs
+mount procfs /proc procfs

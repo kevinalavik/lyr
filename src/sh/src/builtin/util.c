@@ -590,7 +590,8 @@ int sh_is_builtin_name(const char *name)
 	static const char *const builtin_names[] = {
 		"cat",	  "cd",		"clear",   "echo",	  "env",  "exit",  "export",
 		"false",  "help",	"hexdump", "history", "id",	  "ls",	   "mkdir",
-		"ping",	  "printf", "pwd",	   "read",	  "rm",	  "rmdir", "set",
+		"pgrep",  "pidof",  "pinfo",   "ping",   "printf", "ps",    "pwd",
+		"read",   "rm",     "rmdir",   "set",
 		"source", ".",		"stat",	   "touch",	  "true", "type",  "unset",
 		"which",  "whoami", "nfetch",  NULL,
 	};

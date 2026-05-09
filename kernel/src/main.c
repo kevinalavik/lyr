@@ -33,6 +33,7 @@
 #include <fs/tmpfs.h>
 #include <drv/driver.h>
 #include <fs/devfs.h>
+#include <fs/procfs.h>
 #include <ipc/ipc.h>
 #include <net/net.h>
 #include <net/socket.h>
@@ -195,6 +196,9 @@ void lyr_entry(void)
 	assert(console_init() == VFS_OK);
 	log_info("entry", "console ok");
 	assert(vfs_root() == root);
+	assert(vfs_mkdir("/proc", 0755, &vfs_root_cred) == VFS_OK);
+	assert(procfs_mount("/proc") == VFS_OK);
+	log_info("entry", "procfs ok");
 	log_info("entry", "VFS ok");
 	vfs_tmpfs_test(_lyr_kernel_vas);
 	assert(initrd_load_from_limine(module_request.response) == VFS_OK);

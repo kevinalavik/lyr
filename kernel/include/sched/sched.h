@@ -42,6 +42,8 @@ typedef struct pcb {
 	vas_t *vas;
 	bool owns_vas;
 	atomic_bool dying;
+	bool zombie;
+	int exit_status;
 	spinlock_t lock;
 	struct tcb *threads;
 	atomic_uint thread_count;
@@ -57,6 +59,22 @@ typedef struct pcb {
 	uint32_t fd_flags[SCHED_FILE_MAX];
 	struct pcb *next;
 } pcb_t;
+
+
+typedef struct sched_process_info {
+	pid_t pid;
+	pid_t ppid;
+	char name[32];
+	bool zombie;
+	bool dying;
+	int exit_status;
+	unsigned thread_count;
+	vfs_uid_t ruid;
+	vfs_uid_t euid;
+	vfs_gid_t rgid;
+	vfs_gid_t egid;
+	char cwd[SCHED_CWD_MAX];
+} sched_process_info_t;
 
 typedef struct tcb {
 	tid_t tid;
@@ -97,11 +115,17 @@ tcb_t *sched_fork_thread(pcb_t *process, const char *name,
 
 tcb_t *sched_current(void);
 bool sched_process_exists(pid_t pid);
+bool sched_process_get_info(pid_t pid, sched_process_info_t *out);
+bool sched_process_get_nth(size_t index, sched_process_info_t *out);
+int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
+					   int *status_out);
 const char *sched_process_cwd(const pcb_t *process);
 int sched_process_setcwd(pcb_t *process, const char *path);
 void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src);
 const vfs_cred_t *sched_process_cred(const pcb_t *process);
 void sched_process_set_parent(pcb_t *process, pid_t ppid);
+void sched_process_set_name(pcb_t *process, const char *name);
+void sched_thread_set_name(tcb_t *thread, const char *name);
 void sched_process_copy_ids(pcb_t *dst, const pcb_t *src);
 int sched_process_setuid(pcb_t *process, vfs_uid_t uid);
 int sched_process_setgid(pcb_t *process, vfs_gid_t gid);
