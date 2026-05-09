@@ -1,2 +1,6 @@
-echo
+# display motd
+clear
 cat /etc/motd
+
+# load the correct map (swedish for now)
+loadkeys sv

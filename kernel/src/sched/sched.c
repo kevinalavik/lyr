@@ -1059,6 +1059,13 @@ static void process_copy_info_locked(const pcb_t *process, sched_process_info_t 
 	out->name[sizeof(out->name) - 1] = '\0';
 	out->zombie = process->zombie;
 	out->dying = atomic_load_explicit(&process->dying, memory_order_acquire);
+	out->kernel = process->vas == _lyr_kernel_vas || !process->owns_vas;
+	/*
+	 * Unix-like supervision marker: user processes with a userspace parent
+	 * are waitable/reapable by that parent, normally init(1), a shell, or a
+	 * service supervisor. Kernel/root tasks remain unsupervised.
+	 */
+	out->supervised = !out->kernel && process->ppid > 0;
 	out->exit_status = process->exit_status;
 	out->thread_count = atomic_load_explicit(&process->thread_count,
 										   memory_order_acquire);

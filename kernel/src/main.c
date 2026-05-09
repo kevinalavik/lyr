@@ -39,6 +39,7 @@
 #include <net/socket.h>
 #include <sys/syscall.h>
 #include <dev/console.h>
+#include <dev/kbd.h>
 
 #ifndef LYR_VERSION
 #define LYR_VERSION "unknown"
@@ -261,6 +262,9 @@ void lyr_entry(void)
 
 	assert(driver_manager_init() == VFS_OK);
 	log_info("entry", "Driver manager ok");
+
+	assert(kbd_init() == VFS_OK);
+	log_info("entry", "Keyboard manager ok");
 
 #if _DEBUG_INIT
 	init_smoke_test();

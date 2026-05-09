@@ -1,6 +1,7 @@
 #include <cpu/instr.h>
 #include <dev/console.h>
 #include <dev/device.h>
+#include <dev/kbd.h>
 #include <drv/driver.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
@@ -50,168 +51,167 @@
 #define PS2_MOUSE_NACK 0xFE
 
 #define PS2_KBD_EXT 0xE0
+#define PS2_KBD_BRK 0xF0
 
-#define KEYMAP_SIZE 128
+#define SC2_SIZE 128
 
-static const uint8_t keymap_set2_normal[KEYMAP_SIZE] = {
-	[0x0d] = 9,
-	[0x0e] = '`',
-	[0x15] = 'q',
-	[0x16] = '1',
-	[0x1a] = 'z',
-	[0x1b] = 's',
-	[0x1c] = 'a',
-	[0x1d] = 'w',
-	[0x1e] = '2',
-	[0x21] = 'c',
-	[0x22] = 'x',
-	[0x23] = 'd',
-	[0x24] = 'e',
-	[0x25] = '4',
-	[0x26] = '3',
-	[0x29] = ' ',
-	[0x2a] = 'v',
-	[0x2b] = 'f',
-	[0x2c] = 't',
-	[0x2d] = 'r',
-	[0x2e] = '5',
-	[0x31] = 'n',
-	[0x32] = 'b',
-	[0x33] = 'h',
-	[0x34] = 'g',
-	[0x35] = 'y',
-	[0x36] = '6',
-	[0x3a] = 'm',
-	[0x3b] = 'j',
-	[0x3c] = 'u',
-	[0x3d] = '7',
-	[0x3e] = '8',
-	[0x41] = ',',
-	[0x42] = 'k',
-	[0x43] = 'i',
-	[0x44] = 'o',
-	[0x45] = '0',
-	[0x46] = '9',
-	[0x49] = '.',
-	[0x4a] = '/',
-	[0x4b] = 'l',
-	[0x4c] = ';',
-	[0x4d] = 'p',
-	[0x4e] = '-',
-	[0x52] = '\'',
-	[0x54] = '[',
-	[0x55] = '=',
-	[0x5a] = 13,
-	[0x5b] = ']',
-	[0x5d] = '\\',
-	[0x66] = 8,
-	[0x76] = 27,
+static const uint8_t sc2_normal[SC2_SIZE] = {
+	/* 0x00 */ 0,
+	/* 0x01 */ LYR_KEY_F9,
+	/* 0x02 */ 0,
+	/* 0x03 */ LYR_KEY_F5,
+	/* 0x04 */ LYR_KEY_F3,
+	/* 0x05 */ LYR_KEY_F1,
+	/* 0x06 */ LYR_KEY_F2,
+	/* 0x07 */ LYR_KEY_F12,
+	/* 0x08 */ 0,
+	/* 0x09 */ LYR_KEY_F10,
+	/* 0x0A */ LYR_KEY_F8,
+	/* 0x0B */ LYR_KEY_F6,
+	/* 0x0C */ LYR_KEY_F4,
+	/* 0x0D */ LYR_KEY_TAB,
+	/* 0x0E */ LYR_KEY_GRAVE,
+	/* 0x0F */ 0,
+	/* 0x10 */ 0,
+	/* 0x11 */ LYR_KEY_LEFTALT,
+	/* 0x12 */ LYR_KEY_LEFTSHIFT,
+	/* 0x13 */ 0,
+	/* 0x14 */ LYR_KEY_LEFTCTRL,
+	/* 0x15 */ LYR_KEY_Q,
+	/* 0x16 */ LYR_KEY_1,
+	/* 0x17 */ 0,
+	/* 0x18 */ 0,
+	/* 0x19 */ 0,
+	/* 0x1A */ LYR_KEY_Z,
+	/* 0x1B */ LYR_KEY_S,
+	/* 0x1C */ LYR_KEY_A,
+	/* 0x1D */ LYR_KEY_W,
+	/* 0x1E */ LYR_KEY_2,
+	/* 0x1F */ 0,
+	/* 0x20 */ 0,
+	/* 0x21 */ LYR_KEY_C,
+	/* 0x22 */ LYR_KEY_X,
+	/* 0x23 */ LYR_KEY_D,
+	/* 0x24 */ LYR_KEY_E,
+	/* 0x25 */ LYR_KEY_4,
+	/* 0x26 */ LYR_KEY_3,
+	/* 0x27 */ 0,
+	/* 0x28 */ 0,
+	/* 0x29 */ LYR_KEY_SPACE,
+	/* 0x2A */ LYR_KEY_V,
+	/* 0x2B */ LYR_KEY_F,
+	/* 0x2C */ LYR_KEY_T,
+	/* 0x2D */ LYR_KEY_R,
+	/* 0x2E */ LYR_KEY_5,
+	/* 0x2F */ 0,
+	/* 0x30 */ 0,
+	/* 0x31 */ LYR_KEY_N,
+	/* 0x32 */ LYR_KEY_B,
+	/* 0x33 */ LYR_KEY_H,
+	/* 0x34 */ LYR_KEY_G,
+	/* 0x35 */ LYR_KEY_Y,
+	/* 0x36 */ LYR_KEY_6,
+	/* 0x37 */ 0,
+	/* 0x38 */ 0,
+	/* 0x39 */ 0,
+	/* 0x3A */ LYR_KEY_M,
+	/* 0x3B */ LYR_KEY_J,
+	/* 0x3C */ LYR_KEY_U,
+	/* 0x3D */ LYR_KEY_7,
+	/* 0x3E */ LYR_KEY_8,
+	/* 0x3F */ 0,
+	/* 0x40 */ 0,
+	/* 0x41 */ LYR_KEY_COMMA,
+	/* 0x42 */ LYR_KEY_K,
+	/* 0x43 */ LYR_KEY_I,
+	/* 0x44 */ LYR_KEY_O,
+	/* 0x45 */ LYR_KEY_0,
+	/* 0x46 */ LYR_KEY_9,
+	/* 0x47 */ 0,
+	/* 0x48 */ 0,
+	/* 0x49 */ LYR_KEY_DOT,
+	/* 0x4A */ LYR_KEY_SLASH,
+	/* 0x4B */ LYR_KEY_L,
+	/* 0x4C */ LYR_KEY_SEMICOLON,
+	/* 0x4D */ LYR_KEY_P,
+	/* 0x4E */ LYR_KEY_MINUS,
+	/* 0x4F */ 0,
+	/* 0x50 */ 0,
+	/* 0x51 */ 0,
+	/* 0x52 */ LYR_KEY_APOSTROPHE,
+	/* 0x53 */ 0,
+	/* 0x54 */ LYR_KEY_LEFTBRACE,
+	/* 0x55 */ LYR_KEY_EQUAL,
+	/* 0x56 */ 0,
+	/* 0x57 */ 0,
+	/* 0x58 */ LYR_KEY_CAPSLOCK,
+	/* 0x59 */ LYR_KEY_RIGHTSHIFT,
+	/* 0x5A */ LYR_KEY_ENTER,
+	/* 0x5B */ LYR_KEY_RIGHTBRACE,
+	/* 0x5C */ 0,
+	/* 0x5D */ LYR_KEY_BACKSLASH,
+	/* 0x5E */ 0,
+	/* 0x5F */ 0,
+	/* 0x60 */ 0,
+	/* 0x61 */ 0,
+	/* 0x62 */ 0,
+	/* 0x63 */ 0,
+	/* 0x64 */ 0,
+	/* 0x65 */ 0,
+	/* 0x66 */ LYR_KEY_BACKSPACE,
+	/* 0x67 */ 0,
+	/* 0x68 */ 0,
+	/* 0x69 */ LYR_KEY_KP1,
+	/* 0x6A */ 0,
+	/* 0x6B */ LYR_KEY_KP4,
+	/* 0x6C */ LYR_KEY_KP7,
+	/* 0x6D */ 0,
+	/* 0x6E */ 0,
+	/* 0x6F */ 0,
+	/* 0x70 */ LYR_KEY_KP0,
+	/* 0x71 */ LYR_KEY_KPDOT,
+	/* 0x72 */ LYR_KEY_KP2,
+	/* 0x73 */ LYR_KEY_KP5,
+	/* 0x74 */ LYR_KEY_KP6,
+	/* 0x75 */ LYR_KEY_KP8,
+	/* 0x76 */ LYR_KEY_ESC,
+	/* 0x77 */ LYR_KEY_NUMLOCK,
+	/* 0x78 */ LYR_KEY_F11,
+	/* 0x79 */ LYR_KEY_KPPLUS,
+	/* 0x7A */ LYR_KEY_KP3,
+	/* 0x7B */ LYR_KEY_KPMINUS,
+	/* 0x7C */ LYR_KEY_KPASTERISK,
+	/* 0x7D */ LYR_KEY_KP9,
+	/* 0x7E */ LYR_KEY_SCROLLLOCK,
+	/* 0x7F */ 0,
 };
 
-static const uint8_t keymap_set2_shift[KEYMAP_SIZE] = {
-	[0x0d] = 9,
-	[0x0e] = '~',
-	[0x15] = 'Q',
-	[0x16] = '!',
-	[0x1a] = 'Z',
-	[0x1b] = 'S',
-	[0x1c] = 'A',
-	[0x1d] = 'W',
-	[0x1e] = '@',
-	[0x21] = 'C',
-	[0x22] = 'X',
-	[0x23] = 'D',
-	[0x24] = 'E',
-	[0x25] = '$',
-	[0x26] = '#',
-	[0x29] = ' ',
-	[0x2a] = 'V',
-	[0x2b] = 'F',
-	[0x2c] = 'T',
-	[0x2d] = 'R',
-	[0x2e] = '%',
-	[0x31] = 'N',
-	[0x32] = 'B',
-	[0x33] = 'H',
-	[0x34] = 'G',
-	[0x35] = 'Y',
-	[0x36] = '^',
-	[0x3a] = 'M',
-	[0x3b] = 'J',
-	[0x3c] = 'U',
-	[0x3d] = '&',
-	[0x3e] = '*',
-	[0x41] = '<',
-	[0x42] = 'K',
-	[0x43] = 'I',
-	[0x44] = 'O',
-	[0x45] = ')',
-	[0x46] = '(',
-	[0x49] = '>',
-	[0x4a] = '?',
-	[0x4b] = 'L',
-	[0x4c] = ':',
-	[0x4d] = 'P',
-	[0x4e] = '_',
-	[0x52] = '"',
-	[0x54] = '{',
-	[0x55] = '+',
-	[0x5a] = 13,
-	[0x5b] = '}',
-	[0x5d] = '|',
-	[0x66] = 8,
-	[0x76] = 27,
+static const uint8_t sc2_extended[SC2_SIZE] = {
+	[0x11] = LYR_KEY_RIGHTALT, [0x14] = LYR_KEY_RIGHTCTRL,
+	[0x6B] = LYR_KEY_LEFT,	   [0x6C] = LYR_KEY_HOME,
+	[0x70] = LYR_KEY_INSERT,   [0x71] = LYR_KEY_DELETE,
+	[0x72] = LYR_KEY_DOWN,	   [0x74] = LYR_KEY_RIGHT,
+	[0x75] = LYR_KEY_UP,	   [0x7A] = LYR_KEY_PAGEDOWN,
+	[0x7D] = LYR_KEY_PAGEUP,
 };
 
-#define KEYBUFFER_SIZE 256
+#define MOUSEBUFFER_SIZE 256
 
 typedef struct {
 	volatile uint8_t head;
 	volatile uint8_t tail;
 	volatile uint16_t count;
-	uint8_t buffer[KEYBUFFER_SIZE];
-} keybuffer_t;
-
-typedef struct {
-	volatile uint8_t head;
-	volatile uint8_t tail;
-	volatile uint16_t count;
-	uint8_t buffer[KEYBUFFER_SIZE];
+	uint8_t buffer[MOUSEBUFFER_SIZE];
 } mousebuffer_t;
 
-static keybuffer_t keybuf;
 static mousebuffer_t mousebuf;
-static int shift_pressed;
-static int ctrl_pressed;
-static int alt_pressed;
-static int extended_code;
-static int break_pending;
-
-static void keybuffer_put(uint8_t scancode)
-{
-	if (keybuf.count >= KEYBUFFER_SIZE)
-		return;
-	keybuf.buffer[keybuf.head++] = scancode;
-	keybuf.head %= KEYBUFFER_SIZE;
-	keybuf.count++;
-}
-
-static int keybuffer_get(uint8_t *out)
-{
-	if (keybuf.count == 0)
-		return 0;
-	*out = keybuf.buffer[keybuf.tail++];
-	keybuf.tail %= KEYBUFFER_SIZE;
-	keybuf.count--;
-	return 1;
-}
 
 static void mousebuffer_put(uint8_t b)
 {
-	if (mousebuf.count >= KEYBUFFER_SIZE)
+	if (mousebuf.count >= MOUSEBUFFER_SIZE)
 		return;
 	mousebuf.buffer[mousebuf.head++] = b;
-	mousebuf.head %= KEYBUFFER_SIZE;
+	mousebuf.head %= MOUSEBUFFER_SIZE;
 	mousebuf.count++;
 }
 
@@ -220,7 +220,7 @@ static int mousebuffer_get(uint8_t *out)
 	if (mousebuf.count == 0)
 		return 0;
 	*out = mousebuf.buffer[mousebuf.tail++];
-	mousebuf.tail %= KEYBUFFER_SIZE;
+	mousebuf.tail %= MOUSEBUFFER_SIZE;
 	mousebuf.count--;
 	return 1;
 }
@@ -228,8 +228,7 @@ static int mousebuffer_get(uint8_t *out)
 static int ps2_wait_input(void)
 {
 	for (int i = 0; i < 100000; i++) {
-		uint8_t status = inb(PS2_STATUS_PORT);
-		if (!(status & PS2_STATUS_IN_BUF))
+		if (!(inb(PS2_STATUS_PORT) & PS2_STATUS_IN_BUF))
 			return 0;
 	}
 	return -1;
@@ -238,8 +237,7 @@ static int ps2_wait_input(void)
 static int ps2_wait_output(void)
 {
 	for (int i = 0; i < 100000; i++) {
-		uint8_t status = inb(PS2_STATUS_PORT);
-		if (status & PS2_STATUS_OUT_BUF)
+		if (inb(PS2_STATUS_PORT) & PS2_STATUS_OUT_BUF)
 			return 0;
 	}
 	return -1;
@@ -266,8 +264,7 @@ static void ps2_data_write(uint8_t data)
 static void ps2_flush_output(void)
 {
 	for (int i = 0; i < 256; i++) {
-		uint8_t status = inb(PS2_STATUS_PORT);
-		if (!(status & PS2_STATUS_OUT_BUF))
+		if (!(inb(PS2_STATUS_PORT) & PS2_STATUS_OUT_BUF))
 			break;
 		(void)inb(PS2_DATA_PORT);
 	}
@@ -310,7 +307,6 @@ static int ps2_device_command(int mouse, uint8_t cmd, uint8_t *response)
 		} else if (ps2_write_device(cmd) != 0) {
 			return -1;
 		}
-
 		if (ps2_read_byte(&ack) != 0)
 			return -1;
 		if (ack == PS2_KBD_ACK) {
@@ -326,46 +322,40 @@ static int ps2_device_command(int mouse, uint8_t cmd, uint8_t *response)
 	return -1;
 }
 
-static void keyboard_handle(uint8_t scancode)
+static int sc2_extended_mode;
+static int sc2_break_pending;
+
+static void keyboard_handle(uint8_t byte)
 {
-	if (scancode == 0xE0) {
-		extended_code = 1;
+	if (byte == PS2_KBD_EXT) {
+		sc2_extended_mode = 1;
+		return;
+	}
+	if (byte == PS2_KBD_BRK) {
+		sc2_break_pending = 1;
 		return;
 	}
 
-	if (scancode == 0xF0) {
-		break_pending = 1;
+	int is_break = sc2_break_pending;
+	int is_ext = sc2_extended_mode;
+	sc2_break_pending = 0;
+	sc2_extended_mode = 0;
+
+	if (byte >= SC2_SIZE)
 		return;
-	}
 
-	int is_break = break_pending;
-	break_pending = 0;
-	uint8_t code = scancode;
-
-	if (extended_code) {
-		extended_code = 0;
-		if (code == 0x14)
-			ctrl_pressed = !is_break;
-		else if (code == 0x11)
-			alt_pressed = !is_break;
+	uint8_t keycode = is_ext ? sc2_extended[byte] : sc2_normal[byte];
+	if (keycode == 0)
 		return;
-	}
 
-	if (code == 0x12 || code == 0x59)
-		shift_pressed = !is_break;
-	else if (code == 0x14)
-		ctrl_pressed = !is_break;
-	else if (code == 0x11)
-		alt_pressed = !is_break;
-
-	if (!is_break && code < KEYMAP_SIZE) {
-		const uint8_t *map = shift_pressed ? keymap_set2_shift : keymap_set2_normal;
-		uint8_t ch = map[code];
-		if (ch != 0) {
-			keybuffer_put(ch);
-			console_input_put(ch);
-		}
-	}
+	lyr_key_event_t ev = {
+		.keycode = keycode,
+		.scancode = (uint16_t)(is_ext ? (0xE000u | byte) : byte),
+		.mods = 0,
+		.down = is_break ? 0 : 1,
+		.set = 2,
+	};
+	kbd_submit_event(&ev);
 }
 
 static uint8_t mouse_packet[3];
@@ -390,7 +380,6 @@ static void mouse_handle(uint8_t b)
 {
 	if (mouse_packet_index == 0 && !(b & 0x08))
 		return;
-
 	mouse_packet[mouse_packet_index++] = b;
 	if (mouse_packet_index == 3) {
 		mouse_emit_packet(mouse_packet);
@@ -398,52 +387,13 @@ static void mouse_handle(uint8_t b)
 	}
 }
 
-static void ps2_wait_for_data(volatile uint16_t *count, uint16_t needed)
-{
-	while (*count < needed)
-		__asm__ volatile("sti; hlt; cli" ::: "memory");
-}
-
-static int kbd_read(void *ctx, uint64_t off, void *buf, size_t len,
-					size_t *done)
-{
-	(void)ctx;
-	(void)off;
-
-	if (done)
-		*done = 0;
-
-	if (!buf)
-		return VFS_ERR_INVAL;
-	if (len == 0)
-		return VFS_OK;
-
-	ps2_wait_for_data(&keybuf.count, 1);
-
-	uint8_t *p = buf;
-	size_t count = 0;
-
-	while (count < len) {
-		uint8_t ch;
-		if (!keybuffer_get(&ch))
-			break;
-		p[count++] = ch;
-	}
-
-	if (done)
-		*done = count;
-	return VFS_OK;
-}
-
 static int mouse_read(void *ctx, uint64_t off, void *buf, size_t len,
 					  size_t *done)
 {
 	(void)ctx;
 	(void)off;
-
 	if (done)
 		*done = 0;
-
 	if (!buf || len == 0)
 		return VFS_ERR_INVAL;
 
@@ -454,23 +404,13 @@ static int mouse_read(void *ctx, uint64_t off, void *buf, size_t len,
 		uint8_t packet[3];
 		for (int i = 0; i < 3; i++)
 			mousebuffer_get(&packet[i]);
-
 		memcpy(p + count, packet, 3);
 		count += 3;
 	}
 
-	*done = count;
+	if (done)
+		*done = count;
 	return VFS_OK;
-}
-
-static int kbd_poll(void *ctx, int events)
-{
-	(void)ctx;
-	int revents = 0;
-	if ((events & (LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLRDBAND)) &&
-		keybuf.count > 0)
-		revents |= LYR_POLLIN | LYR_POLLRDNORM;
-	return revents;
 }
 
 static int mouse_poll(void *ctx, int events)
@@ -486,8 +426,7 @@ static int mouse_poll(void *ctx, int events)
 static void ps2_poll(void *ctx)
 {
 	(void)ctx;
-
-	while (1) {
+	for (;;) {
 		uint8_t status = inb(PS2_STATUS_PORT);
 		if (status & PS2_STATUS_OUT_BUF) {
 			uint8_t data = inb(PS2_DATA_PORT);
@@ -511,8 +450,8 @@ static int ps2_main(driver_t *driver)
 
 	ps2_cmd_write(PS2_CMD_READ_CONFIG);
 	uint8_t config = ps2_cmd_read();
-	config &= (uint8_t)~(PS2_CONFIG_PORT1_INT | PS2_CONFIG_PORT2_INT |
-					   PS2_CONFIG_TRANSLATE);
+	config &= (uint8_t) ~(PS2_CONFIG_PORT1_INT | PS2_CONFIG_PORT2_INT |
+						  PS2_CONFIG_TRANSLATE);
 	ps2_cmd_write(PS2_CMD_WRITE_CONFIG);
 	ps2_data_write(config);
 
@@ -570,32 +509,27 @@ static int ps2_main(driver_t *driver)
 		return r;
 	}
 
-	r = devfs_register_chr_poll("/dev/input/kbd", 0444, kbd_read, NULL, NULL,
-								kbd_poll, NULL);
-	if (r != 0) {
-		driver_log(driver, "err", "failed to register keyboard device");
-		return r;
-	}
+	if (have_mouse) {
+		r = devfs_register_chr_poll("/dev/input/mouse", 0444, mouse_read, NULL,
+									NULL, mouse_poll, NULL);
+		if (r != 0) {
+			driver_log(driver, "err", "failed to register /dev/input/mouse");
+			return r;
+		}
 
-	r = devfs_register_chr_poll("/dev/input/mouse", 0444, mouse_read, NULL,
-								NULL, mouse_poll, NULL);
-	if (r != 0) {
-		driver_log(driver, "err", "failed to register mouse device");
-		return r;
-	}
+		r = devfs_register_chr_poll("/dev/psaux", 0444, mouse_read, NULL, NULL,
+									mouse_poll, NULL);
+		if (r != 0 && r != VFS_ERR_EXIST) {
+			driver_log(driver, "err", "failed to register /dev/psaux");
+			return r;
+		}
 
-	r = devfs_register_chr_poll("/dev/psaux", 0444, mouse_read, NULL, NULL,
-								mouse_poll, NULL);
-	if (r != 0 && r != VFS_ERR_EXIST) {
-		driver_log(driver, "err", "failed to register /dev/psaux");
-		return r;
-	}
-
-	r = devfs_register_chr_poll("/dev/input/mice", 0444, mouse_read, NULL, NULL,
-								mouse_poll, NULL);
-	if (r != 0 && r != VFS_ERR_EXIST) {
-		driver_log(driver, "err", "failed to register /dev/input/mice");
-		return r;
+		r = devfs_register_chr_poll("/dev/input/mice", 0444, mouse_read, NULL,
+									NULL, mouse_poll, NULL);
+		if (r != 0 && r != VFS_ERR_EXIST) {
+			driver_log(driver, "err", "failed to register /dev/input/mice");
+			return r;
+		}
 	}
 
 	r = driver_spawn_thread(driver, "ps2-poll", ps2_poll, NULL);
@@ -609,12 +543,8 @@ static int ps2_main(driver_t *driver)
 }
 
 static const char *const ps2_imports[] = {
-	"console_input_put",
-	"devfs_mkdir",
-	"devfs_register_chr_poll",
-	"driver_log",
-	"driver_spawn_thread",
-	"kzalloc",
+	"kbd_submit_event", "devfs_mkdir",		   "devfs_register_chr_poll",
+	"driver_log",		"driver_spawn_thread", "kzalloc",
 	"memcpy",
 };
 

@@ -85,22 +85,50 @@ static int console_input_pop(uint8_t *out)
 	return 1;
 }
 
+static int utf8_is_continuation(uint8_t ch)
+{
+	return (ch & 0xc0u) == 0x80u;
+}
+
+static void console_input_backspace(void)
+{
+	if (console_in.count == 0 || console_in.tail == console_in.head)
+		return;
+
+	uint16_t prev = console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
+	uint8_t old = console_in.buf[prev];
+	if (old == '\n' || old == '\r')
+		return;
+
+	/* Remove the last byte, then remove UTF-8 continuation bytes until the
+	 * leading byte of the same scalar has also been removed. This keeps
+	 * backspace from leaving invalid partial UTF-8 in canonical input.
+	 */
+	for (;;) {
+		console_in.head = prev;
+		console_in.count--;
+
+		if (!utf8_is_continuation(old) || console_in.count == 0 ||
+			console_in.tail == console_in.head)
+			break;
+
+		prev = console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
+		old = console_in.buf[prev];
+		if (old == '\n' || old == '\r')
+			break;
+	}
+
+	if (console_termios.c_lflag & LYR_ECHO)
+		console_write(NULL, 0, "\b \b", 3, NULL);
+}
+
 void console_input_put(uint8_t ch)
 {
 	if (ch == '\r')
 		ch = '\n';
 
 	if (ch == 8 || ch == 127) {
-		if (console_in.count > 0 && console_in.tail != console_in.head) {
-			uint16_t prev = console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
-			uint8_t old = console_in.buf[prev];
-			if (old != '\n' && old != '\r') {
-				console_in.head = prev;
-				console_in.count--;
-				if (console_termios.c_lflag & LYR_ECHO)
-					console_write(NULL, 0, "\b \b", 3, NULL);
-			}
-		}
+		console_input_backspace();
 		return;
 	}
 

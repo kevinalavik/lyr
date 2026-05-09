@@ -338,15 +338,26 @@ static char proc_state(const sched_process_info_t *info)
 	return 'R';
 }
 
+static char proc_mode(const sched_process_info_t *info)
+{
+	return info->kernel ? 'K' : 'U';
+}
+
+static char proc_supervised(const sched_process_info_t *info)
+{
+	return info->supervised ? 'S' : '-';
+}
+
 static size_t build_status(const sched_process_info_t *info, char *buf,
 					   size_t size)
 {
 	int n = npf_snprintf(
 		buf, size,
-		"Name:\t%s\nState:\t%c\nPid:\t%d\nPPid:\t%d\nThreads:\t%u\nUid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\nCwd:\t%s\n",
-		info->name, proc_state(info), info->pid, info->ppid,
-		info->thread_count, info->ruid, info->euid, info->ruid, info->euid,
-		info->rgid, info->egid, info->rgid, info->egid, info->cwd);
+		"Name:\t%s\nState:\t%c\nMode:\t%c\nSupervised:\t%c\nPid:\t%d\nPPid:\t%d\nThreads:\t%u\nUid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\nCwd:\t%s\n",
+		info->name, proc_state(info), proc_mode(info), proc_supervised(info),
+		info->pid, info->ppid, info->thread_count, info->ruid, info->euid,
+		info->ruid, info->euid, info->rgid, info->egid, info->rgid,
+		info->egid, info->cwd);
 	if (n < 0)
 		return 0;
 	if ((size_t)n >= size)

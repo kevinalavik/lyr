@@ -43,6 +43,7 @@ int sh_builtin_help(void)
 	puts("  history         print command history");
 	puts("  id              print user and group ids");
 	puts("  ls [-alhR]      list directory contents");
+	puts("  loadkeys KEYMAP load keyboard map");
 	puts("  mkdir DIR...    create directories");
 	puts("  nfetch URL      fetch HTTP or raw TCP data");
 	puts("  pgrep PATTERN   print PIDs whose command contains PATTERN");

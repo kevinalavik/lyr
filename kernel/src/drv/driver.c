@@ -20,6 +20,7 @@
 #include <sched/sched.h>
 #include <sync/spinlock.h>
 #include <util/kprintf.h>
+#include <dev/kbd.h>
 
 #define MODULE_REGION_BASE 0xffffffffa0000000ULL
 
@@ -93,14 +94,12 @@ static const kernel_symbol_t kernel_symbols[] = {
 	{ "net_default_dev", (uint64_t)net_default_dev },
 	{ "net_ipv4_format", (uint64_t)net_ipv4_format },
 	{ "netdev_count", (uint64_t)netdev_count },
+	{ "kbd_submit_event", (uint64_t)kbd_submit_event },
 };
 
 static const char *boot_driver_paths[] = {
-	"/sys/pci.sys",
-	"/sys/nvme.sys",
-	"/sys/e1000.sys",
-	"/sys/websrv.sys",
-	"/sys/ps2.sys",
+	"/sys/pci.sys",	   "/sys/nvme.sys", "/sys/e1000.sys",
+	"/sys/websrv.sys", "/sys/ps2.sys",
 };
 
 static spinlock_t driver_lock = SPINLOCK_INIT;

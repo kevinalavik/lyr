@@ -31,6 +31,7 @@ int sh_builtin_pinfo(int argc, char **argv);
 int sh_builtin_pgrep(int argc, char **argv);
 int sh_builtin_pidof(int argc, char **argv);
 int sh_builtin_nfetch(int argc, char **argv);
+int sh_builtin_loadkeys(int argc, char **argv);
 int sh_builtin_help(void);
 int sh_builtin_history(sh_shell_t *sh);
 

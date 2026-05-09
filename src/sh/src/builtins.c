@@ -102,6 +102,9 @@ int sh_builtin_run(sh_shell_t *sh, int argc, char **argv, int *handled)
 	if (strcmp(argv[0], "ls") == 0)
 		return sh_builtin_ls(argc, argv);
 
+	if (strcmp(argv[0], "loadkeys") == 0)
+		return sh_builtin_loadkeys(argc, argv);
+
 	if (strcmp(argv[0], "mkdir") == 0)
 		return sh_builtin_mkdir(argc, argv);
 

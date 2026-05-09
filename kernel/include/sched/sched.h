@@ -67,6 +67,8 @@ typedef struct sched_process_info {
 	char name[32];
 	bool zombie;
 	bool dying;
+	bool kernel;
+	bool supervised;
 	int exit_status;
 	unsigned thread_count;
 	vfs_uid_t ruid;
