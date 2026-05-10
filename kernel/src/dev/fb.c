@@ -3,11 +3,22 @@
 #include <fs/devfs.h>
 #include <lib/lyrterm.h>
 #include <sys/poll.h>
+#include <lib/string.h>
+#include <debug/log.h>
+#include <sched/sched.h>
 
 static int fbdev_read(void *ctx, uint64_t off, void *buf, size_t len,
 					  size_t *done)
 {
 	(void)ctx;
+
+	if (done)
+		*done = 0;
+	if (len == 0)
+		return 0;
+	if (!buf)
+		return -EINVAL;
+
 	return lyrterm_framebuffer_read(off, buf, len, done);
 }
 
@@ -15,7 +26,24 @@ static int fbdev_write(void *ctx, uint64_t off, const void *buf, size_t len,
 					   size_t *done)
 {
 	(void)ctx;
+
+	if (done)
+		*done = 0;
+	if (len == 0)
+		return 0;
+	if (!buf)
+		return -EINVAL;
+
+	lyrterm_framebuffer_acquire();
 	return lyrterm_framebuffer_write(off, buf, len, done);
+}
+
+static int fbdev_close(void *ctx)
+{
+	(void)ctx;
+
+	lyrterm_framebuffer_release();
+	return 0;
 }
 
 static int fbdev_ioctl(void *ctx, unsigned long request, void *arg)
@@ -55,9 +83,16 @@ static int fbdev_poll(void *ctx, int events)
 
 int fbdev_init(void)
 {
-	int r = devfs_register_chr_poll(LYR_FB_DEVICE, 0666, fbdev_read,
-									fbdev_write, fbdev_ioctl, fbdev_poll, NULL);
+	int r = devfs_register_chr_poll_close(LYR_FB_DEVICE, 0666, fbdev_read,
+										  fbdev_write, fbdev_ioctl, fbdev_poll,
+										  fbdev_close, NULL);
 	if (r != 0 && r != -EEXIST)
 		return r;
-	return 0;
+
+	lyrterm_framebuffer_info_t info;
+	r = lyrterm_get_framebuffer_info(&info);
+	if (r != 0)
+		return r;
+
+	return devfs_set_size(LYR_FB_DEVICE, info.size);
 }

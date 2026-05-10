@@ -41,6 +41,7 @@ static bool initialized = false;
 static uint32_t cols;
 static uint32_t rows;
 static bool render_enabled = true;
+static uint32_t framebuffer_raw_users = 0;
 
 static const lyrterm_theme_t *active_theme = &lyrterm_theme_dark;
 
@@ -428,38 +429,44 @@ static void cursor_set_pos(uint32_t row, uint32_t col)
 
 static void scroll_up(void)
 {
-	uint32_t x0 = term_x0();
-	uint32_t y0 = term_y0();
-	uint32_t w = term_width();
-	uint32_t h = term_height();
-
-	if (h <= _LYRTERM_LINE_HEIGHT)
-		return;
-
-	uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
-
-	if (x0 == 0 && w == fb_width) {
-		uint8_t *dst = fb_base + y0 * fb_pitch;
-		uint8_t *src = fb_base + (y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch;
-
-		memcpy(dst, src, rows_to_copy * fb_pitch);
-	} else {
-		for (uint32_t row = 0; row < rows_to_copy; row++) {
-			uint8_t *dst = fb_base + (y0 + row) * fb_pitch + x0 * fb_Bpp;
-			uint8_t *src = fb_base +
-						   (y0 + row + _LYRTERM_LINE_HEIGHT) * fb_pitch +
-						   x0 * fb_Bpp;
-
-			memcpy(dst, src, w * fb_Bpp);
-		}
-	}
-
-	fill_rect(x0, y0 + h - _LYRTERM_LINE_HEIGHT, w, _LYRTERM_LINE_HEIGHT,
-			  default_bg);
-
-	/* Scroll cell buffer up one row and clear the last row. */
 	uint32_t buf_rows = rows < LYRTERM_MAX_ROWS ? rows : LYRTERM_MAX_ROWS;
 	uint32_t buf_cols = cols < LYRTERM_MAX_COLS ? cols : LYRTERM_MAX_COLS;
+
+	if (buf_rows == 0 || buf_cols == 0)
+		return;
+
+	if (render_enabled) {
+		uint32_t x0 = term_x0();
+		uint32_t y0 = term_y0();
+		uint32_t w = term_width();
+		uint32_t h = term_height();
+
+		if (h <= _LYRTERM_LINE_HEIGHT)
+			return;
+
+		uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
+
+		if (x0 == 0 && w == fb_width) {
+			uint8_t *dst = fb_base + y0 * fb_pitch;
+			uint8_t *src = fb_base + (y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch;
+
+			memcpy(dst, src, rows_to_copy * fb_pitch);
+		} else {
+			for (uint32_t row = 0; row < rows_to_copy; row++) {
+				uint8_t *dst = fb_base + (y0 + row) * fb_pitch + x0 * fb_Bpp;
+				uint8_t *src = fb_base +
+							   (y0 + row + _LYRTERM_LINE_HEIGHT) * fb_pitch +
+							   x0 * fb_Bpp;
+
+				memcpy(dst, src, w * fb_Bpp);
+			}
+		}
+
+		fill_rect(x0, y0 + h - _LYRTERM_LINE_HEIGHT, w, _LYRTERM_LINE_HEIGHT,
+				  default_bg);
+	}
+
+	/* Scroll cell buffer up one row and clear the last row. */
 	for (uint32_t r = 0; r + 1 < buf_rows; r++)
 		memcpy(cell_buf[r], cell_buf[r + 1], buf_cols * sizeof(lyrterm_cell_t));
 	memset(cell_buf[buf_rows - 1], 0, buf_cols * sizeof(lyrterm_cell_t));
@@ -1121,6 +1128,37 @@ int lyrterm_get_framebuffer_info(lyrterm_framebuffer_info_t *out)
 	return 0;
 }
 
+
+void lyrterm_framebuffer_acquire(void)
+{
+	if (!initialized)
+		return;
+
+	spinlock_acquire(&lyrterm_render_lock);
+	/*
+	 * This is deliberately idempotent. devfs currently has no open callback,
+	 * so fbdev_write() calls acquire() before each write. Treat any writer as
+	 * the raw framebuffer owner until the file is closed.
+	 */
+	framebuffer_raw_users = 1;
+	render_enabled = false;
+	spinlock_release(&lyrterm_render_lock);
+}
+
+void lyrterm_framebuffer_release(void)
+{
+	if (!initialized)
+		return;
+
+	spinlock_acquire(&lyrterm_render_lock);
+	if (framebuffer_raw_users != 0) {
+		framebuffer_raw_users = 0;
+		render_enabled = true;
+		lyrterm_redraw_from_state();
+	}
+	spinlock_release(&lyrterm_render_lock);
+}
+
 int lyrterm_framebuffer_read(uint64_t off, void *buf, size_t len, size_t *done)
 {
 	uint32_t size = fb_pitch * fb_height;
@@ -1191,8 +1229,10 @@ void lyrterm_restore_state(const lyrterm_state_t *in)
 
 	spinlock_acquire(&lyrterm_render_lock);
 	memcpy(render_state, in, sizeof(*render_state));
-	render_enabled = true;
-	lyrterm_redraw_from_state();
+	if (framebuffer_raw_users == 0) {
+		render_enabled = true;
+		lyrterm_redraw_from_state();
+	}
 	spinlock_release(&lyrterm_render_lock);
 }
 

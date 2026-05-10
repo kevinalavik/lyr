@@ -72,6 +72,8 @@ int lyrterm_get_framebuffer_info(lyrterm_framebuffer_info_t *out);
 int lyrterm_framebuffer_read(uint64_t off, void *buf, size_t len, size_t *done);
 int lyrterm_framebuffer_write(uint64_t off, const void *buf, size_t len,
 							  size_t *done);
+void lyrterm_framebuffer_acquire(void);
+void lyrterm_framebuffer_release(void);
 void lyrterm_capture_state(lyrterm_state_t *out);
 void lyrterm_restore_state(const lyrterm_state_t *in);
 void lyrterm_update_state(lyrterm_state_t *state, const char *buf, size_t len);

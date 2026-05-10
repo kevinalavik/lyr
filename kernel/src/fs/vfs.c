@@ -468,9 +468,14 @@ int vfs_close(vfs_file_t *file)
 {
 	if (!file)
 		return -EBADF;
+
+	int r = 0;
+	if (file->node && file->node->ops && file->node->ops->close)
+		r = file->node->ops->close(file);
+
 	vfs_node_release(file->node);
 	kfree(file);
-	return 0;
+	return r;
 }
 
 int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done)

@@ -22,6 +22,22 @@
 
 #define SCHED_SIGTERM 15
 #define SCHED_SIGKILL 9
+#define SCHED_SIGSTOP 19
+#define SCHED_SIG_DFL 0ULL
+#define SCHED_SIG_IGN 1ULL
+#define SCHED_SIGNAL_BIT(sig) (1ULL << ((sig) - 1))
+#define SCHED_UNBLOCKABLE_MASK \
+	(SCHED_SIGNAL_BIT(SCHED_SIGKILL) | SCHED_SIGNAL_BIT(SCHED_SIGSTOP))
+
+typedef struct user_signal_frame {
+	uint64_t retaddr;
+	uint64_t magic;
+	uint64_t signal;
+	uint64_t old_mask;
+	interrupt_frame_t saved;
+} user_signal_frame_t;
+
+#define SCHED_SIGFRAME_MAGIC 0x5349474652414d45ULL
 
 extern void sched_iret_to_frame(interrupt_frame_t *frame)
 	__attribute__((noreturn));
@@ -391,6 +407,10 @@ static bool process_add_thread(pcb_t *process, tcb_t *thread)
 	return added;
 }
 
+static int process_is_kernel_owned(const pcb_t *process);
+static int process_kill_status(int signal);
+static void process_terminate_by_signal_locked(pcb_t *process, int signal);
+
 static process_exit_action_t process_remove_thread(tcb_t *thread, int status)
 {
 	pcb_t *process = thread->process;
@@ -465,6 +485,46 @@ static void process_note_zombie(pcb_t *process)
 
 	log_trace("sched", "process pid=%d (%s) became zombie", process->pid,
 			  process->name);
+}
+
+
+static uint64_t signal_mask_valid(uint64_t mask)
+{
+	uint64_t valid = SCHED_NSIG == 64 ? ~0ULL : ((1ULL << SCHED_NSIG) - 1);
+	return mask & valid & ~SCHED_UNBLOCKABLE_MASK;
+}
+
+static int signal_valid(int signal)
+{
+	return signal > 0 && signal <= SCHED_NSIG;
+}
+
+static int signal_default_ignored(int signal)
+{
+	/* Good enough until job control exists. */
+	return signal == 17 /* SIGCHLD */ || signal == 18 /* SIGCONT */;
+}
+
+static void process_terminate_by_signal_locked(pcb_t *process, int signal)
+{
+	if (!process || process_is_kernel_owned(process))
+		return;
+
+	process->exit_status = process_kill_status(signal);
+	atomic_store_explicit(&process->dying, true, memory_order_release);
+}
+
+static int process_any_thread_can_take_locked(pcb_t *process, int signal)
+{
+	uint64_t bit = SCHED_SIGNAL_BIT(signal);
+
+	for (tcb_t *thread = process ? process->threads : NULL; thread;
+		 thread = thread->process_next) {
+		if (!(thread->signal_mask & bit))
+			return 1;
+	}
+
+	return 0;
 }
 
 static int process_signal_allowed(const pcb_t *sender, const pcb_t *target)
@@ -1202,7 +1262,7 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 	if (pid <= 0)
 		return -ENOSYS;
 
-	if (signal < 0 || signal > 64)
+	if (signal < 0 || signal > SCHED_NSIG)
 		return -EINVAL;
 
 	uint64_t flags = irq_save();
@@ -1234,20 +1294,22 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 		return 0;
 	}
 
-	if (signal != SCHED_SIGKILL && signal != SCHED_SIGTERM) {
-		spinlock_release(&sched_lock);
-		irq_restore(flags);
-		return -ENOSYS;
-	}
-
 	if (process_is_kernel_owned(target)) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
 		return -EPERM;
 	}
 
-	target->exit_status = process_kill_status(signal);
-	atomic_store_explicit(&target->dying, true, memory_order_release);
+	if (signal == SCHED_SIGKILL) {
+		process_terminate_by_signal_locked(target, signal);
+	} else {
+		target->pending_signals |= SCHED_SIGNAL_BIT(signal);
+
+		/* If all threads block it, keep it pending. If not, normal return-to-user
+		 * delivery will run the handler/default action on the next eligible thread.
+		 */
+		(void)process_any_thread_can_take_locked(target, signal);
+	}
 
 	log_trace("sched", "pid=%d signalled by pid=%d signal=%d", pid,
 			  sender->pid, signal);
@@ -1255,6 +1317,197 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
 	return 0;
+}
+
+
+int sched_signal_action(pcb_t *process, int signal, const sched_sigaction_t *act,
+						sched_sigaction_t *oldact)
+{
+	if (!process || !signal_valid(signal))
+		return -EINVAL;
+
+	if ((signal == SCHED_SIGKILL || signal == SCHED_SIGSTOP) && act)
+		return -EINVAL;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	if (oldact)
+		*oldact = process->sigactions[signal];
+
+	if (act) {
+		process->sigactions[signal] = *act;
+		process->sigactions[signal].mask = signal_mask_valid(act->mask);
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return 0;
+}
+
+int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
+						  uint64_t *oldset)
+{
+	if (!thread)
+		return -EINVAL;
+
+	if (oldset)
+		*oldset = thread->signal_mask;
+
+	if (!set)
+		return 0;
+
+	uint64_t mask = signal_mask_valid(*set);
+
+	switch (how) {
+		case SCHED_SIG_BLOCK:
+			thread->signal_mask |= mask;
+			break;
+		case SCHED_SIG_UNBLOCK:
+			thread->signal_mask &= ~mask;
+			break;
+		case SCHED_SIG_SETMASK:
+			thread->signal_mask = mask;
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	thread->signal_mask &= ~SCHED_UNBLOCKABLE_MASK;
+	return 0;
+}
+
+interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame)
+{
+	if (!frame)
+		return frame;
+
+	/* Only deliver to user mode. */
+	if ((frame->cs & 3) != 3)
+		return frame;
+
+	tcb_t *thread = sched_current();
+	pcb_t *process = thread ? thread->process : NULL;
+	if (!thread || !process)
+		return frame;
+
+	if (atomic_load_explicit(&process->dying, memory_order_acquire)) {
+		cpu_local_t *cpu = get_cpu_local();
+		if (!cpu)
+			return frame;
+		spinlock_acquire(&cpu->runq_lock);
+		thread_finish_current_locked(cpu, frame, process->exit_status,
+								 " via signal");
+		interrupt_frame_t *next = schedule_locked(cpu, frame, false);
+		spinlock_release(&cpu->runq_lock);
+		return next;
+	}
+
+	int signal = 0;
+	sched_sigaction_t action;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	uint64_t deliverable = process->pending_signals & ~thread->signal_mask;
+	deliverable &= ~SCHED_UNBLOCKABLE_MASK;
+
+	for (int i = 1; i <= SCHED_NSIG; i++) {
+		if (deliverable & SCHED_SIGNAL_BIT(i)) {
+			signal = i;
+			break;
+		}
+	}
+
+	if (!signal) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return frame;
+	}
+
+	process->pending_signals &= ~SCHED_SIGNAL_BIT(signal);
+	action = process->sigactions[signal];
+
+	if (action.handler == SCHED_SIG_IGN ||
+		(action.handler == SCHED_SIG_DFL && signal_default_ignored(signal))) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return frame;
+	}
+
+	if (action.handler == SCHED_SIG_DFL) {
+		process_terminate_by_signal_locked(process, signal);
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+
+		cpu_local_t *cpu = get_cpu_local();
+		if (!cpu)
+			return frame;
+		spinlock_acquire(&cpu->runq_lock);
+		thread_finish_current_locked(cpu, frame, process->exit_status,
+								 " via signal");
+		interrupt_frame_t *next = schedule_locked(cpu, frame, false);
+		spinlock_release(&cpu->runq_lock);
+		return next;
+	}
+
+	uint64_t old_mask = thread->signal_mask;
+	thread->signal_mask |= signal_mask_valid(action.mask) | SCHED_SIGNAL_BIT(signal);
+	thread->signal_mask &= ~SCHED_UNBLOCKABLE_MASK;
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	if (!action.restorer)
+		return frame;
+
+	uint64_t sp = frame->rsp;
+	sp -= sizeof(user_signal_frame_t);
+	sp &= ~0xFULL;
+	sp += 8; /* x86-64 SysV function-entry stack alignment. */
+
+	if (sp >= VAS_USER_END || sp + sizeof(user_signal_frame_t) > VAS_USER_END)
+		return frame;
+
+	user_signal_frame_t *sf = (user_signal_frame_t *)(uintptr_t)sp;
+	sf->retaddr = action.restorer;
+	sf->magic = SCHED_SIGFRAME_MAGIC;
+	sf->signal = (uint64_t)signal;
+	sf->old_mask = old_mask;
+	sf->saved = *frame;
+
+	frame->rip = action.handler;
+	frame->rdi = (uint64_t)signal;
+	frame->rsp = sp;
+	frame->rflags |= RFLAGS_IF;
+	return frame;
+}
+
+interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame)
+{
+	if (!frame)
+		return frame;
+
+	tcb_t *thread = sched_current();
+	if (!thread)
+		return frame;
+
+	uint64_t sp = frame->rsp;
+	if (sp >= VAS_USER_END || sp + sizeof(user_signal_frame_t) > VAS_USER_END) {
+		frame->rax = (uint64_t)(int64_t)-EINVAL;
+		return frame;
+	}
+
+	user_signal_frame_t *sf = (user_signal_frame_t *)(uintptr_t)sp;
+	if (sf->magic != SCHED_SIGFRAME_MAGIC) {
+		frame->rax = (uint64_t)(int64_t)-EINVAL;
+		return frame;
+	}
+
+	interrupt_frame_t saved = sf->saved;
+	thread->signal_mask = signal_mask_valid(sf->old_mask);
+	*frame = saved;
+	return frame;
 }
 
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,

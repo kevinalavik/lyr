@@ -23,8 +23,8 @@ int init_spawn(const char *path)
 	elf_user_image_t image;
 	int r = elf_load_user_executable(vas, path, &image);
 	if (r != 0) {
-		log_err("init", "failed to load %s status=%s(%d)", path,
-				errno_name(r), r);
+		log_err("init", "failed to load %s status=%s(%d)", path, errno_name(r),
+				r);
 		vas_destroy(vas);
 		return r;
 	}

@@ -124,6 +124,7 @@ typedef struct lyr_key_event {
 
 #define LYR_KBDIOCSMAP 0x4b01UL
 #define LYR_KBDIOCGMAP 0x4b02UL
+#define LYR_KBDIOCFLUSH 0x4b03UL
 #define LYR_KBD_MAP_PATH_MAX 256
 
 int kbd_init(void);

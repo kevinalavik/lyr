@@ -141,7 +141,7 @@ interrupt_frame_t *isr_common_handler(interrupt_frame_t *frame)
 	if (frame->vector == APIC_TIMER_VECTOR) {
 		interrupt_frame_t *next = sched_tick(frame);
 		apic_send_eoi();
-		return next;
+		return sched_signal_deliver(next);
 	}
 
 	if (frame->vector < IRQ_BASE) {

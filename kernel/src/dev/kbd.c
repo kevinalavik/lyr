@@ -482,6 +482,14 @@ static int kbd_event_dev_poll(void *ctx, int events)
 	return revents;
 }
 
+static inline void ring_flush(void)
+{
+	__asm__ volatile("" ::: "memory");
+	kbd_event_tail = kbd_event_head;
+	kbd_mods = 0;
+	__asm__ volatile("" ::: "memory");
+}
+
 static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 {
 	(void)ctx;
@@ -498,6 +506,10 @@ static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 		if (kbd_current_map[0] == '\0')
 			return -EINVAL;
 		memcpy(arg, kbd_current_map, LYR_KBD_MAP_PATH_MAX);
+		return 0;
+
+	case LYR_KBDIOCFLUSH:
+		ring_flush();
 		return 0;
 
 	default:

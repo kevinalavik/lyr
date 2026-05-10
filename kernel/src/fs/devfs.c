@@ -14,6 +14,7 @@ typedef struct devfs_node {
 	devfs_write_t write;
 	devfs_ioctl_t ioctl;
 	devfs_poll_t poll;
+	devfs_close_t close;
 	void *ctx;
 } devfs_node_t;
 
@@ -30,6 +31,7 @@ static int devfs_write_op(vfs_node_t *node, uint64_t off, const void *buf,
 						  size_t len, size_t *done);
 static int devfs_ioctl_op(vfs_file_t *file, unsigned long request, void *arg);
 static int devfs_poll_op(vfs_file_t *file, int events);
+static int devfs_close_op(vfs_file_t *file);
 static int devfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 static void devfs_release(vfs_node_t *node);
 
@@ -42,6 +44,7 @@ static const vfs_ops_t devfs_ops = {
 	.write = devfs_write_op,
 	.ioctl = devfs_ioctl_op,
 	.poll = devfs_poll_op,
+	.close = devfs_close_op,
 	.readdir = devfs_readdir,
 	.release = devfs_release,
 };
@@ -360,6 +363,19 @@ static int devfs_poll_op(vfs_file_t *file, int events)
 	return dn->poll(dn->ctx, events);
 }
 
+
+static int devfs_close_op(vfs_file_t *file)
+{
+	if (!file || !file->node)
+		return -EBADF;
+	if (VFS_S_ISDIR(file->node->mode))
+		return 0;
+	devfs_node_t *dn = to_devfs(file->node);
+	if (!dn->close)
+		return 0;
+	return dn->close(dn->ctx);
+}
+
 static int devfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
@@ -449,9 +465,10 @@ int devfs_mkdir(const char *path, vfs_mode_t mode)
 						VFS_S_IFDIR | (mode & VFS_S_PERM), NULL);
 }
 
-int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read,
-							devfs_write_t write, devfs_ioctl_t ioctl,
-							devfs_poll_t poll, void *ctx)
+int devfs_register_chr_poll_close(const char *path, vfs_mode_t mode,
+								  devfs_read_t read, devfs_write_t write,
+								  devfs_ioctl_t ioctl, devfs_poll_t poll,
+								  devfs_close_t close, void *ctx)
 {
 	devfs_node_t *parent = NULL;
 	const char *name = NULL;
@@ -471,9 +488,18 @@ int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read
 	node->write = write;
 	node->ioctl = ioctl;
 	node->poll = poll;
+	node->close = close;
 	node->ctx = ctx;
 	log_debug("devfs", "registered char %s", path);
 	return 0;
+}
+
+int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read,
+							devfs_write_t write, devfs_ioctl_t ioctl,
+							devfs_poll_t poll, void *ctx)
+{
+	return devfs_register_chr_poll_close(path, mode, read, write, ioctl, poll,
+									 NULL, ctx);
 }
 
 int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
@@ -486,6 +512,24 @@ int devfs_register_chr(const char *path, vfs_mode_t mode, devfs_read_t read,
 					   devfs_write_t write, void *ctx)
 {
 	return devfs_register_chr_ex(path, mode, read, write, NULL, ctx);
+}
+
+
+int devfs_set_size(const char *path, uint64_t size)
+{
+	devfs_node_t *parent = NULL;
+	const char *name = NULL;
+	size_t name_len = 0;
+	int r = resolve_parent(path, &parent, &name, &name_len, 0);
+	if (r != 0)
+		return r;
+
+	devfs_node_t *node = find_child(parent, name, name_len);
+	if (!node)
+		return -ENOENT;
+
+	node->vnode.size = size;
+	return 0;
 }
 
 int devfs_unregister(const char *path)

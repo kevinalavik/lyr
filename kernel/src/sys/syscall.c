@@ -116,6 +116,13 @@ typedef struct {
 	char domainname[SYS_UTSNAME_FIELD_LEN];
 } syscall_utsname_t;
 
+typedef struct {
+	uint64_t handler;
+	uint64_t flags;
+	uint64_t restorer;
+	uint64_t mask;
+} syscall_sigaction_t;
+
 void syscall_init(void)
 {
 	uint64_t efer = rdmsr(MSR_EFER);
@@ -1412,6 +1419,7 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 	}
 
 	sched_process_copy_ids(child, thread->process);
+	sched_process_copy_cwd(child, thread->process);
 
 	for (int i = 0; i < SCHED_FILE_MAX; i++)
 		syscall_close_file_slot(&child->files[i]);
@@ -2455,16 +2463,91 @@ static long sys_kill_handler(interrupt_frame_t *frame)
 	if (!process)
 		return -EBADF;
 
-	int r = sched_process_signal(process, pid, signal);
+	return sched_process_signal(process, pid, signal);
+}
 
+static long sys_sigaction_handler(interrupt_frame_t *frame)
+{
+	pcb_t *process = syscall_current_process();
+	int signal = (int)frame->rdi;
+	uint64_t act_user = frame->rsi;
+	uint64_t old_user = frame->rdx;
+
+	if (!process)
+		return -EBADF;
+
+	sched_sigaction_t act;
+	sched_sigaction_t oldact;
+	sched_sigaction_t *actp = NULL;
+	sched_sigaction_t *oldp = old_user ? &oldact : NULL;
+
+	if (act_user) {
+		if (!syscall_user_range_ok(act_user, sizeof(syscall_sigaction_t)))
+			return -EINVAL;
+
+		syscall_sigaction_t *u = (syscall_sigaction_t *)(uintptr_t)act_user;
+		act.handler = u->handler;
+		act.flags = u->flags;
+		act.restorer = u->restorer;
+		act.mask = u->mask;
+		actp = &act;
+	}
+
+	int r = sched_signal_action(process, signal, actp, oldp);
 	if (r != 0)
 		return r;
 
-	if (pid == process->pid && (signal == SYS_SIGKILL || signal == SYS_SIGTERM))
-		return (long)(uintptr_t)sched_syscall_exit(
-			frame, 128 + signal);
+	if (old_user) {
+		if (!syscall_user_range_ok(old_user, sizeof(syscall_sigaction_t)))
+			return -EINVAL;
+
+		syscall_sigaction_t *u = (syscall_sigaction_t *)(uintptr_t)old_user;
+		u->handler = oldact.handler;
+		u->flags = oldact.flags;
+		u->restorer = oldact.restorer;
+		u->mask = oldact.mask;
+	}
 
 	return 0;
+}
+
+static long sys_sigprocmask_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	int how = (int)frame->rdi;
+	uint64_t set_user = frame->rsi;
+	uint64_t old_user = frame->rdx;
+	uint64_t set;
+	uint64_t oldset;
+	uint64_t *setp = NULL;
+	uint64_t *oldp = old_user ? &oldset : NULL;
+
+	if (!thread)
+		return -EBADF;
+
+	if (set_user) {
+		if (!syscall_user_range_ok(set_user, sizeof(uint64_t)))
+			return -EINVAL;
+		set = *(uint64_t *)(uintptr_t)set_user;
+		setp = &set;
+	}
+
+	int r = sched_signal_procmask(thread, how, setp, oldp);
+	if (r != 0)
+		return r;
+
+	if (old_user) {
+		if (!syscall_user_range_ok(old_user, sizeof(uint64_t)))
+			return -EINVAL;
+		*(uint64_t *)(uintptr_t)old_user = oldset;
+	}
+
+	return 0;
+}
+
+static long sys_sigreturn_handler(interrupt_frame_t *frame)
+{
+	return (long)(uintptr_t)sched_signal_return(frame);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2563,6 +2646,9 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_SETGID] = sys_setgid_handler,
 	[SYS_SETEGID] = sys_setegid_handler,
 	[SYS_KILL] = sys_kill_handler,
+	[SYS_SIGACTION] = sys_sigaction_handler,
+	[SYS_SIGPROCMASK] = sys_sigprocmask_handler,
+	[SYS_SIGRETURN] = sys_sigreturn_handler,
 };
 
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
@@ -2576,14 +2662,11 @@ interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
 		syscall_table[nr]) {
 		long ret = syscall_table[nr](frame);
 
-		if (nr == SYS_EXIT || nr == SYS_CHANGE_ROOT)
-			return (interrupt_frame_t *)(uintptr_t)ret;
-
-		if (nr == SYS_KILL && ret < -4095)
-			return (interrupt_frame_t *)(uintptr_t)ret;
+		if (nr == SYS_EXIT || nr == SYS_CHANGE_ROOT || nr == SYS_SIGRETURN)
+			return sched_signal_deliver((interrupt_frame_t *)(uintptr_t)ret);
 
 		frame->rax = (uint64_t)(int64_t)ret;
-		return frame;
+		return sched_signal_deliver(frame);
 	}
 
 	tcb_t *thread = sched_current();

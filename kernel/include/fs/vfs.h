@@ -106,6 +106,7 @@ struct vfs_ops {
 				 size_t *done);
 	int (*ioctl)(vfs_file_t *file, unsigned long request, void *arg);
 	int (*poll)(vfs_file_t *file, int events);
+	int (*close)(vfs_file_t *file);
 	int (*readdir)(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 	int (*truncate)(vfs_node_t *node, uint64_t size);
 	int (*get_page)(vfs_node_t *node, uint64_t page_index, int for_write,

@@ -16,6 +16,20 @@
 #define SCHED_KERNEL_STACK_SIZE (64 * 1024ULL)
 #define SCHED_FILE_MAX 128
 #define SCHED_CWD_MAX 512
+#define SCHED_NSIG 64
+
+#define SCHED_SIG_BLOCK 0
+#define SCHED_SIG_UNBLOCK 1
+#define SCHED_SIG_SETMASK 2
+
+typedef void (*sched_sighandler_t)(int);
+
+typedef struct sched_sigaction {
+	uint64_t handler;
+	uint64_t flags;
+	uint64_t restorer;
+	uint64_t mask;
+} sched_sigaction_t;
 
 typedef int32_t pid_t;
 typedef int32_t tid_t;
@@ -57,6 +71,8 @@ typedef struct pcb {
 	char cwd[SCHED_CWD_MAX];
 	vfs_file_t *files[SCHED_FILE_MAX];
 	uint32_t fd_flags[SCHED_FILE_MAX];
+	sched_sigaction_t sigactions[SCHED_NSIG + 1];
+	uint64_t pending_signals;
 	struct pcb *next;
 } pcb_t;
 
@@ -87,6 +103,7 @@ typedef struct tcb {
 	bool reap_process;
 	uint64_t fs_base;
 	uint64_t user_entry_rsp;
+	uint64_t signal_mask;
 	uint64_t rsp;
 	uint64_t kstack_base;
 	uint64_t kstack_top;
@@ -122,6 +139,12 @@ bool sched_process_get_nth(size_t index, sched_process_info_t *out);
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 					   int *status_out);
 int sched_process_signal(pcb_t *sender, pid_t pid, int signal);
+int sched_signal_action(pcb_t *process, int signal, const sched_sigaction_t *act,
+						sched_sigaction_t *oldact);
+int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
+						  uint64_t *oldset);
+interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame);
+interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame);
 const char *sched_process_cwd(const pcb_t *process);
 int sched_process_setcwd(pcb_t *process, const char *path);
 void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src);

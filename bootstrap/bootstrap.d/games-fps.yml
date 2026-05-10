@@ -1,0 +1,45 @@
+sources:
+- name: doomgeneric
+  subdir: sources
+  git: 'https://github.com/kevinalavik/doomgeneric.git'
+  branch: master
+  submodules: false
+  rolling_version: true
+  version: '0.0pl@ROLLING_ID@'
+
+packages:
+  - name: doomgeneric
+    default: false
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    from_source: doomgeneric
+    revision: 1
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    build:
+    - args: 
+      - 'make'
+      - '-C'
+      - '@THIS_SOURCE_DIR@/doomgeneric'
+      - '-fMakefile.lyr'
+      - 'all'
+      - 'O=@THIS_BUILD_DIR@'
+      - 'OBJDIR=@THIS_BUILD_DIR@'
+      - 'HOSTCC=x86_64-lyr-gcc'
+      - 'CC=x86_64-lyr-gcc'
+      - 'CROSS_COMPILE=x86_64-lyr-'
+    - args:
+      - 'make'
+      - '-C'
+      - '@THIS_SOURCE_DIR@/doomgeneric'
+      - '-fMakefile.lyr'
+      - 'install'
+      - 'O=@THIS_BUILD_DIR@'
+      - 'OBJDIR=@THIS_BUILD_DIR@'
+      - 'HOSTCC=x86_64-lyr-gcc'
+      - 'CC=x86_64-lyr-gcc'
+      - 'CROSS_COMPILE=x86_64-lyr-'
+      - 'PREFIX=@SYSROOT_DIR@/usr/bin'
