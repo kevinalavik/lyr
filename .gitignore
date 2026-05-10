@@ -29,3 +29,5 @@ initrd/early-init
 
 *.orig
 *.rej
+
+*.log

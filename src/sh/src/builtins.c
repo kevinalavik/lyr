@@ -111,6 +111,9 @@ int sh_builtin_run(sh_shell_t *sh, int argc, char **argv, int *handled)
 	if (strcmp(argv[0], "mkdir") == 0)
 		return sh_builtin_mkdir(argc, argv);
 
+	if (strcmp(argv[0], "mount") == 0)
+		return sh_builtin_mount(argc, argv);
+
 	if (strcmp(argv[0], "nfetch") == 0)
 		return sh_builtin_nfetch(argc, argv);
 

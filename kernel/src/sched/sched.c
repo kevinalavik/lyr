@@ -20,6 +20,9 @@
 #define RFLAGS_IF (1ULL << 9)
 #define RFLAGS_RESERVED (1ULL << 1)
 
+#define SCHED_SIGTERM 15
+#define SCHED_SIGKILL 9
+
 extern void sched_iret_to_frame(interrupt_frame_t *frame)
 	__attribute__((noreturn));
 extern void sched_iret_to_user(uint64_t rip, uint64_t rsp)
@@ -464,6 +467,33 @@ static void process_note_zombie(pcb_t *process)
 			  process->name);
 }
 
+static int process_signal_allowed(const pcb_t *sender, const pcb_t *target)
+{
+	if (!sender || !target)
+		return 0;
+
+	if (sender->euid == 0)
+		return 1;
+
+	return sender->euid == target->ruid || sender->euid == target->euid ||
+		   sender->euid == target->suid;
+}
+
+static int process_is_kernel_owned(const pcb_t *process)
+{
+	return !process || process->pid <= 0 || process->vas == _lyr_kernel_vas ||
+		   !process->owns_vas;
+}
+
+static int process_kill_status(int signal)
+{
+	return 128 + signal;
+}
+
+static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
+							   interrupt_frame_t *frame, int status,
+							   const char *how);
+
 static void switch_to_thread(cpu_local_t *cpu, tcb_t *next)
 {
 	next->state = TCB_RUNNING;
@@ -486,6 +516,12 @@ static interrupt_frame_t *schedule_locked(cpu_local_t *cpu,
 	if (prev && prev->state == TCB_RUNNING)
 		prev->rsp = (uint64_t)frame;
 
+	if (prev && !prev->is_idle && prev->state == TCB_RUNNING &&
+		prev->process &&
+		atomic_load_explicit(&prev->process->dying, memory_order_acquire))
+		thread_finish_locked(cpu, prev, frame, prev->process->exit_status,
+						   " via signal");
+
 	if (enqueue_current && prev && !prev->is_idle &&
 		prev->state == TCB_RUNNING) {
 		prev->state = TCB_READY;
@@ -494,8 +530,18 @@ static interrupt_frame_t *schedule_locked(cpu_local_t *cpu,
 
 	tcb_t *next = NULL;
 	while ((next = runq_pop_locked(cpu)) != NULL) {
-		if (next->state == TCB_READY)
-			break;
+		if (next->state != TCB_READY)
+			continue;
+
+		if (next->process &&
+			atomic_load_explicit(&next->process->dying, memory_order_acquire)) {
+			thread_finish_locked(cpu, next, NULL, next->process->exit_status,
+							   " via signal");
+			next = NULL;
+			continue;
+		}
+
+		break;
 	}
 
 	if (!next)
@@ -743,12 +789,11 @@ static void sched_reap_current_cpu(void)
 	}
 }
 
-static void thread_finish_current_locked(cpu_local_t *cpu,
-										 interrupt_frame_t *frame, int status,
-										 const char *how)
+static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
+							   interrupt_frame_t *frame, int status,
+							   const char *how)
 {
-	tcb_t *thread = cpu->current_thread;
-	if (!thread || thread->state == TCB_ZOMBIE)
+	if (!cpu || !thread || thread->state == TCB_ZOMBIE)
 		return;
 	if (thread->is_idle)
 		kpanic(NULL, "sched: idle thread attempted to exit");
@@ -777,6 +822,14 @@ static void thread_finish_current_locked(cpu_local_t *cpu,
 	log_trace("sched", "tid=%d pid=%d exited%s on cpu%u status=%d", thread->tid,
 			  thread->process ? thread->process->pid : -1, how ? how : "",
 			  cpu->cpu_index, status);
+}
+
+static void thread_finish_current_locked(cpu_local_t *cpu,
+									 interrupt_frame_t *frame, int status,
+									 const char *how)
+{
+	thread_finish_locked(cpu, cpu ? cpu->current_thread : NULL, frame, status,
+					  how);
 }
 
 static void thread_bootstrap(tcb_t *thread)
@@ -1139,6 +1192,69 @@ bool sched_process_exists(pid_t pid)
 	irq_restore(flags);
 
 	return found;
+}
+
+int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
+{
+	if (!sender)
+		return VFS_ERR_BADF;
+
+	if (pid <= 0)
+		return VFS_ERR_NOSYS;
+
+	if (signal < 0 || signal > 64)
+		return VFS_ERR_INVAL;
+
+	uint64_t flags = irq_save();
+	pcb_t *target = NULL;
+
+	spinlock_acquire(&sched_lock);
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (process->pid == pid) {
+			target = process;
+			break;
+		}
+	}
+
+	if (!target) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return -ESRCH;
+	}
+
+	if (!process_signal_allowed(sender, target)) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return VFS_ERR_PERM;
+	}
+
+	if (signal == 0) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return VFS_OK;
+	}
+
+	if (signal != SCHED_SIGKILL && signal != SCHED_SIGTERM) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return VFS_ERR_NOSYS;
+	}
+
+	if (process_is_kernel_owned(target)) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return VFS_ERR_PERM;
+	}
+
+	target->exit_status = process_kill_status(signal);
+	atomic_store_explicit(&target->dying, true, memory_order_release);
+
+	log_trace("sched", "pid=%d signalled by pid=%d signal=%d", pid,
+			  sender->pid, signal);
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return VFS_OK;
 }
 
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,

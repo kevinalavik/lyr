@@ -121,6 +121,7 @@ bool sched_process_get_info(pid_t pid, sched_process_info_t *out);
 bool sched_process_get_nth(size_t index, sched_process_info_t *out);
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 					   int *status_out);
+int sched_process_signal(pcb_t *sender, pid_t pid, int signal);
 const char *sched_process_cwd(const pcb_t *process);
 int sched_process_setcwd(pcb_t *process, const char *path);
 void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src);

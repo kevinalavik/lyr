@@ -60,6 +60,7 @@ enum {
 	SYS_WAITPID,
 	SYS_NSLEEP,
 	SYS_UNAME,
+	SYS_KILL,
 };
 
 #ifdef LYR_KERNEL

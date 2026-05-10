@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <lyr/mount.h>
 #include <sh.h>
 #include <builtin.h>
 
@@ -470,6 +471,96 @@ int sh_builtin_ls(int argc, char **argv)
 
 	free(paths);
 	return status;
+}
+
+
+static int parse_mount_flags(const char *s, unsigned long *out)
+{
+	char *end = NULL;
+	unsigned long v;
+
+	errno = 0;
+	v = strtoul(s, &end, 0);
+	if (errno || !end || *end) {
+		fprintf(stderr, "mount: invalid flags: %s\n", s);
+		return -1;
+	}
+
+	*out = v;
+	return 0;
+}
+
+int sh_builtin_mount(int argc, char **argv)
+{
+	const char *fstype = "ext2";
+	const void *data = NULL;
+	unsigned long flags = 0;
+	int i = 1;
+
+	if (argc == 2 && strcmp(argv[1], "--help") == 0) {
+		puts("usage: mount [-t fstype] [-o data] [-f flags] source target");
+		puts("       mount source target fstype");
+		return 0;
+	}
+
+	while (i < argc && argv[i][0] == '-' && argv[i][1]) {
+		if (strcmp(argv[i], "--") == 0) {
+			i++;
+			break;
+		}
+
+		if (strcmp(argv[i], "-t") == 0) {
+			if (++i >= argc) {
+				fprintf(stderr, "mount: -t requires a filesystem type\n");
+				return 2;
+			}
+			fstype = argv[i++];
+			continue;
+		}
+
+		if (strcmp(argv[i], "-o") == 0) {
+			if (++i >= argc) {
+				fprintf(stderr, "mount: -o requires data\n");
+				return 2;
+			}
+			data = argv[i++];
+			continue;
+		}
+
+		if (strcmp(argv[i], "-f") == 0) {
+			if (++i >= argc) {
+				fprintf(stderr, "mount: -f requires flags\n");
+				return 2;
+			}
+			if (parse_mount_flags(argv[i++], &flags) < 0)
+				return 2;
+			continue;
+		}
+
+		fprintf(stderr, "mount: unknown option: %s\n", argv[i]);
+		return 2;
+	}
+
+	int remain = argc - i;
+	if (remain != 2 && remain != 3) {
+		fprintf(stderr, "usage: mount [-t fstype] [-o data] [-f flags] source target\n");
+		fprintf(stderr, "       mount source target fstype\n");
+		return 2;
+	}
+
+	const char *source = argv[i];
+	const char *target = argv[i + 1];
+
+	if (remain == 3)
+		fstype = argv[i + 2];
+
+	if (mount(source, target, fstype, flags, data) < 0) {
+		fprintf(stderr, "mount: %s on %s type %s: %s\n", source, target,
+				fstype, strerror(errno));
+		return 1;
+	}
+
+	return 0;
 }
 
 int sh_builtin_mkdir(int argc, char **argv)

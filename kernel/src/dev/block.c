@@ -25,6 +25,23 @@ static uint32_t rd32(const uint8_t *p)
 		   ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+static uint64_t rd64(const uint8_t *p)
+{
+	uint64_t v = 0;
+	for (size_t i = 0; i < 8; i++)
+		v |= (uint64_t)p[i] << (i * 8);
+	return v;
+}
+
+static int guid_is_zero(const uint8_t *p)
+{
+	for (size_t i = 0; i < 16; i++) {
+		if (p[i] != 0)
+			return 0;
+	}
+	return 1;
+}
+
 static int block_devfs_read(void *ctx, uint64_t off, void *buf, size_t len,
 							size_t *done)
 {
@@ -66,7 +83,11 @@ static int block_devfs_write(void *ctx, uint64_t off, const void *buf,
 static int part_read_blocks(block_device_t *dev, uint64_t lba, uint32_t count,
 							void *buf)
 {
-	if (!dev->parent)
+	if (!dev->parent || !buf)
+		return VFS_ERR_INVAL;
+	if (count == 0)
+		return VFS_OK;
+	if (lba >= dev->block_count || count > dev->block_count - lba)
 		return VFS_ERR_INVAL;
 	return dev->parent->read_blocks(dev->parent, dev->lba_offset + lba, count,
 									buf);
@@ -75,10 +96,86 @@ static int part_read_blocks(block_device_t *dev, uint64_t lba, uint32_t count,
 static int part_write_blocks(block_device_t *dev, uint64_t lba, uint32_t count,
 							 const void *buf)
 {
-	if (!dev->parent || !dev->parent->write_blocks)
+	if (!dev->parent || !dev->parent->write_blocks || !buf)
 		return VFS_ERR_NOSYS;
+	if (count == 0)
+		return VFS_OK;
+	if (lba >= dev->block_count || count > dev->block_count - lba)
+		return VFS_ERR_INVAL;
 	return dev->parent->write_blocks(dev->parent, dev->lba_offset + lba, count,
 									 buf);
+}
+
+static void block_register_partition(block_device_t *dev, unsigned number,
+									 uint64_t start, uint64_t count)
+{
+	if (!dev || number == 0 || count == 0)
+		return;
+	if (start >= dev->block_count || count > dev->block_count - start)
+		return;
+
+	block_device_t part;
+	memset(&part, 0, sizeof(part));
+	npf_snprintf(part.name, sizeof(part.name), "%sp%u", dev->name, number);
+	part.block_size = dev->block_size;
+	part.block_count = count;
+	part.lba_offset = start;
+	part.parent = dev;
+	part.read_blocks = part_read_blocks;
+	part.write_blocks = dev->write_blocks ? part_write_blocks : NULL;
+	block_register(&part);
+}
+
+static int block_probe_gpt(block_device_t *dev)
+{
+	if (!dev || dev->block_size < 512 || dev->block_count < 2)
+		return VFS_ERR_INVAL;
+
+	uint8_t *hdr = kzalloc(dev->block_size);
+	if (!hdr)
+		return VFS_ERR_NOMEM;
+	int r = block_read(dev, dev->block_size, hdr, dev->block_size);
+	if (r != VFS_OK) {
+		kfree(hdr);
+		return r;
+	}
+	if (memcmp(hdr, "EFI PART", 8) != 0) {
+		kfree(hdr);
+		return VFS_ERR_NOENT;
+	}
+
+	uint64_t entries_lba = rd64(hdr + 72);
+	uint32_t entry_count = rd32(hdr + 80);
+	uint32_t entry_size = rd32(hdr + 84);
+	kfree(hdr);
+
+	if (entry_size < 128 || entry_size > 4096 || entry_count == 0)
+		return VFS_ERR_INVAL;
+	if (entries_lba >= dev->block_count)
+		return VFS_ERR_INVAL;
+
+	uint8_t *entry = kzalloc(entry_size);
+	if (!entry)
+		return VFS_ERR_NOMEM;
+
+	for (uint32_t i = 0; i < entry_count; i++) {
+		uint64_t off = entries_lba * (uint64_t)dev->block_size +
+					   (uint64_t)i * entry_size;
+		if (off + entry_size > dev->block_count * (uint64_t)dev->block_size)
+			break;
+		r = block_read(dev, off, entry, entry_size);
+		if (r != VFS_OK)
+			break;
+		if (guid_is_zero(entry))
+			continue;
+		uint64_t first = rd64(entry + 32);
+		uint64_t last = rd64(entry + 40);
+		if (last < first)
+			continue;
+		block_register_partition(dev, i + 1, first, last - first + 1);
+	}
+	kfree(entry);
+	return VFS_OK;
 }
 
 static void block_probe_mbr(block_device_t *dev)
@@ -98,6 +195,20 @@ static void block_probe_mbr(block_device_t *dev)
 		return;
 	}
 
+	int protective_gpt = 0;
+	for (size_t i = 0; i < 4; i++) {
+		const uint8_t *e = mbr + 446 + i * 16;
+		if (e[4] == 0xEE) {
+			protective_gpt = 1;
+			break;
+		}
+	}
+	if (protective_gpt) {
+		kfree(mbr);
+		block_probe_gpt(dev);
+		return;
+	}
+
 	for (size_t i = 0; i < 4; i++) {
 		const uint8_t *e = mbr + 446 + i * 16;
 		uint8_t type = e[4];
@@ -105,17 +216,7 @@ static void block_probe_mbr(block_device_t *dev)
 		uint32_t count = rd32(e + 12);
 		if (type == 0 || count == 0)
 			continue;
-
-		block_device_t part;
-		memset(&part, 0, sizeof(part));
-		npf_snprintf(part.name, sizeof(part.name), "%sp%zu", dev->name, i + 1);
-		part.block_size = dev->block_size;
-		part.block_count = count;
-		part.lba_offset = start;
-		part.parent = dev;
-		part.read_blocks = part_read_blocks;
-		part.write_blocks = dev->write_blocks ? part_write_blocks : NULL;
-		block_register(&part);
+		block_register_partition(dev, i + 1, start, count);
 	}
 	kfree(mbr);
 }
@@ -173,7 +274,8 @@ int block_read(block_device_t *dev, uint64_t off, void *buf, size_t len)
 		return VFS_OK;
 	uint8_t *bounce = NULL;
 	uint32_t bs = dev->block_size;
-	if (bs == 0)
+	uint64_t size = dev->block_count * (uint64_t)bs;
+	if (bs == 0 || off >= size || len > size - off)
 		return VFS_ERR_INVAL;
 
 	if ((off % bs) == 0 && (len % bs) == 0)
@@ -211,6 +313,9 @@ int block_write(block_device_t *dev, uint64_t off, const void *buf, size_t len)
 	if (len == 0)
 		return VFS_OK;
 	uint32_t bs = dev->block_size;
+	uint64_t size = dev->block_count * (uint64_t)bs;
+	if (bs == 0 || off >= size || len > size - off)
+		return VFS_ERR_INVAL;
 	if ((off % bs) == 0 && (len % bs) == 0)
 		return dev->write_blocks(dev, off / bs, (uint32_t)(len / bs), buf);
 

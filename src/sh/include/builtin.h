@@ -14,6 +14,7 @@ int sh_builtin_set(int argc, char **argv);
 int sh_builtin_ls(int argc, char **argv);
 int sh_builtin_cat(int argc, char **argv);
 int sh_builtin_mkdir(int argc, char **argv);
+int sh_builtin_mount(int argc, char **argv);
 int sh_builtin_touch(int argc, char **argv);
 int sh_builtin_rm(int argc, char **argv);
 int sh_builtin_rmdir(int argc, char **argv);

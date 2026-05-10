@@ -1,5 +1,6 @@
 #include <login.h>
 #include <banner.h>
+#include <logging.h>
 #include <session.h>
 #include <term.h>
 #include <users.h>
@@ -9,6 +10,8 @@
 
 int main(void)
 {
+	login_logging_setup();
+
 	for (;;) {
 		banner_print_issue();
 		char username[MAX_FIELD];
@@ -30,6 +33,7 @@ int main(void)
 			term_read_password("Password: ", password,
 							   sizeof(password));
 			term_clear_string(password);
+			login_record_failure(username);
 			term_println(NULL, "Login incorrect");
 			sleep(LOCKOUT_SECS);
 			continue;
@@ -67,12 +71,15 @@ int main(void)
 		}
 
 		if (!authenticated) {
+			login_record_failure(username);
 			term_println(NULL,
 						 "Login incorrect");
 			sleep(LOCKOUT_SECS);
 			continue;
 		}
 
+		login_print_lastlog(&user);
+		login_record_success(&user);
 		banner_print_motd();
 		session_run(&user);
 	}

@@ -45,6 +45,7 @@ int sh_builtin_help(void)
 	puts("  ls [-alhR]      list directory contents");
 	puts("  loadkeys KEYMAP load keyboard map");
 	puts("  mkdir DIR...    create directories");
+	puts("  mount [-t FS] [-o DATA] [-f FLAGS] SOURCE TARGET");
 	puts("  nfetch URL      fetch HTTP or raw TCP data");
 	puts("  pgrep PATTERN   print PIDs whose command contains PATTERN");
 	puts("  pidof NAME      print PIDs whose command exactly matches NAME");

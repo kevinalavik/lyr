@@ -17,6 +17,7 @@
 #include <dev/pit.h>
 #include <sys/poll.h>
 #include <stdarg.h>
+#include <debug/panic.h>
 
 #define MSR_EFER 0xC0000080
 #define MSR_STAR 0xC0000081
@@ -46,6 +47,9 @@
 #define SYS_PATH_MAX 512
 
 #define SYS_POLL_NFDS_MAX 1024
+
+#define SYS_SIGTERM 15
+#define SYS_SIGKILL 9
 
 #define SYS_NSEC_PER_SEC 1000000000LL
 #define SYS_NSEC_PER_MSEC 1000000LL
@@ -888,48 +892,121 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 	char init_path[256];
 
 	int r = syscall_copy_user_string(frame->rdi, source, sizeof(source));
+	if (r != VFS_OK) {
+		log_err(
+			"syscall",
+			"change_root: failed to copy source from user: status=%s(%d); exiting caller",
+			vfs_err_name(r), r);
 
-	if (r != VFS_OK)
-		return r;
+		return (long)(uintptr_t)sched_syscall_exit(frame, r);
+	}
 
 	r = syscall_copy_user_string(frame->rsi, fstype, sizeof(fstype));
+	if (r != VFS_OK) {
+		log_err(
+			"syscall",
+			"change_root: failed to copy filesystem type from user: source='%s' status=%s(%d); exiting caller",
+			source, vfs_err_name(r), r);
 
-	if (r != VFS_OK)
-		return r;
+		return (long)(uintptr_t)sched_syscall_exit(frame, r);
+	}
 
 	r = syscall_copy_user_string(frame->rdx, init_path, sizeof(init_path));
+	if (r != VFS_OK) {
+		log_err(
+			"syscall",
+			"change_root: failed to copy init path from user: source='%s' fstype='%s' status=%s(%d); exiting caller",
+			source, fstype, vfs_err_name(r), r);
 
-	if (r != VFS_OK)
-		return r;
+		return (long)(uintptr_t)sched_syscall_exit(frame, r);
+	}
+
+	if (source[0] == '\0') {
+		log_err("syscall", "change_root: empty source path; exiting caller");
+
+		return (long)(uintptr_t)sched_syscall_exit(frame, VFS_ERR_INVAL);
+	}
+
+	if (fstype[0] == '\0') {
+		log_err(
+			"syscall",
+			"change_root: empty filesystem type for source='%s'; exiting caller",
+			source);
+
+		return (long)(uintptr_t)sched_syscall_exit(frame, VFS_ERR_INVAL);
+	}
+
+	if (init_path[0] == '\0') {
+		log_err(
+			"syscall",
+			"change_root: empty init path for source='%s' fstype='%s'; exiting caller",
+			source, fstype);
+
+		return (long)(uintptr_t)sched_syscall_exit(frame, VFS_ERR_INVAL);
+	}
 
 	r = vfs_mkdir("/newroot", 0755, syscall_current_cred());
+	if (r != VFS_OK && r != VFS_ERR_EXIST) {
+		log_err(
+			"syscall",
+			"change_root: failed to create /newroot: status=%s(%d); exiting caller",
+			vfs_err_name(r), r);
 
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
-		return r;
+		return (long)(uintptr_t)sched_syscall_exit(frame, r);
+	}
+
+	if (r == VFS_ERR_EXIST) {
+		log_warn("syscall", "change_root: /newroot already exists, continuing");
+	}
 
 	r = fs_mount_spec(source, "/newroot", fstype, 0, NULL);
+	if (r != VFS_OK) {
+		log_err(
+			"syscall",
+			"change_root: failed to mount source='%s' type='%s' on /newroot: status=%s(%d); exiting caller",
+			source, fstype, vfs_err_name(r), r);
 
-	if (r != VFS_OK)
-		return r;
+		return (long)(uintptr_t)sched_syscall_exit(frame, r);
+	}
 
 	r = vfs_change_root("/newroot", syscall_current_cred());
+	if (r != VFS_OK) {
+		log_err(
+			"syscall",
+			"change_root: mounted source='%s' type='%s' on /newroot but failed to switch root: status=%s(%d); exiting caller",
+			source, fstype, vfs_err_name(r), r);
 
-	if (r != VFS_OK)
-		return r;
+		return (long)(uintptr_t)sched_syscall_exit(frame, r);
+	}
+
+	r = vfs_mkdir("/dev", 0755, syscall_current_cred());
+	if (r != VFS_OK && r != VFS_ERR_EXIST) {
+		kpanic(
+			frame,
+			"change_root: new root is active, but failed to create /dev: source='%s' error=%s(%d)",
+			source, vfs_err_name(r), r);
+	}
 
 	r = fs_mount_spec("devfs", "/dev", "devfs", 0, NULL);
-
 	if (r != VFS_OK) {
-		log_err("syscall",
-				"failed to mount devfs on new root /dev status=%s(%d)",
-				vfs_err_name(r), r);
-		return r;
+		kpanic(
+			frame,
+			"change_root: new root is active, but failed to mount devfs on /dev: source='%s' error=%s(%d)",
+			source, vfs_err_name(r), r);
 	}
 
 	r = init_spawn(init_path);
+	if (r != VFS_OK) {
+		kpanic(
+			frame,
+			"change_root: failed to launch init='%s' on new root from source='%s' type='%s': error=%s(%d)",
+			init_path, source, fstype, vfs_err_name(r), r);
+	}
 
-	if (r != VFS_OK)
-		return r;
+	log_info(
+		"syscall",
+		"change_root: successfully switched root to source='%s' and launched init='%s'",
+		source, init_path);
 
 	return (long)(uintptr_t)sched_syscall_exit(frame, 0);
 }
@@ -2369,6 +2446,27 @@ static long sys_setegid_handler(interrupt_frame_t *frame)
 								 (vfs_gid_t)frame->rdi);
 }
 
+static long sys_kill_handler(interrupt_frame_t *frame)
+{
+	pcb_t *process = syscall_current_process();
+	pid_t pid = (pid_t)frame->rdi;
+	int signal = (int)frame->rsi;
+
+	if (!process)
+		return VFS_ERR_BADF;
+
+	int r = sched_process_signal(process, pid, signal);
+
+	if (r != VFS_OK)
+		return r;
+
+	if (pid == process->pid && (signal == SYS_SIGKILL || signal == SYS_SIGTERM))
+		return (long)(uintptr_t)sched_syscall_exit(
+			frame, 128 + signal);
+
+	return VFS_OK;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Sleep syscall                                                              */
 /* -------------------------------------------------------------------------- */
@@ -2464,6 +2562,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_SETEUID] = sys_seteuid_handler,
 	[SYS_SETGID] = sys_setgid_handler,
 	[SYS_SETEGID] = sys_setegid_handler,
+	[SYS_KILL] = sys_kill_handler,
 };
 
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
@@ -2478,6 +2577,9 @@ interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
 		long ret = syscall_table[nr](frame);
 
 		if (nr == SYS_EXIT || nr == SYS_CHANGE_ROOT)
+			return (interrupt_frame_t *)(uintptr_t)ret;
+
+		if (nr == SYS_KILL && ret < -4095)
 			return (interrupt_frame_t *)(uintptr_t)ret;
 
 		frame->rax = (uint64_t)(int64_t)ret;
