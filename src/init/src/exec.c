@@ -425,7 +425,6 @@ static int start_program(struct runtime *rt, char **argv)
 	if (pid < 0)
 		return -1;
 
-	printf("init: started pid %ld: %s\n", (long)pid, argv[0]);
 	return 0;
 }
 
@@ -444,10 +443,7 @@ static int exec_program(struct runtime *rt, char **argv)
 		return -1;
 	}
 
-	printf("init: executing %s\n", argv[0]);
-
 	execve(argv[0], argv, envp);
-
 	fprintf(stderr, "init: execve(%s) failed: %s\n", argv[0], strerror(errno));
 
 	free(envp);
@@ -461,15 +457,6 @@ void init_reap_forever(void)
 		pid_t pid = waitpid(-1, &status, 0);
 
 		if (pid > 0) {
-			if (WIFEXITED(status)) {
-				printf("init: reaped pid %ld status %d\n", (long)pid,
-					   WEXITSTATUS(status));
-			} else if (WIFSIGNALED(status)) {
-				printf("init: reaped pid %ld signal %d\n", (long)pid,
-					   WTERMSIG(status));
-			} else {
-				printf("init: reaped pid %ld\n", (long)pid);
-			}
 			continue;
 		}
 
@@ -657,7 +644,6 @@ static int execute_command(struct runtime *rt, const struct command *cmd)
 			return -1;
 		}
 
-		printf("init: entering PID 1 reaper loop\n");
 		init_reap_forever();
 	}
 

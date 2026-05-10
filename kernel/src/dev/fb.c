@@ -1,9 +1,7 @@
 #include <dev/fb.h>
-
 #include <errno.h>
 #include <fs/devfs.h>
 #include <lib/lyrterm.h>
-#include <lyr/fb.h>
 #include <sys/poll.h>
 
 static int fbdev_read(void *ctx, uint64_t off, void *buf, size_t len,
@@ -57,8 +55,8 @@ static int fbdev_poll(void *ctx, int events)
 
 int fbdev_init(void)
 {
-	int r = devfs_register_chr_poll(LYR_FB_DEVICE, 0666, fbdev_read, fbdev_write,
-									fbdev_ioctl, fbdev_poll, NULL);
+	int r = devfs_register_chr_poll(LYR_FB_DEVICE, 0666, fbdev_read,
+									fbdev_write, fbdev_ioctl, fbdev_poll, NULL);
 	if (r != 0 && r != -EEXIST)
 		return r;
 	return 0;
