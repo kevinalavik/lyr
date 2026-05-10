@@ -1,11 +1,10 @@
 #include <dev/console.h>
+#include <dev/uart.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
 #include <lib/lyrterm.h>
 #include <lib/string.h>
 #include <sys/poll.h>
-#include <util/kprintf.h>
-#include <dev/uart.h>
 
 #define LYR_NCCS 19
 #define LYR_ECHO 0000010u
@@ -27,60 +26,102 @@ typedef struct lyr_termios {
 	uint32_t c_ospeed;
 } lyr_termios_t;
 
-static struct {
+typedef struct console_input_ring {
 	volatile uint16_t head;
 	volatile uint16_t tail;
 	volatile uint16_t count;
 	volatile uint16_t lines;
 	uint8_t buf[CONSOLE_INPUT_SIZE];
-} console_in;
+} console_input_ring_t;
+
+typedef struct console_tty {
+	unsigned index;
+	char name[LYR_TTY_NAME_MAX];
+	console_input_ring_t input;
+	lyr_termios_t termios;
+	lyrterm_state_t render;
+} console_tty_t;
+
+static console_tty_t consoles[LYR_TTY_COUNT];
+static unsigned active_console;
 
 static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 						 size_t *done);
 
-static lyr_termios_t console_termios = {
-	.c_lflag = LYR_ISIG | LYR_ICANON | LYR_ECHO | LYR_IEXTEN,
-	.c_ispeed = 38400,
-	.c_ospeed = 38400,
-};
-
-static void console_wait_input(void)
+static console_tty_t *console_ctx_to_tty(void *ctx)
 {
+	if (!ctx)
+		return &consoles[active_console];
+	return (console_tty_t *)ctx;
+}
+
+static void console_tty_name(unsigned index, char *buf, size_t cap)
+{
+	if (!buf || cap < 5)
+		return;
+
+	buf[0] = 't';
+	buf[1] = 't';
+	buf[2] = 'y';
+	buf[3] = (char)('1' + index);
+	buf[4] = '\0';
+}
+
+static void console_tty_init(console_tty_t *tty, unsigned index)
+{
+	memset(tty, 0, sizeof(*tty));
+	tty->index = index;
+	tty->termios.c_lflag = LYR_ISIG | LYR_ICANON | LYR_ECHO | LYR_IEXTEN;
+	tty->termios.c_ispeed = 38400;
+	tty->termios.c_ospeed = 38400;
+	tty->termios.c_cc[LYR_VMIN] = 1;
+	tty->termios.c_cc[LYR_VTIME] = 0;
+	console_tty_name(index, tty->name, sizeof(tty->name));
+	lyrterm_capture_state(&tty->render);
+}
+
+static void console_wait_input(console_tty_t *tty)
+{
+	if (tty->index == active_console)
+		lyrterm_flush();
+
 	for (;;) {
-		if (console_termios.c_lflag & LYR_ICANON) {
-			if (console_in.lines > 0)
+		if (tty->termios.c_lflag & LYR_ICANON) {
+			if (tty->input.lines > 0)
 				return;
-		} else if (console_in.count > 0) {
+		} else if (tty->input.count > 0) {
 			return;
 		}
 		__asm__ volatile("sti; hlt; cli" ::: "memory");
 	}
 }
 
-static void console_input_push(uint8_t ch)
+static void console_input_push(console_tty_t *tty, uint8_t ch)
 {
-	if (console_in.count >= CONSOLE_INPUT_SIZE)
+	console_input_ring_t *in = &tty->input;
+	if (in->count >= CONSOLE_INPUT_SIZE)
 		return;
 
-	console_in.buf[console_in.head++] = ch;
-	console_in.head %= CONSOLE_INPUT_SIZE;
-	console_in.count++;
+	in->buf[in->head++] = ch;
+	in->head %= CONSOLE_INPUT_SIZE;
+	in->count++;
 
 	if (ch == '\n' || ch == '\r')
-		console_in.lines++;
+		in->lines++;
 }
 
-static int console_input_pop(uint8_t *out)
+static int console_input_pop(console_tty_t *tty, uint8_t *out)
 {
-	if (console_in.count == 0)
+	console_input_ring_t *in = &tty->input;
+	if (in->count == 0)
 		return 0;
 
-	*out = console_in.buf[console_in.tail++];
-	console_in.tail %= CONSOLE_INPUT_SIZE;
-	console_in.count--;
+	*out = in->buf[in->tail++];
+	in->tail %= CONSOLE_INPUT_SIZE;
+	in->count--;
 
-	if ((*out == '\n' || *out == '\r') && console_in.lines > 0)
-		console_in.lines--;
+	if ((*out == '\n' || *out == '\r') && in->lines > 0)
+		in->lines--;
 
 	return 1;
 }
@@ -90,88 +131,81 @@ static int utf8_is_continuation(uint8_t ch)
 	return (ch & 0xc0u) == 0x80u;
 }
 
-static void console_input_backspace(void)
+static void console_input_backspace(console_tty_t *tty)
 {
-	if (console_in.count == 0 || console_in.tail == console_in.head)
+	console_input_ring_t *in = &tty->input;
+	if (in->count == 0 || in->tail == in->head)
 		return;
 
-	uint16_t prev =
-		console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
-	uint8_t old = console_in.buf[prev];
+	uint16_t prev = in->head ? in->head - 1 : CONSOLE_INPUT_SIZE - 1;
+	uint8_t old = in->buf[prev];
 	if (old == '\n' || old == '\r')
 		return;
 
-	/* Remove the last byte, then remove UTF-8 continuation bytes until the
-	 * leading byte of the same scalar has also been removed. This keeps
-	 * backspace from leaving invalid partial UTF-8 in canonical input.
-	 */
 	for (;;) {
-		console_in.head = prev;
-		console_in.count--;
+		in->head = prev;
+		in->count--;
 
-		if (!utf8_is_continuation(old) || console_in.count == 0 ||
-			console_in.tail == console_in.head)
+		if (!utf8_is_continuation(old) || in->count == 0 || in->tail == in->head)
 			break;
 
-		prev = console_in.head ? console_in.head - 1 : CONSOLE_INPUT_SIZE - 1;
-		old = console_in.buf[prev];
+		prev = in->head ? in->head - 1 : CONSOLE_INPUT_SIZE - 1;
+		old = in->buf[prev];
 		if (old == '\n' || old == '\r')
 			break;
 	}
 
-	if (console_termios.c_lflag & LYR_ECHO)
-		console_write(NULL, 0, "\b \b", 3, NULL);
+	if ((tty->termios.c_lflag & LYR_ECHO) && tty->index == active_console)
+		console_write(tty, 0, "\b \b", 3, NULL);
 }
 
 void console_input_put(uint8_t ch)
 {
-	int canonical = (console_termios.c_lflag & LYR_ICANON) != 0;
-	int echo = (console_termios.c_lflag & LYR_ECHO) != 0;
+	console_tty_t *tty = &consoles[active_console];
+	int canonical = (tty->termios.c_lflag & LYR_ICANON) != 0;
+	int echo = (tty->termios.c_lflag & LYR_ECHO) != 0;
 
 	if (ch == '\r')
 		ch = '\n';
 
 	if (canonical && (ch == 8 || ch == 127)) {
-		console_input_backspace();
+		console_input_backspace(tty);
 		return;
 	}
 
-	console_input_push(ch);
+	console_input_push(tty, ch);
 
-	if (echo) {
-		if (ch == '\n') {
-			console_write(NULL, 0, "\r\n", 2, NULL);
-		} else if (canonical && (ch == 8 || ch == 127)) {
-			return;
-		} else {
-			console_write(NULL, 0, &ch, 1, NULL);
-		}
-	}
+	if (!echo)
+		return;
+
+	if (ch == '\n')
+		console_write(tty, 0, "\r\n", 2, NULL);
+	else
+		console_write(tty, 0, &ch, 1, NULL);
 }
 
 static int console_read(void *ctx, uint64_t off, void *buf, size_t len,
 						size_t *done)
 {
-	(void)ctx;
 	(void)off;
+	console_tty_t *tty = console_ctx_to_tty(ctx);
 
 	if (done)
 		*done = 0;
-
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (len == 0)
-		return VFS_OK;
+		return 0;
 
-	console_wait_input();
+	console_wait_input(tty);
 
 	uint8_t *p = buf;
 	size_t count = 0;
-	int canonical = (console_termios.c_lflag & LYR_ICANON) != 0;
+	int canonical = (tty->termios.c_lflag & LYR_ICANON) != 0;
 
 	while (count < len) {
 		uint8_t ch;
-		if (!console_input_pop(&ch))
+		if (!console_input_pop(tty, &ch))
 			break;
 		p[count++] = ch;
 		if (canonical && (ch == '\n' || ch == '\r'))
@@ -181,37 +215,39 @@ static int console_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = count;
 
-	return VFS_OK;
+	return 0;
 }
 
 static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 						 size_t *done)
 {
-	(void)ctx;
 	(void)off;
+	console_tty_t *tty = console_ctx_to_tty(ctx);
 
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
-	uart_wbuf(buf, len);
-	uart_drain(0);
-	lyrterm_wbuf(buf, len);
-	lyrterm_flush();
+	if (tty->index == active_console) {
+		uart_wbuf(buf, len);
+		lyrterm_wbuf(buf, len);
+	} else {
+		lyrterm_update_state(&tty->render, buf, len);
+	}
 
 	if (done)
 		*done = len;
 
-	return VFS_OK;
+	return 0;
 }
 
 static int console_poll(void *ctx, int events)
 {
-	(void)ctx;
-
+	console_tty_t *tty = console_ctx_to_tty(ctx);
 	int revents = 0;
+
 	if (events & LYR_POLL_READ_MASK) {
-		if ((console_termios.c_lflag & LYR_ICANON) ? console_in.lines > 0 :
-													 console_in.count > 0)
+		if ((tty->termios.c_lflag & LYR_ICANON) ? tty->input.lines > 0 :
+													 tty->input.count > 0)
 			revents |= LYR_POLLIN | LYR_POLLRDNORM;
 	}
 	if (events & LYR_POLL_WRITE_MASK)
@@ -222,7 +258,7 @@ static int console_poll(void *ctx, int events)
 static int console_get_winsize(lyr_winsize_t *ws)
 {
 	if (!ws)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint32_t cols = 0;
 	uint32_t rows = 0;
@@ -235,76 +271,101 @@ static int console_get_winsize(lyr_winsize_t *ws)
 	ws->ws_col = (uint16_t)cols;
 	ws->ws_xpixel = (uint16_t)width;
 	ws->ws_ypixel = (uint16_t)height;
-
-	return VFS_OK;
+	return 0;
 }
 
 static int console_ioctl(void *ctx, unsigned long request, void *arg)
 {
-	(void)ctx;
+	console_tty_t *tty = console_ctx_to_tty(ctx);
 
 	switch (request) {
 	case LYR_TCGETS:
 		if (!arg)
-			return VFS_ERR_INVAL;
-		memcpy(arg, &console_termios, sizeof(console_termios));
-		return VFS_OK;
+			return -EINVAL;
+		memcpy(arg, &tty->termios, sizeof(tty->termios));
+		return 0;
 
 	case LYR_TCSETS:
 	case LYR_TCSETSW:
 	case LYR_TCSETSF:
 		if (!arg)
-			return VFS_ERR_INVAL;
-		memcpy(&console_termios, arg, sizeof(console_termios));
-		return VFS_OK;
+			return -EINVAL;
+		memcpy(&tty->termios, arg, sizeof(tty->termios));
+		return 0;
 
 	case LYR_TIOCGWINSZ:
 		return console_get_winsize((lyr_winsize_t *)arg);
 
 	case LYR_TIOCSWINSZ:
-		return arg ? VFS_OK : VFS_ERR_INVAL;
+		return arg ? 0 : -EINVAL;
 
 	case LYR_TIOCGNAME:
 		if (!arg)
-			return VFS_ERR_INVAL;
-		memcpy(arg, "tty", sizeof("tty"));
-		return VFS_OK;
+			return -EINVAL;
+		memcpy(arg, tty->name, strlen(tty->name) + 1);
+		return 0;
 
 	default:
-		return VFS_ERR_NOTTY;
+		return -ENOTTY;
 	}
+}
+
+int console_switch_tty(unsigned index)
+{
+	if (index >= LYR_TTY_COUNT || index == active_console)
+		return index < LYR_TTY_COUNT ? 0 : -EINVAL;
+
+	lyrterm_capture_state(&consoles[active_console].render);
+	active_console = index;
+	lyrterm_restore_state(&consoles[active_console].render);
+	return 0;
+}
+
+unsigned console_active_tty(void)
+{
+	return active_console;
 }
 
 int console_init(void)
 {
-	console_termios.c_cc[LYR_VMIN] = 1;
-	console_termios.c_cc[LYR_VTIME] = 0;
+	for (unsigned i = 0; i < LYR_TTY_COUNT; i++)
+		console_tty_init(&consoles[i], i);
+
+	for (unsigned i = 0; i < LYR_TTY_COUNT; i++) {
+		char path[32];
+		memcpy(path, "/dev/", 5);
+		memcpy(path + 5, consoles[i].name, strlen(consoles[i].name) + 1);
+		int r = devfs_register_chr_poll(path, 0666, console_read, console_write,
+										console_ioctl, console_poll, &consoles[i]);
+		if (r != 0 && r != -EEXIST)
+			return r;
+	}
 
 	int r = devfs_register_chr_poll("/dev/console", 0666, console_read,
 									console_write, console_ioctl, console_poll,
 									NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/tty", 0666, console_read, console_write,
 								console_ioctl, console_poll, NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stdin", 0444, console_read, NULL,
 								console_ioctl, console_poll, NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stdout", 0222, NULL, console_write,
 								console_ioctl, console_poll, NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stderr", 0222, NULL, console_write,
 								console_ioctl, console_poll, NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
-	return VFS_OK;
+	return 0;
 }

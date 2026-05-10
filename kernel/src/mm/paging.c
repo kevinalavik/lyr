@@ -7,6 +7,7 @@
 #include <debug/assert.h>
 #include <debug/panic.h>
 #include <mm/heap.h>
+#include <sync/spinlock.h>
 
 ptable_t *kernel_ptable = NULL;
 extern char __limine_requests_start[];
@@ -24,6 +25,8 @@ extern char __data_end[];
 #define PML_SHIFT_L2 21
 #define PML_SHIFT_L3 30
 #define PML_SHIFT_L4 39
+
+static spinlock_t paging_lock = SPINLOCK_INIT;
 
 static inline uint16_t _pml1_idx(uintptr_t v)
 {
@@ -144,11 +147,14 @@ static int _table_empty(uint64_t *tbl)
 	return 1;
 }
 
+static void ptable_free_empty_locked(ptable_t *pt, uint64_t virt);
+
 void map_page(ptable_t *pt, uint64_t virt, page_t *page, uint64_t flags)
 {
 	assert(pt != NULL);
 	assert(page != NULL);
 
+	spinlock_acquire(&paging_lock);
 	virt = ALIGN_DOWN(virt, PAGE_SIZE);
 
 	uint64_t phys = pfndb_page_to_phys(page);
@@ -172,12 +178,14 @@ void map_page(ptable_t *pt, uint64_t virt, page_t *page, uint64_t flags)
 	page_ref(page); /* refcount++ — this mapping owns a reference */
 
 	asm volatile("invlpg (%0)" ::"r"(virt) : "memory");
+	spinlock_release(&paging_lock);
 }
 
 void map_page_phys(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t flags)
 {
 	assert(pt != NULL);
 
+	spinlock_acquire(&paging_lock);
 	virt = ALIGN_DOWN(virt, PAGE_SIZE);
 	phys = ALIGN_DOWN(phys, PAGE_SIZE);
 
@@ -192,24 +200,29 @@ void map_page_phys(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t flags)
 		kpanic(NULL, "paging: failed to allocate page-table page");
 
 	if (*pte & VMM_PRESENT)
-		return;
+		goto out;
 
 	*pte = phys | (flags & ~PAGE_FRAME_MASK) | VMM_PRESENT;
 
 	asm volatile("invlpg (%0)" ::"r"(virt) : "memory");
+out:
+	spinlock_release(&paging_lock);
 }
 
 void unmap_page(ptable_t *pt, uint64_t virt)
 {
 	assert(pt != NULL);
 
+	spinlock_acquire(&paging_lock);
 	virt = ALIGN_DOWN(virt, PAGE_SIZE);
 
 	uint64_t *pml4 = (uint64_t *)PHYS_TO_VIRT((uint64_t)pt);
 	uint64_t *pte = _leaf_entry(pml4, virt, 0);
 
-	if (!pte || !(*pte & VMM_PRESENT))
+	if (!pte || !(*pte & VMM_PRESENT)) {
+		spinlock_release(&paging_lock);
 		return;
+	}
 
 	uint64_t phys = *pte & PAGE_FRAME_MASK;
 	*pte = 0;
@@ -221,7 +234,8 @@ void unmap_page(ptable_t *pt, uint64_t virt)
 		page_unref(page);
 	}
 
-	ptable_free_empty(pt, virt);
+	ptable_free_empty_locked(pt, virt);
+	spinlock_release(&paging_lock);
 }
 
 uint64_t get_phys(ptable_t *pt, uint64_t virt)
@@ -278,7 +292,7 @@ void ptable_destroy(ptable_t *pt)
 	_free_pt((uint64_t)pt);
 }
 
-void ptable_free_empty(ptable_t *pt, uint64_t virt)
+static void ptable_free_empty_locked(ptable_t *pt, uint64_t virt)
 {
 	uint64_t *pml4 = (uint64_t *)PHYS_TO_VIRT((uint64_t)pt);
 
@@ -313,6 +327,13 @@ void ptable_free_empty(ptable_t *pt, uint64_t virt)
 		_free_pt(pml4[i4] & PAGE_FRAME_MASK);
 		pml4[i4] = 0;
 	}
+}
+
+void ptable_free_empty(ptable_t *pt, uint64_t virt)
+{
+	spinlock_acquire(&paging_lock);
+	ptable_free_empty_locked(pt, virt);
+	spinlock_release(&paging_lock);
 }
 
 void map_mmio(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t npages)

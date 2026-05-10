@@ -99,7 +99,7 @@ int net_ping_echo(uint32_t dst_ip, uint16_t ident, uint16_t seq,
 {
 	netdev_t *dev = net_route(dst_ip, NULL);
 	if (!dev)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	return net_ping_echo_dev(dev, dst_ip, ident, seq, timeout_ms, result);
 }
 
@@ -108,7 +108,7 @@ int net_ping_echo_dev(netdev_t *dev, uint32_t dst_ip, uint16_t ident,
 					  net_ping_result_t *result)
 {
 	if (!dev)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	uint32_t next_hop = dst_ip;
 	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask))
@@ -116,7 +116,7 @@ int net_ping_echo_dev(netdev_t *dev, uint32_t dst_ip, uint16_t ident,
 
 	uint8_t mac[NET_ETH_ALEN];
 	int r = net_arp_resolve(dev, next_hop, timeout_ms, mac);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	ping_ident = ident;
@@ -130,10 +130,10 @@ int net_ping_echo_dev(netdev_t *dev, uint32_t dst_ip, uint16_t ident,
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	net_poll_until(dev, until, &ping_ready);
 	if (!ping_ready)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	if (result)
 		memcpy(result, &ping_result, sizeof(*result));
-	return VFS_OK;
+	return 0;
 }
 
 int net_ping(uint32_t dst_ip, uint16_t ident, uint16_t seq, uint64_t timeout_ms)

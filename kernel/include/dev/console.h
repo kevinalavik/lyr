@@ -12,6 +12,7 @@
 #define LYR_TIOCGNAME 0x4c590001UL
 
 #define LYR_TTY_NAME_MAX 64
+#define LYR_TTY_COUNT 4
 
 typedef struct lyr_winsize {
 	uint16_t ws_row;
@@ -22,5 +23,7 @@ typedef struct lyr_winsize {
 
 int console_init(void);
 void console_input_put(uint8_t ch);
+int console_switch_tty(unsigned index);
+unsigned console_active_tty(void);
 
 #endif /* _LYR_DEV_CONSOLE_H */

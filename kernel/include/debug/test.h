@@ -83,15 +83,15 @@ static void ipc_test(void)
 	assert(ipc_endpoint_register("test.ipc", 1, ipc_test_handler, &state) ==
 		   IPC_ERR_EXIST);
 	vfs_stat_t st;
-	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) == VFS_OK);
+	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) == 0);
 	assert(VFS_S_ISCHR(st.mode));
 	vfs_file_t *endpoint_file = NULL;
 	assert(vfs_open("/dev/ipc/test.ipc", VFS_O_RDONLY, 0, &vfs_root_cred,
-					&endpoint_file) == VFS_OK);
+					&endpoint_file) == 0);
 	char endpoint_info[64];
 	size_t endpoint_info_len = 0;
 	assert(vfs_read(endpoint_file, endpoint_info, sizeof(endpoint_info) - 1,
-					&endpoint_info_len) == VFS_OK);
+					&endpoint_info_len) == 0);
 	vfs_close(endpoint_file);
 	endpoint_info[endpoint_info_len] = '\0';
 	assert(strlen(endpoint_info) > 0);
@@ -135,7 +135,7 @@ static void ipc_test(void)
 	assert(created->size == sizeof(in));
 	assert(created->data);
 	memcpy(created->data, &in, sizeof(in));
-	assert(vfs_stat("/dev/shm/test.ipc.shm", &vfs_root_cred, &st) == VFS_OK);
+	assert(vfs_stat("/dev/shm/test.ipc.shm", &vfs_root_cred, &st) == 0);
 	assert(VFS_S_ISCHR(st.mode));
 
 	ipc_shm_t *opened = NULL;
@@ -147,24 +147,24 @@ static void ipc_test(void)
 	assert(memcmp(stored->tag, "ipc", 4) == 0);
 	vfs_file_t *shm_file = NULL;
 	assert(vfs_open("/dev/shm/test.ipc.shm", VFS_O_RDWR, 0, &vfs_root_cred,
-					&shm_file) == VFS_OK);
+					&shm_file) == 0);
 	ipc_test_payload_t via_dev = { .value = 0xAABBCCDDu };
 	memcpy(via_dev.tag, "dev", 4);
 	size_t io_done = 0;
-	assert(vfs_write(shm_file, &via_dev, sizeof(via_dev), &io_done) == VFS_OK);
+	assert(vfs_write(shm_file, &via_dev, sizeof(via_dev), &io_done) == 0);
 	assert(io_done == sizeof(via_dev));
-	assert(vfs_seek(shm_file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
+	assert(vfs_seek(shm_file, VFS_SEEK_SET, 0, NULL) == 0);
 	memset(&via_dev, 0, sizeof(via_dev));
-	assert(vfs_read(shm_file, &via_dev, sizeof(via_dev), &io_done) == VFS_OK);
+	assert(vfs_read(shm_file, &via_dev, sizeof(via_dev), &io_done) == 0);
 	vfs_close(shm_file);
 	assert(io_done == sizeof(via_dev));
 	assert(via_dev.value == 0xAABBCCDDu);
 	assert(memcmp(via_dev.tag, "dev", 4) == 0);
 	assert(ipc_shm_unlink("test.ipc.shm") == IPC_OK);
 	assert(vfs_stat("/dev/shm/test.ipc.shm", &vfs_root_cred, &st) ==
-		   VFS_ERR_NOENT);
+		   -ENOENT);
 	assert(ipc_endpoint_unregister("test.ipc") == IPC_OK);
-	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) == VFS_ERR_NOENT);
+	assert(vfs_stat("/dev/ipc/test.ipc", &vfs_root_cred, &st) == -ENOENT);
 
 	log_debug("ipc_test", "all tests passed");
 }
@@ -1018,28 +1018,28 @@ static void vfs_tmpfs_test(vas_t *vas)
 	vfs_cred_t user = { .uid = 1000, .gid = 1000, .umask = 0022 };
 	vfs_cred_t other = { .uid = 2000, .gid = 2000, .umask = 0022 };
 
-	assert(vfs_mkdir("/tmp", 0777, &vfs_root_cred) == VFS_OK);
-	assert(vfs_chmod("/tmp", 01777, &vfs_root_cred) == VFS_OK);
+	assert(vfs_mkdir("/tmp", 0777, &vfs_root_cred) == 0);
+	assert(vfs_chmod("/tmp", 01777, &vfs_root_cred) == 0);
 
 	vfs_file_t *file = NULL;
 	assert(vfs_open("/tmp/hello", VFS_O_CREAT | VFS_O_RDWR, 0640, &user,
-					&file) == VFS_OK);
+					&file) == 0);
 	assert(file);
 
 	const char *msg = "hello tmpfs";
 	size_t done = 0;
-	assert(vfs_write(file, msg, strlen(msg), &done) == VFS_OK);
+	assert(vfs_write(file, msg, strlen(msg), &done) == 0);
 	assert(done == strlen(msg));
-	assert(vfs_seek(file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
+	assert(vfs_seek(file, VFS_SEEK_SET, 0, NULL) == 0);
 
 	char buf[32];
 	memset(buf, 0, sizeof(buf));
-	assert(vfs_read(file, buf, sizeof(buf), &done) == VFS_OK);
+	assert(vfs_read(file, buf, sizeof(buf), &done) == 0);
 	assert(done == strlen(msg));
 	assert(strcmp(buf, msg) == 0);
 
 	vfs_stat_t st;
-	assert(vfs_stat("/tmp/hello", &user, &st) == VFS_OK);
+	assert(vfs_stat("/tmp/hello", &user, &st) == 0);
 	assert(VFS_S_ISREG(st.mode));
 	assert((st.mode & 0777) == 0640);
 	assert(st.uid == user.uid);
@@ -1049,10 +1049,10 @@ static void vfs_tmpfs_test(vas_t *vas)
 
 	vfs_file_t *denied = NULL;
 	assert(vfs_open("/tmp/hello", VFS_O_RDONLY, 0, &other, &denied) ==
-		   VFS_ERR_ACCES);
+		   -EACCES);
 	assert(vfs_chown("/tmp/hello", other.uid, other.gid, &user) ==
-		   VFS_ERR_PERM);
-	assert(vfs_unlink("/tmp/hello", &other) == VFS_ERR_PERM);
+		   -EPERM);
+	assert(vfs_unlink("/tmp/hello", &other) == -EPERM);
 	log_debug("vfs_tmpfs_test", "permissions/sticky directory ok");
 
 	uint64_t map = vas_map_file(vas, 0, vfs_file_node(file), 0, PAGE_SIZE,
@@ -1063,17 +1063,17 @@ static void vfs_tmpfs_test(vas_t *vas)
 	mapped[0] = 'H';
 	mapped[6] = 'T';
 
-	assert(vfs_seek(file, VFS_SEEK_SET, 0, NULL) == VFS_OK);
+	assert(vfs_seek(file, VFS_SEEK_SET, 0, NULL) == 0);
 	memset(buf, 0, sizeof(buf));
-	assert(vfs_read(file, buf, strlen(msg), &done) == VFS_OK);
+	assert(vfs_read(file, buf, strlen(msg), &done) == 0);
 	assert(done == strlen(msg));
 	assert(strcmp(buf, "Hello Tmpfs") == 0);
 	vas_unmap(vas, map, PAGE_SIZE);
 	log_debug("vfs_tmpfs_test", "file-backed VMM mapping ok");
 
-	assert(vfs_close(file) == VFS_OK);
-	assert(vfs_unlink("/tmp/hello", &vfs_root_cred) == VFS_OK);
-	assert(vfs_rmdir("/tmp", &vfs_root_cred) == VFS_OK);
+	assert(vfs_close(file) == 0);
+	assert(vfs_unlink("/tmp/hello", &vfs_root_cred) == 0);
+	assert(vfs_rmdir("/tmp", &vfs_root_cred) == 0);
 
 	log_debug("vfs_tmpfs_test", "all tests passed");
 }
@@ -1321,7 +1321,7 @@ static int init_smoke_join_path(const char *parent, const char *name, char *out,
 	int need_slash = !(parent_len == 1 && parent[0] == '/');
 	size_t total = parent_len + (need_slash ? 1 : 0) + name_len;
 	if (total + 1 > out_len)
-		return VFS_ERR_NAMETOOLONG;
+		return -ENAMETOOLONG;
 
 	memcpy(out, parent, parent_len);
 	size_t pos = parent_len;
@@ -1329,7 +1329,7 @@ static int init_smoke_join_path(const char *parent, const char *name, char *out,
 		out[pos++] = '/';
 	memcpy(out + pos, name, name_len);
 	out[pos + name_len] = '\0';
-	return VFS_OK;
+	return 0;
 }
 
 static char init_smoke_type_char(vfs_mode_t mode)
@@ -1362,8 +1362,8 @@ static void init_smoke_list_recursive(const char *path)
 {
 	vfs_stat_t st;
 	int r = vfs_stat(path, &vfs_root_cred, &st);
-	if (r != VFS_OK) {
-		kprintf("? %s status=%s(%d)\n", path, vfs_err_name(r), r);
+	if (r != 0) {
+		kprintf("? %s status=%s(%d)\n", path, errno_name(r), r);
 		return;
 	}
 
@@ -1377,15 +1377,15 @@ static void init_smoke_list_recursive(const char *path)
 
 	vfs_node_t *dir = NULL;
 	r = vfs_resolve(path, &vfs_root_cred, &dir);
-	if (r != VFS_OK)
+	if (r != 0)
 		return;
 
 	for (size_t i = 0;; i++) {
 		vfs_dirent_t ent;
 		r = vfs_readdir(dir, i, &ent);
-		if (r == VFS_ERR_NOENT)
+		if (r == -ENOENT)
 			break;
-		if (r != VFS_OK)
+		if (r != 0)
 			break;
 		if (strcmp(ent.name, ".") == 0 || strcmp(ent.name, "..") == 0)
 			continue;
@@ -1393,7 +1393,7 @@ static void init_smoke_list_recursive(const char *path)
 		char child_path[256];
 		r = init_smoke_join_path(path, ent.name, child_path,
 								 sizeof(child_path));
-		if (r == VFS_OK)
+		if (r == 0)
 			init_smoke_list_recursive(child_path);
 	}
 
@@ -1404,8 +1404,8 @@ static void init_smoke_cat(const char *path)
 {
 	vfs_file_t *file = NULL;
 	int r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &file);
-	if (r != VFS_OK) {
-		INIT_SMOKE_LOG("cat %s failed status=%s(%d)\n", path, vfs_err_name(r),
+	if (r != 0) {
+		INIT_SMOKE_LOG("cat %s failed status=%s(%d)\n", path, errno_name(r),
 					   r);
 		return;
 	}
@@ -1420,7 +1420,7 @@ static void init_smoke_cat(const char *path)
 	size_t done = 0;
 	r = vfs_read(file, buf, cap, &done);
 	vfs_close(file);
-	if (r == VFS_OK) {
+	if (r == 0) {
 		buf[done] = '\0';
 		kprintf("%s", buf);
 	}
@@ -1453,7 +1453,7 @@ static void init_smoke_mount_disk(void)
 	}
 	int r = ext2_mount(disk, "/mnt");
 	INIT_SMOKE_LOG("mount /dev/nvme0n1 on /mnt type ext2 status=%s(%d)\n",
-				   vfs_err_name(r), r);
+				   errno_name(r), r);
 }
 
 static void init_smoke_test(void)

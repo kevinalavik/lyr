@@ -54,24 +54,6 @@
 #define VFS_SEEK_CUR 1
 #define VFS_SEEK_END 2
 
-#define VFS_OK 0
-#define VFS_ERR_PERM (-EPERM)
-#define VFS_ERR_NOENT (-ENOENT)
-#define VFS_ERR_BADF (-EBADF)
-#define VFS_ERR_NOMEM (-ENOMEM)
-#define VFS_ERR_ACCES (-EACCES)
-#define VFS_ERR_EXIST (-EEXIST)
-#define VFS_ERR_NOTDIR (-ENOTDIR)
-#define VFS_ERR_ISDIR (-EISDIR)
-#define VFS_ERR_INVAL (-EINVAL)
-#define VFS_ERR_NOTTY (-ENOTTY)
-#define VFS_ERR_NOSYS (-ENOSYS)
-#define VFS_ERR_NOTEMPTY (-ENOTEMPTY)
-#define VFS_ERR_NAMETOOLONG (-ENAMETOOLONG)
-#define VFS_ERR_TIMEOUT (-ETIMEDOUT)
-
-const char *vfs_err_name(int err);
-
 typedef uint32_t vfs_mode_t;
 typedef uint32_t vfs_uid_t;
 typedef uint32_t vfs_gid_t;

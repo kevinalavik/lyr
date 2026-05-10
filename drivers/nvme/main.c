@@ -188,12 +188,12 @@ static int wait_ready(nvme_t *n, int ready)
 	for (uint64_t i = 0; i < 100000000ULL; i++) {
 		uint32_t csts = nrd32(n, NVME_REG_CSTS);
 		if (csts & NVME_CSTS_CFS)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		if (((csts & NVME_CSTS_RDY) != 0) == ready)
-			return VFS_OK;
+			return 0;
 		__asm__ volatile("pause" ::: "memory");
 	}
-	return VFS_ERR_TIMEOUT;
+	return -ETIMEDOUT;
 }
 
 static int submit_wait(nvme_t *n, uint16_t qid, nvme_cmd_t *cmd,
@@ -227,11 +227,11 @@ static int submit_wait(nvme_t *n, uint16_t qid, nvme_cmd_t *cmd,
 			if (*cq_head == 0)
 				*phase ^= 1;
 			nwr32(n, cq_db(n, qid), *cq_head);
-			return status == 0 ? VFS_OK : VFS_ERR_INVAL;
+			return status == 0 ? 0 : -EINVAL;
 		}
 		__asm__ volatile("pause" ::: "memory");
 	}
-	return VFS_ERR_TIMEOUT;
+	return -ETIMEDOUT;
 }
 
 static int identify(nvme_t *n, uint32_t nsid, uint32_t cns)
@@ -259,7 +259,7 @@ static int create_io_queues(nvme_t *n)
 	cmd.cdw10 = ((n->queue_depth - 1) << 16) | NVME_IO_QID;
 	cmd.cdw11 = 1;
 	int r = submit_wait(n, NVME_ADMIN_QID, &cmd, NULL);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	memset(&cmd, 0, sizeof(cmd));
@@ -285,7 +285,7 @@ static int nvme_write_blocks(block_device_t *bdev, uint64_t lba, uint32_t count,
 
 static uint32_t identify_controller_namespace_count(nvme_t *n)
 {
-	if (identify(n, 0, 1) != VFS_OK)
+	if (identify(n, 0, 1) != 0)
 		return 0;
 	uint8_t *id = n->dma;
 	return (uint32_t)id[516] | ((uint32_t)id[517] << 8) |
@@ -296,7 +296,7 @@ static int init_namespace(nvme_t *n, nvme_ns_t *ns, uint32_t ctrl_id,
 						  uint32_t nsid)
 {
 	int r = identify(n, nsid, 0);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	uint8_t *id = n->dma;
@@ -308,8 +308,8 @@ static int init_namespace(nvme_t *n, nvme_ns_t *ns, uint32_t ctrl_id,
 	ns->lba_size = 1u << lbads;
 	npf_snprintf(ns->name, sizeof(ns->name), "nvme%un%u", ctrl_id, nsid);
 	if (ns->lba_size < 512 || ns->lba_size > 4096 || ns->block_count == 0)
-		return VFS_ERR_INVAL;
-	return VFS_OK;
+		return -EINVAL;
+	return 0;
 }
 
 static int register_namespace(driver_t *driver, nvme_t *n, uint32_t ctrl_id,
@@ -317,10 +317,10 @@ static int register_namespace(driver_t *driver, nvme_t *n, uint32_t ctrl_id,
 {
 	nvme_ns_t *ns = kzalloc(sizeof(*ns));
 	if (!ns)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	int r = init_namespace(n, ns, ctrl_id, nsid);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(ns);
 		return r;
 	}
@@ -334,7 +334,7 @@ static int register_namespace(driver_t *driver, nvme_t *n, uint32_t ctrl_id,
 	bdev.write_blocks = nvme_write_blocks;
 	bdev.driver_data = ns;
 	r = block_register(&bdev);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(ns);
 		return r;
 	}
@@ -344,7 +344,7 @@ static int register_namespace(driver_t *driver, nvme_t *n, uint32_t ctrl_id,
 				 ns->name, ns->nsid, (unsigned long long)ns->block_count,
 				 ns->lba_size);
 	driver_log(driver, "info", msg);
-	return VFS_OK;
+	return 0;
 }
 
 static int nvme_rw(block_device_t *bdev, uint64_t lba, uint32_t count,
@@ -353,9 +353,9 @@ static int nvme_rw(block_device_t *bdev, uint64_t lba, uint32_t count,
 	nvme_ns_t *ns = bdev->driver_data;
 	if (!ns || !ns->ctrl || !buf || count == 0 ||
 		count * ns->lba_size > PAGE_SIZE)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (lba + count > ns->block_count)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	nvme_t *n = ns->ctrl;
 	spinlock_acquire(&n->io_lock);
 	if (write)
@@ -370,7 +370,7 @@ static int nvme_rw(block_device_t *bdev, uint64_t lba, uint32_t count,
 	cmd.cdw11 = (uint32_t)(lba >> 32);
 	cmd.cdw12 = count - 1;
 	int r = submit_wait(n, NVME_IO_QID, &cmd, NULL);
-	if (r == VFS_OK && !write)
+	if (r == 0 && !write)
 		memcpy(buf, n->dma, count * ns->lba_size);
 	spinlock_release(&n->io_lock);
 	return r;
@@ -381,19 +381,19 @@ static int nvme_read_blocks(block_device_t *bdev, uint64_t lba, uint32_t count,
 {
 	nvme_ns_t *ns = bdev->driver_data;
 	if (!ns || ns->lba_size == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	uint8_t *dst = buf;
 	uint32_t max_blocks = PAGE_SIZE / ns->lba_size;
 	while (count) {
 		uint32_t chunk = count < max_blocks ? count : max_blocks;
 		int r = nvme_rw(bdev, lba, chunk, dst, 0);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 		lba += chunk;
 		dst += chunk * ns->lba_size;
 		count -= chunk;
 	}
-	return VFS_OK;
+	return 0;
 }
 
 static int nvme_write_blocks(block_device_t *bdev, uint64_t lba, uint32_t count,
@@ -401,19 +401,19 @@ static int nvme_write_blocks(block_device_t *bdev, uint64_t lba, uint32_t count,
 {
 	nvme_ns_t *ns = bdev->driver_data;
 	if (!ns || ns->lba_size == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	const uint8_t *src = buf;
 	uint32_t max_blocks = PAGE_SIZE / ns->lba_size;
 	while (count) {
 		uint32_t chunk = count < max_blocks ? count : max_blocks;
 		int r = nvme_rw(bdev, lba, chunk, (void *)src, 1);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 		lba += chunk;
 		src += chunk * ns->lba_size;
 		count -= chunk;
 	}
-	return VFS_OK;
+	return 0;
 }
 
 static int nvme_match(const device_t *dev, void *ctx)
@@ -430,12 +430,12 @@ static int nvme_probe(device_t *dev, void *ctx)
 	uint32_t bar0 = pci_read32(p, 0x10);
 	uint32_t bar1 = pci_read32(p, 0x14);
 	if ((bar0 & 1) || ((bar0 & 6) != 4))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	uint64_t bar = ((uint64_t)bar1 << 32) | (bar0 & ~0xFULL);
 
 	nvme_t *n = kzalloc(sizeof(*n));
 	if (!n)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	n->driver = driver;
 	n->queue_depth = NVME_QUEUE_DEPTH;
 	n->next_cid = 1;
@@ -457,7 +457,7 @@ static int nvme_probe(device_t *dev, void *ctx)
 	if (cc & NVME_CC_EN) {
 		nwr32(n, NVME_REG_CC, cc & ~NVME_CC_EN);
 		int r = wait_ready(n, 0);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 	}
 
@@ -472,9 +472,9 @@ static int nvme_probe(device_t *dev, void *ctx)
 		  NVME_CC_EN | NVME_CC_IOSQES_64 | NVME_CC_IOCQES_16);
 
 	int r = wait_ready(n, 1);
-	if (r == VFS_OK)
+	if (r == 0)
 		r = create_io_queues(n);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		driver_log(driver, "err", "controller initialization failed");
 		return r;
 	}
@@ -482,20 +482,20 @@ static int nvme_probe(device_t *dev, void *ctx)
 	uint32_t nn = identify_controller_namespace_count(n);
 	if (nn == 0) {
 		driver_log(driver, "err", "controller exposes no namespaces");
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 
 	unsigned registered = 0;
 	for (uint32_t nsid = 1; nsid <= nn; nsid++) {
 		r = register_namespace(driver, n, id, nsid);
-		if (r == VFS_OK)
+		if (r == 0)
 			registered++;
 	}
 	if (registered == 0)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	dev->driver_data = n;
-	return VFS_OK;
+	return 0;
 }
 
 static int nvme_main(driver_t *driver)

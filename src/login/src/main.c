@@ -5,11 +5,37 @@
 #include <term.h>
 #include <users.h>
 
+#include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-int main(void)
+static int bind_tty(const char *path)
 {
+	if (!path || !path[0])
+		return 0;
+
+	close(STDIN_FILENO);
+	close(STDOUT_FILENO);
+	close(STDERR_FILENO);
+
+	if (open(path, O_RDONLY) != STDIN_FILENO)
+		return -1;
+	if (open(path, O_WRONLY) != STDOUT_FILENO)
+		return -1;
+	if (open(path, O_WRONLY) != STDERR_FILENO)
+		return -1;
+
+	return 0;
+}
+
+int main(int argc, char **argv)
+{
+	if (argc > 1 && bind_tty(argv[1]) < 0) {
+		perror("login: bind_tty");
+		return 1;
+	}
+
 	login_logging_setup();
 
 	for (;;) {

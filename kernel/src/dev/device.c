@@ -29,7 +29,7 @@ static int device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!ctx || !buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	const device_t *dev = ctx;
 	char tmp[512];
@@ -53,12 +53,12 @@ static int device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 	}
 
 	if (n < 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	size_t total = (size_t)n;
 	if (total >= sizeof(tmp))
 		total = sizeof(tmp) - 1;
 	if (off >= total || len == 0)
-		return VFS_OK;
+		return 0;
 
 	size_t copy = total - (size_t)off;
 	if (copy > len)
@@ -66,7 +66,7 @@ static int device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 	memcpy(buf, tmp + off, copy);
 	if (done)
 		*done = copy;
-	return VFS_OK;
+	return 0;
 }
 
 static void fill_pci_map_entry(device_pci_driver_map_entry_t *out,
@@ -105,10 +105,10 @@ static int pci_map_read(void *ctx, uint64_t off, void *buf, size_t len,
 		*done = 0;
 
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (len == 0)
-		return VFS_OK;
+		return 0;
 
 	uint8_t *dst = buf;
 	size_t copied = 0;
@@ -152,7 +152,7 @@ static int pci_map_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = copied;
 
-	return VFS_OK;
+	return 0;
 }
 
 static int publish_device(device_t *dev)
@@ -160,24 +160,24 @@ static int publish_device(device_t *dev)
 	char path[96];
 	npf_snprintf(path, sizeof(path), "/dev/devices/%s", dev->name);
 	int r = devfs_mkdir(path, 0755);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	char info[128];
 	npf_snprintf(info, sizeof(info), "%s/info", path);
 	r = devfs_register_chr(info, 0444, device_info_read, NULL, dev);
-	return (r == VFS_ERR_EXIST) ? VFS_OK : r;
+	return (r == -EEXIST) ? 0 : r;
 }
 
 static int try_bind(device_t *dev, device_handler_t *handler)
 {
 	if (dev->handler || dev->bus_type != handler->bus_type)
-		return VFS_OK;
+		return 0;
 	if (handler->match && !handler->match(dev, handler->ctx))
-		return VFS_OK;
+		return 0;
 
-	int r = handler->probe ? handler->probe(dev, handler->ctx) : VFS_OK;
-	if (r == VFS_OK) {
+	int r = handler->probe ? handler->probe(dev, handler->ctx) : 0;
+	if (r == 0) {
 		dev->handler = handler;
 		log_debug("device", "%s bound to %s", dev->name, handler->name);
 	}
@@ -187,26 +187,26 @@ static int try_bind(device_t *dev, device_handler_t *handler)
 int device_system_init(void)
 {
 	int r = devfs_mkdir("/dev/devices", 0755);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr("/dev/devices/pci.map", 0444, pci_map_read, NULL,
 						   NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	log_debug("device", "device registry ok");
-	return VFS_OK;
+	return 0;
 }
 
 int device_register(device_t *src)
 {
 	if (!src || !src->name[0])
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	device_t *dev = kzalloc(sizeof(*dev));
 	if (!dev)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	memcpy(dev, src, sizeof(*dev));
 	dev->next = NULL;
 	dev->handler = NULL;
@@ -217,7 +217,7 @@ int device_register(device_t *src)
 		if (strcmp(cur->name, dev->name) == 0) {
 			spinlock_release(&device_lock);
 			kfree(dev);
-			return VFS_ERR_EXIST;
+			return -EEXIST;
 		}
 	}
 	dev->next = devices;
@@ -228,17 +228,17 @@ int device_register(device_t *src)
 
 	for (device_handler_t *h = handlers; h; h = h->next)
 		try_bind(dev, h);
-	return VFS_OK;
+	return 0;
 }
 
 int device_handler_register(device_handler_t *src)
 {
 	if (!src || !src->name[0])
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	device_handler_t *handler = kzalloc(sizeof(*handler));
 	if (!handler)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	memcpy(handler, src, sizeof(*handler));
 	handler->next = NULL;
 	copy_name(handler->name, sizeof(handler->name), src->name);
@@ -252,7 +252,7 @@ int device_handler_register(device_handler_t *src)
 
 	for (device_t *dev = devices; dev; dev = dev->next)
 		try_bind(dev, handler);
-	return VFS_OK;
+	return 0;
 }
 
 device_t *device_first(void)

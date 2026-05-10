@@ -116,7 +116,7 @@ static void _unlink_child(tmpfs_node_t *dir, tmpfs_node_t *child)
 static int _ensure_pages(tmpfs_node_t *node, size_t count)
 {
 	if (count <= node->page_cap)
-		return VFS_OK;
+		return 0;
 
 	size_t new_cap = node->page_cap ? node->page_cap : 4;
 	while (new_cap < count)
@@ -124,30 +124,30 @@ static int _ensure_pages(tmpfs_node_t *node, size_t count)
 
 	page_t **pages = krealloc(node->pages, new_cap * sizeof(page_t *));
 	if (!pages)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	memset(pages + node->page_cap, 0,
 		   (new_cap - node->page_cap) * sizeof(page_t *));
 	node->pages = pages;
 	node->page_cap = new_cap;
-	return VFS_OK;
+	return 0;
 }
 
 static int _ensure_page(tmpfs_node_t *node, size_t index, page_t **out)
 {
 	int r = _ensure_pages(node, index + 1);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	if (!node->pages[index]) {
 		page_t *page = palloc_page();
 		if (!page)
-			return VFS_ERR_NOMEM;
+			return -ENOMEM;
 		memset(PHYS_TO_VIRT(pfndb_page_to_phys(page)), 0, PAGE_SIZE);
 		node->pages[index] = page;
 	}
 	if (index + 1 > node->page_count)
 		node->page_count = index + 1;
 	*out = node->pages[index];
-	return VFS_OK;
+	return 0;
 }
 
 static void _free_pages_from(tmpfs_node_t *node, size_t first)
@@ -180,11 +180,11 @@ static int tmpfs_lookup(vfs_node_t *dir_node, const char *name, size_t len,
 						vfs_node_t **out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (len == 1 && name[0] == '.') {
 		vfs_node_ref(dir_node);
 		*out = dir_node;
-		return VFS_OK;
+		return 0;
 	}
 
 	tmpfs_node_t *dir = _to_tmpfs(dir_node);
@@ -192,16 +192,16 @@ static int tmpfs_lookup(vfs_node_t *dir_node, const char *name, size_t len,
 		vfs_node_t *parent = &dir->parent->vnode;
 		vfs_node_ref(parent);
 		*out = parent;
-		return VFS_OK;
+		return 0;
 	}
 
 	tmpfs_node_t *child = _find_child(dir, name, len);
 	if (!child)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	vfs_node_ref(&child->vnode);
 	*out = &child->vnode;
 	log_trace("tmpfs", "lookup %.*s -> node=%p", (int)len, name, &child->vnode);
-	return VFS_OK;
+	return 0;
 }
 
 static int _create_child(vfs_node_t *dir_node, const char *name, size_t len,
@@ -209,23 +209,23 @@ static int _create_child(vfs_node_t *dir_node, const char *name, size_t len,
 						 vfs_node_t **out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (len == 0 || len > VFS_NAME_MAX)
-		return len == 0 ? VFS_ERR_INVAL : VFS_ERR_NAMETOOLONG;
+		return len == 0 ? -EINVAL : -ENAMETOOLONG;
 
 	tmpfs_node_t *dir = _to_tmpfs(dir_node);
 	if (_find_child(dir, name, len))
-		return VFS_ERR_EXIST;
+		return -EEXIST;
 
 	tmpfs_node_t *child = _alloc_node(name, len, mode, cred->uid, cred->gid);
 	if (!child)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	_insert_child(dir, child);
 	vfs_node_ref(&child->vnode);
 	*out = &child->vnode;
 	log_debug("tmpfs", "create %.*s node=%p mode=0%o", (int)len, name,
 			  &child->vnode, child->vnode.mode);
-	return VFS_OK;
+	return 0;
 }
 
 static int tmpfs_create(vfs_node_t *dir, const char *name, size_t len,
@@ -249,13 +249,13 @@ static int tmpfs_unlink(vfs_node_t *dir_node, const char *name, size_t len)
 	tmpfs_node_t *dir = _to_tmpfs(dir_node);
 	tmpfs_node_t *child = _find_child(dir, name, len);
 	if (!child)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	if (VFS_S_ISDIR(child->vnode.mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	_unlink_child(dir, child);
 	child->vnode.nlink = 0;
 	vfs_node_release(&child->vnode);
-	return VFS_OK;
+	return 0;
 }
 
 static int tmpfs_rmdir(vfs_node_t *dir_node, const char *name, size_t len)
@@ -263,27 +263,27 @@ static int tmpfs_rmdir(vfs_node_t *dir_node, const char *name, size_t len)
 	tmpfs_node_t *dir = _to_tmpfs(dir_node);
 	tmpfs_node_t *child = _find_child(dir, name, len);
 	if (!child)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	if (!VFS_S_ISDIR(child->vnode.mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (child->children)
-		return VFS_ERR_NOTEMPTY;
+		return -ENOTEMPTY;
 	_unlink_child(dir, child);
 	child->vnode.nlink = 0;
 	vfs_node_release(&child->vnode);
-	return VFS_OK;
+	return 0;
 }
 
 static int tmpfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 					  size_t *done)
 {
 	if (!VFS_S_ISREG(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	tmpfs_node_t *tn = _to_tmpfs(node);
 	if (off >= node->size || len == 0) {
 		if (done)
 			*done = 0;
-		return VFS_OK;
+		return 0;
 	}
 
 	size_t todo = len;
@@ -310,14 +310,14 @@ static int tmpfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 		*done = copied;
 	log_trace("tmpfs", "read node=%p off=%llu len=%zu done=%zu", node, off, len,
 			  copied);
-	return VFS_OK;
+	return 0;
 }
 
 static int tmpfs_write(vfs_node_t *node, uint64_t off, const void *buf,
 					   size_t len, size_t *done)
 {
 	if (!VFS_S_ISREG(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	tmpfs_node_t *tn = _to_tmpfs(node);
 	size_t copied = 0;
 	while (copied < len) {
@@ -330,10 +330,10 @@ static int tmpfs_write(vfs_node_t *node, uint64_t off, const void *buf,
 
 		page_t *page = NULL;
 		int r = _ensure_page(tn, page_index, &page);
-		if (r != VFS_OK) {
+		if (r != 0) {
 			if (done)
 				*done = copied;
-			return copied ? VFS_OK : r;
+			return copied ? 0 : r;
 		}
 		void *dst = PHYS_TO_VIRT(pfndb_page_to_phys(page));
 		memcpy((uint8_t *)dst + page_off, (const uint8_t *)buf + copied, chunk);
@@ -346,15 +346,15 @@ static int tmpfs_write(vfs_node_t *node, uint64_t off, const void *buf,
 		*done = copied;
 	log_trace("tmpfs", "write node=%p off=%llu len=%zu done=%zu size=%llu",
 			  node, off, len, copied, node->size);
-	return VFS_OK;
+	return 0;
 }
 
 static int tmpfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (!out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	tmpfs_node_t *dir = _to_tmpfs(dir_node);
 	size_t i = 0;
@@ -371,15 +371,15 @@ static int tmpfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 		out->gid = child->vnode.gid;
 		out->size = child->vnode.size;
 		out->nlink = child->vnode.nlink;
-		return VFS_OK;
+		return 0;
 	}
-	return VFS_ERR_NOENT;
+	return -ENOENT;
 }
 
 static int tmpfs_truncate(vfs_node_t *node, uint64_t size)
 {
 	if (!VFS_S_ISREG(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	tmpfs_node_t *tn = _to_tmpfs(node);
 	size_t keep_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 	if (keep_pages < tn->page_count)
@@ -387,7 +387,7 @@ static int tmpfs_truncate(vfs_node_t *node, uint64_t size)
 	if (size > node->size && keep_pages > 0) {
 		page_t *page = NULL;
 		int r = _ensure_page(tn, keep_pages - 1, &page);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 	}
 	node->size = size;
@@ -399,17 +399,17 @@ static int tmpfs_truncate(vfs_node_t *node, uint64_t size)
 		memset((uint8_t *)page + tail, 0, PAGE_SIZE - tail);
 	}
 	log_debug("tmpfs", "truncate node=%p size=%llu", node, size);
-	return VFS_OK;
+	return 0;
 }
 
 static int tmpfs_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 						  page_t **out)
 {
 	if (!VFS_S_ISREG(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	tmpfs_node_t *tn = _to_tmpfs(node);
 	if (page_index > (uint64_t)(SIZE_MAX - 1))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	return _ensure_page(tn, (size_t)page_index, out);
 }
 

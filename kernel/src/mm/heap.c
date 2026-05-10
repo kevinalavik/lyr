@@ -31,6 +31,7 @@ typedef struct {
 	slab_t *partial;
 	slab_t *full;
 	size_t obj_size;
+	spinlock_t lock;
 } cache_t;
 
 typedef struct {
@@ -127,10 +128,13 @@ static void slab_obj_free(slab_t *s, void *o)
 
 static void *cache_alloc(cache_t *c)
 {
+	spinlock_acquire(&c->lock);
 	if (!c->partial) {
 		slab_t *s = slab_create(c->obj_size);
-		if (!s)
+		if (!s) {
+			spinlock_release(&c->lock);
 			return NULL;
+		}
 		s->next = c->partial;
 		c->partial = s;
 	}
@@ -144,11 +148,13 @@ static void *cache_alloc(cache_t *c)
 		c->full = s;
 	}
 
+	spinlock_release(&c->lock);
 	return o;
 }
 
 static void cache_free(cache_t *c, void *o)
 {
+	spinlock_acquire(&c->lock);
 	slab_t *s = obj_to_slab(o);
 	int was_full = (s->used == s->total);
 
@@ -168,6 +174,7 @@ static void cache_free(cache_t *c, void *o)
 
 		page_unref(page);
 	}
+	spinlock_release(&c->lock);
 }
 
 static void *large_alloc(size_t size)
@@ -212,7 +219,8 @@ void kheap_init(void)
 {
 	size_t size = SLAB_MIN;
 	for (unsigned i = 0; i < NUM_CACHES; i++) {
-		caches[i] = (cache_t){ NULL, NULL, size };
+		caches[i] =
+			(cache_t){ .partial = NULL, .full = NULL, .obj_size = size, .lock = SPINLOCK_INIT };
 		size <<= 1;
 	}
 }

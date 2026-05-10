@@ -85,7 +85,7 @@ int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 					uint8_t out_mac[NET_ETH_ALEN])
 {
 	if (!dev || !out_mac)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	/*
 	 * Traffic to the address assigned to this interface is local traffic.
@@ -96,27 +96,27 @@ int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 	 */
 	if (dev->loopback || target_ip == dev->ipv4_addr) {
 		memcpy(out_mac, dev->mac, NET_ETH_ALEN);
-		return VFS_OK;
+		return 0;
 	}
 
 	if (arp_cache_lookup(dev, target_ip, out_mac))
-		return VFS_OK;
+		return 0;
 
 	arp_dev = dev;
 	arp_ip = target_ip;
 	arp_ready = 0;
 	int r = send_arp_request(dev, target_ip);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	net_poll_until(dev, until, &arp_ready);
 	if (!arp_ready)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	memcpy(out_mac, arp_mac, NET_ETH_ALEN);
 	arp_cache_store(dev, target_ip, arp_mac);
-	return VFS_OK;
+	return 0;
 }
 
 size_t net_arp_cache_count(netdev_t *dev)

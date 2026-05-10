@@ -92,7 +92,7 @@ static int shm_dev_write(void *ctx, uint64_t off, const void *buf, size_t len,
 int ipc_shm_init(void)
 {
 	int r = devfs_mkdir("/dev/shm", 0777);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 	return IPC_OK;
 }
@@ -167,5 +167,5 @@ int ipc_shm_unlink(const char *name)
 	int r = devfs_unregister(path);
 	kfree(obj->shm.data);
 	kfree(obj);
-	return r == VFS_OK || r == VFS_ERR_NOENT ? IPC_OK : r;
+	return r == 0 || r == -ENOENT ? IPC_OK : r;
 }

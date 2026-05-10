@@ -9,15 +9,15 @@ static int _ensure_tmpfs_root(void)
 {
 	if (vfs_root()) {
 		log_debug("initrd", "using existing VFS root for initrd extraction");
-		return VFS_OK;
+		return 0;
 	}
 
 	vfs_node_t *root = tmpfs_create_root(0755, 0, 0);
 	if (!root)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	vfs_init(root);
 	log_info("initrd", "created tmpfs VFS root");
-	return VFS_OK;
+	return 0;
 }
 
 static int _looks_like_initrd(struct limine_file *file)
@@ -41,7 +41,7 @@ int initrd_load_from_limine(struct limine_module_response *modules)
 {
 	if (!modules || modules->module_count == 0 || !modules->modules) {
 		log_warn("initrd", "no Limine modules provided");
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 
 	struct limine_file *chosen = NULL;
@@ -59,15 +59,15 @@ int initrd_load_from_limine(struct limine_module_response *modules)
 	if (!chosen)
 		chosen = modules->modules[0];
 	if (!chosen || !chosen->address || chosen->size == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	int r = _ensure_tmpfs_root();
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	size_t entries = 0;
 	r = cpio_newc_extract(chosen->address, chosen->size, &entries);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err("initrd", "failed to extract %s status=%d",
 				chosen->path ? chosen->path : "(module)", r);
 		return r;
@@ -75,10 +75,10 @@ int initrd_load_from_limine(struct limine_module_response *modules)
 	if (entries == 0) {
 		log_err("initrd", "%s extracted zero entries; check initrd build root",
 				chosen->path ? chosen->path : "(module)");
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 
 	log_info("initrd", "loaded %zu entries from %s", entries,
 			 chosen->path ? chosen->path : "(module)");
-	return VFS_OK;
+	return 0;
 }

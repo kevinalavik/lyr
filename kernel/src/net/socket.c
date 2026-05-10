@@ -493,7 +493,7 @@ static int udp_send_packet(socket_t *sock, uint32_t dst_ip, uint16_t dst_port,
 	memset(mac, 0, sizeof(mac));
 	if (!dev->loopback && tx_dst_ip != dev->ipv4_addr) {
 		r = net_arp_resolve(dev, next_hop ? next_hop : tx_dst_ip, 1000, mac);
-		if (r != VFS_OK) {
+		if (r != 0) {
 			log_debug("socket", "UDP arp failed dst=%u.%u.%u.%u port=%u",
 					  (tx_dst_ip >> 24) & 0xff, (tx_dst_ip >> 16) & 0xff,
 					  (tx_dst_ip >> 8) & 0xff, tx_dst_ip & 0xff, dst_port);
@@ -505,7 +505,7 @@ static int udp_send_packet(socket_t *sock, uint32_t dst_ip, uint16_t dst_port,
 		dev->ipv4_addr;
 	r = net_send_ipv4_udp(dev, mac, src_ip, tx_dst_ip,
 						 sock->inet_data->local_port, dst_port, buf, len);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	sock->inet_data->local_ip = src_ip;
@@ -536,14 +536,14 @@ static int raw_icmp_send_packet(socket_t *sock, uint32_t dst_ip,
 	memset(mac, 0, sizeof(mac));
 	if (!dev->loopback && dst_ip != dev->ipv4_addr) {
 		int r = net_arp_resolve(dev, next_hop ? next_hop : dst_ip, 1000, mac);
-		if (r != VFS_OK)
+		if (r != 0)
 			return NET_SOCK_ERR_NETUNREACH;
 	}
 
 	uint32_t src_ip = sock->inet_data->local_ip ? sock->inet_data->local_ip :
 		dev->ipv4_addr;
 	int r = net_send_ipv4_icmp(dev, mac, src_ip, dst_ip, buf, len);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	sock->inet_data->local_ip = src_ip;
@@ -622,7 +622,7 @@ int net_listen(socket_t *sock, int backlog)
 		int r = net_tcp_listen_accept_addr(sock->inet_data->local_ip,
 											  sock->inet_data->local_port,
 											  tcp_socket_accept, sock);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 
 		sock->flags |= NET_SOCK_LISTENING;
@@ -791,9 +791,9 @@ int net_connect(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
 		int r = net_tcp_connect_ip(dev, sock->inet_data->remote_ip,
 								   sock->inet_data->remote_port, &conn, 5000);
 
-		if (r != VFS_OK) {
+		if (r != 0) {
 			log_debug("socket", "AF_INET connect failed r=%d", r);
-			if (r == VFS_ERR_TIMEOUT)
+			if (r == -ETIMEDOUT)
 				return NET_SOCK_ERR_TIMEDOUT;
 			return NET_SOCK_ERR_CONNREFUSED;
 		}
@@ -902,7 +902,7 @@ int net_sendto(socket_t *sock, const void *buf, size_t len, int flags,
 
 		size_t done = 0;
 		int r = net_tcp_send(is->tcp_conn, buf, len, &done, 5000);
-		if (r != VFS_OK)
+		if (r != 0)
 			return NET_SOCK_ERR_INVAL;
 
 		return (int)done;
@@ -994,14 +994,14 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 				net_tcp_recv(sock->inet_data->tcp_conn, sock->inet_data->rx_buf,
 							 SOCKET_BUF_SIZE, &done, 10000);
 
-			if (r == VFS_ERR_TIMEOUT)
+			if (r == -ETIMEDOUT)
 				return NET_SOCK_ERR_WOULDBLOCK;
 
-			if (r != VFS_OK)
+			if (r != 0)
 				return NET_SOCK_ERR_NOTCONN;
 
 			/*
-			 * done == 0 with VFS_OK is TCP EOF. Return 0 to userspace
+			 * done == 0 with 0 is TCP EOF. Return 0 to userspace
 			 * instead of translating EOF into ENOTCONN.
 			 */
 			if (done == 0)

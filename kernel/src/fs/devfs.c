@@ -57,7 +57,7 @@ static int null_read(void *ctx, uint64_t off, void *buf, size_t len,
 	(void)len;
 	if (done)
 		*done = 0;
-	return VFS_OK;
+	return 0;
 }
 
 static int null_write(void *ctx, uint64_t off, const void *buf, size_t len,
@@ -68,7 +68,7 @@ static int null_write(void *ctx, uint64_t off, const void *buf, size_t len,
 	(void)buf;
 	if (done)
 		*done = len;
-	return VFS_OK;
+	return 0;
 }
 
 static int zero_read(void *ctx, uint64_t off, void *buf, size_t len,
@@ -79,7 +79,7 @@ static int zero_read(void *ctx, uint64_t off, void *buf, size_t len,
 	memset(buf, 0, len);
 	if (done)
 		*done = len;
-	return VFS_OK;
+	return 0;
 }
 
 static int kmsg_write(void *ctx, uint64_t off, const void *buf, size_t len,
@@ -88,7 +88,7 @@ static int kmsg_write(void *ctx, uint64_t off, const void *buf, size_t len,
 	(void)ctx;
 	(void)off;
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	char line[192];
 	size_t n = len;
 	if (n >= sizeof(line))
@@ -98,7 +98,7 @@ static int kmsg_write(void *ctx, uint64_t off, const void *buf, size_t len,
 	kprintf("%s", line);
 	if (done)
 		*done = len;
-	return VFS_OK;
+	return 0;
 }
 
 static devfs_node_t *to_devfs(vfs_node_t *node)
@@ -163,19 +163,19 @@ static int create_child(devfs_node_t *dir, const char *name, size_t len,
 						vfs_mode_t mode, devfs_node_t **out)
 {
 	if (!VFS_S_ISDIR(dir->vnode.mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (len == 0 || len > VFS_NAME_MAX)
-		return len == 0 ? VFS_ERR_INVAL : VFS_ERR_NAMETOOLONG;
+		return len == 0 ? -EINVAL : -ENAMETOOLONG;
 	if (find_child(dir, name, len))
-		return VFS_ERR_EXIST;
+		return -EEXIST;
 
 	devfs_node_t *child = alloc_node(name, len, mode);
 	if (!child)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	insert_child(dir, child);
 	if (out)
 		*out = child;
-	return VFS_OK;
+	return 0;
 }
 
 static int remove_child(devfs_node_t *dir, const char *name, size_t len,
@@ -183,17 +183,17 @@ static int remove_child(devfs_node_t *dir, const char *name, size_t len,
 {
 	devfs_node_t *child = find_child(dir, name, len);
 	if (!child)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	if (want_dir && !VFS_S_ISDIR(child->vnode.mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (!want_dir && VFS_S_ISDIR(child->vnode.mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	if (want_dir && child->children)
-		return VFS_ERR_NOTEMPTY;
+		return -ENOTEMPTY;
 	unlink_child(dir, child);
 	child->vnode.nlink = 0;
 	vfs_node_release(&child->vnode);
-	return VFS_OK;
+	return 0;
 }
 
 static const char *skip_dev_prefix(const char *path)
@@ -217,12 +217,12 @@ static int resolve_parent(const char *path, devfs_node_t **parent,
 						  const char **name, size_t *name_len, int make_dirs)
 {
 	if (!devfs_root_node || !path || !parent || !name || !name_len)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	const char *p = skip_slashes(skip_dev_prefix(path));
 	devfs_node_t *cur = devfs_root_node;
 	if (*p == '\0')
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	for (;;) {
 		const char *start = p;
@@ -234,19 +234,19 @@ static int resolve_parent(const char *path, devfs_node_t **parent,
 			*parent = cur;
 			*name = start;
 			*name_len = len;
-			return VFS_OK;
+			return 0;
 		}
 
 		devfs_node_t *child = find_child(cur, start, len);
 		if (!child) {
 			if (!make_dirs)
-				return VFS_ERR_NOENT;
+				return -ENOENT;
 			int r = create_child(cur, start, len, VFS_S_IFDIR | 0755, &child);
-			if (r != VFS_OK)
+			if (r != 0)
 				return r;
 		}
 		if (!VFS_S_ISDIR(child->vnode.mode))
-			return VFS_ERR_NOTDIR;
+			return -ENOTDIR;
 		cur = child;
 		p = next;
 	}
@@ -256,11 +256,11 @@ static int devfs_lookup(vfs_node_t *dir_node, const char *name, size_t len,
 						vfs_node_t **out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (len == 1 && name[0] == '.') {
 		vfs_node_ref(dir_node);
 		*out = dir_node;
-		return VFS_OK;
+		return 0;
 	}
 
 	devfs_node_t *dir = to_devfs(dir_node);
@@ -268,15 +268,15 @@ static int devfs_lookup(vfs_node_t *dir_node, const char *name, size_t len,
 		vfs_node_t *parent = &dir->parent->vnode;
 		vfs_node_ref(parent);
 		*out = parent;
-		return VFS_OK;
+		return 0;
 	}
 
 	devfs_node_t *child = find_child(dir, name, len);
 	if (!child)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	vfs_node_ref(&child->vnode);
 	*out = &child->vnode;
-	return VFS_OK;
+	return 0;
 }
 
 static int devfs_mkdir_op(vfs_node_t *dir, const char *name, size_t len,
@@ -287,11 +287,11 @@ static int devfs_mkdir_op(vfs_node_t *dir, const char *name, size_t len,
 	devfs_node_t *child = NULL;
 	int r = create_child(to_devfs(dir), name, len,
 						 VFS_S_IFDIR | (mode & VFS_S_PERM), &child);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	vfs_node_ref(&child->vnode);
 	*out = &child->vnode;
-	return VFS_OK;
+	return 0;
 }
 
 static int devfs_unlink_op(vfs_node_t *dir, const char *name, size_t len)
@@ -299,7 +299,7 @@ static int devfs_unlink_op(vfs_node_t *dir, const char *name, size_t len)
 	(void)dir;
 	(void)name;
 	(void)len;
-	return VFS_ERR_PERM;
+	return -EPERM;
 }
 
 static int devfs_rmdir_op(vfs_node_t *dir, const char *name, size_t len)
@@ -307,7 +307,7 @@ static int devfs_rmdir_op(vfs_node_t *dir, const char *name, size_t len)
 	(void)dir;
 	(void)name;
 	(void)len;
-	return VFS_ERR_PERM;
+	return -EPERM;
 }
 
 static int devfs_read_op(vfs_node_t *node, uint64_t off, void *buf, size_t len,
@@ -316,10 +316,10 @@ static int devfs_read_op(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (VFS_S_ISDIR(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	devfs_node_t *dn = to_devfs(node);
 	if (!dn->read)
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 	return dn->read(dn->ctx, off, buf, len, done);
 }
 
@@ -329,31 +329,31 @@ static int devfs_write_op(vfs_node_t *node, uint64_t off, const void *buf,
 	if (done)
 		*done = 0;
 	if (VFS_S_ISDIR(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	devfs_node_t *dn = to_devfs(node);
 	if (!dn->write)
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 	return dn->write(dn->ctx, off, buf, len, done);
 }
 
 static int devfs_ioctl_op(vfs_file_t *file, unsigned long request, void *arg)
 {
 	if (!file || !file->node)
-		return VFS_ERR_BADF;
+		return -EBADF;
 	if (VFS_S_ISDIR(file->node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	devfs_node_t *dn = to_devfs(file->node);
 	if (!dn->ioctl)
-		return VFS_ERR_NOTTY;
+		return -ENOTTY;
 	return dn->ioctl(dn->ctx, request, arg);
 }
 
 static int devfs_poll_op(vfs_file_t *file, int events)
 {
 	if (!file || !file->node)
-		return VFS_ERR_BADF;
+		return -EBADF;
 	if (VFS_S_ISDIR(file->node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 	devfs_node_t *dn = to_devfs(file->node);
 	if (!dn->poll)
 		return 0;
@@ -363,9 +363,9 @@ static int devfs_poll_op(vfs_file_t *file, int events)
 static int devfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	if (!out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	devfs_node_t *dir = to_devfs(dir_node);
 	size_t i = 0;
@@ -382,9 +382,9 @@ static int devfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 		out->gid = child->vnode.gid;
 		out->size = child->vnode.size;
 		out->nlink = child->vnode.nlink;
-		return VFS_OK;
+		return 0;
 	}
-	return VFS_ERR_NOENT;
+	return -ENOENT;
 }
 
 static void devfs_release(vfs_node_t *node)
@@ -403,10 +403,10 @@ static void devfs_release(vfs_node_t *node)
 int devfs_mount(const char *target)
 {
 	if (!devfs_root_node || !target)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	int r = vfs_mount(target, &devfs_root_node->vnode, &vfs_root_cred);
-	if (r == VFS_OK)
+	if (r == 0)
 		log_debug("devfs", "mounted on %s", target);
 	return r;
 }
@@ -414,24 +414,24 @@ int devfs_mount(const char *target)
 int devfs_init(void)
 {
 	if (devfs_root_node)
-		return VFS_OK;
+		return 0;
 
 	int r = vfs_mkdir("/dev", 0755, &vfs_root_cred);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	devfs_root_node = alloc_node("", 0, VFS_S_IFDIR | 0755);
 	if (!devfs_root_node)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	devfs_root_node->parent = devfs_root_node;
 
 	r = devfs_mount("/dev");
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	devfs_register_chr("/dev/null", 0666, null_read, null_write, NULL);
 	devfs_register_chr("/dev/zero", 0666, zero_read, null_write, NULL);
 	devfs_register_chr("/dev/kmsg", 0220, NULL, kmsg_write, NULL);
-	return VFS_OK;
+	return 0;
 }
 
 int devfs_mkdir(const char *path, vfs_mode_t mode)
@@ -440,11 +440,11 @@ int devfs_mkdir(const char *path, vfs_mode_t mode)
 	const char *name = NULL;
 	size_t name_len = 0;
 	int r = resolve_parent(path, &parent, &name, &name_len, 1);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	devfs_node_t *existing = find_child(parent, name, name_len);
 	if (existing)
-		return VFS_S_ISDIR(existing->vnode.mode) ? VFS_OK : VFS_ERR_EXIST;
+		return VFS_S_ISDIR(existing->vnode.mode) ? 0 : -EEXIST;
 	return create_child(parent, name, name_len,
 						VFS_S_IFDIR | (mode & VFS_S_PERM), NULL);
 }
@@ -457,15 +457,15 @@ int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read
 	const char *name = NULL;
 	size_t name_len = 0;
 	int r = resolve_parent(path, &parent, &name, &name_len, 1);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	if (find_child(parent, name, name_len))
-		return VFS_ERR_EXIST;
+		return -EEXIST;
 
 	devfs_node_t *node = NULL;
 	r = create_child(parent, name, name_len, VFS_S_IFCHR | (mode & VFS_S_PERM),
 					 &node);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	node->read = read;
 	node->write = write;
@@ -473,7 +473,7 @@ int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read
 	node->poll = poll;
 	node->ctx = ctx;
 	log_debug("devfs", "registered char %s", path);
-	return VFS_OK;
+	return 0;
 }
 
 int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
@@ -494,7 +494,7 @@ int devfs_unregister(const char *path)
 	const char *name = NULL;
 	size_t name_len = 0;
 	int r = resolve_parent(path, &parent, &name, &name_len, 0);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	return remove_child(parent, name, name_len, 0);
 }

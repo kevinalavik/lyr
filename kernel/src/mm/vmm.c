@@ -146,7 +146,7 @@ static int _commit_file(vas_t *vas, vad_t *vad)
 		page_t *page = NULL;
 		int r = vfs_node_get_page(vad->file, file_off / PAGE_SIZE,
 								  (prot & VMM_WRITABLE) != 0, &page);
-		if (r != VFS_OK || !page)
+		if (r != 0 || !page)
 			return -1;
 
 		map_page(vas->pml4, va, page, prot);

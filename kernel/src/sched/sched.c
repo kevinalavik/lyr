@@ -138,13 +138,13 @@ void sched_process_copy_ids(pcb_t *dst, const pcb_t *src)
 int sched_process_setuid(pcb_t *process, vfs_uid_t uid)
 {
 	if (!process)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	spinlock_acquire(&process->lock);
 	if (process->euid != 0 && uid != process->ruid && uid != process->euid &&
 		uid != process->suid) {
 		spinlock_release(&process->lock);
-		return VFS_ERR_PERM;
+		return -EPERM;
 	}
 
 	if (process->euid == 0) {
@@ -154,19 +154,19 @@ int sched_process_setuid(pcb_t *process, vfs_uid_t uid)
 	process->euid = uid;
 	process_refresh_cred(process);
 	spinlock_release(&process->lock);
-	return VFS_OK;
+	return 0;
 }
 
 int sched_process_setgid(pcb_t *process, vfs_gid_t gid)
 {
 	if (!process)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	spinlock_acquire(&process->lock);
 	if (process->euid != 0 && gid != process->rgid && gid != process->egid &&
 		gid != process->sgid) {
 		spinlock_release(&process->lock);
-		return VFS_ERR_PERM;
+		return -EPERM;
 	}
 
 	if (process->euid == 0) {
@@ -176,41 +176,41 @@ int sched_process_setgid(pcb_t *process, vfs_gid_t gid)
 	process->egid = gid;
 	process_refresh_cred(process);
 	spinlock_release(&process->lock);
-	return VFS_OK;
+	return 0;
 }
 
 int sched_process_seteuid(pcb_t *process, vfs_uid_t uid)
 {
 	if (!process)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	spinlock_acquire(&process->lock);
 	if (process->euid != 0 && uid != process->ruid && uid != process->suid) {
 		spinlock_release(&process->lock);
-		return VFS_ERR_PERM;
+		return -EPERM;
 	}
 
 	process->euid = uid;
 	process_refresh_cred(process);
 	spinlock_release(&process->lock);
-	return VFS_OK;
+	return 0;
 }
 
 int sched_process_setegid(pcb_t *process, vfs_gid_t gid)
 {
 	if (!process)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	spinlock_acquire(&process->lock);
 	if (process->euid != 0 && gid != process->rgid && gid != process->sgid) {
 		spinlock_release(&process->lock);
-		return VFS_ERR_PERM;
+		return -EPERM;
 	}
 
 	process->egid = gid;
 	process_refresh_cred(process);
 	spinlock_release(&process->lock);
-	return VFS_OK;
+	return 0;
 }
 
 static void runq_push_locked(cpu_local_t *cpu, tcb_t *thread)
@@ -604,24 +604,24 @@ void process_setup_fds(pcb_t *process)
 {
 	int r = vfs_open("/dev/stdin", VFS_O_RDONLY, 0, sched_process_cred(process),
 					 &process->files[0]);
-	if (r != VFS_OK)
+	if (r != 0)
 		r = vfs_open("/dev/null", VFS_O_RDONLY, 0, sched_process_cred(process),
 					 &process->files[0]);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err("sched",
 				"failed to open stdin for process %s status=%s(%d)",
-				process->name, vfs_err_name(r), r);
+				process->name, errno_name(r), r);
 		atomic_store_explicit(&process->dying, true, memory_order_release);
 		return;
 	}
 
 	r = vfs_open("/dev/stdout", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[1]);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"sched",
 			"failed to open stdout for process %s status=%s(%d)",
-			process->name, vfs_err_name(r), r);
+			process->name, errno_name(r), r);
 		vfs_close(process->files[0]);
 		process->files[0] = NULL;
 		atomic_store_explicit(&process->dying, true, memory_order_release);
@@ -630,11 +630,11 @@ void process_setup_fds(pcb_t *process)
 
 	r = vfs_open("/dev/stderr", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[2]);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"sched",
 			"failed to open stderr for process %s status=%s(%d)",
-			process->name, vfs_err_name(r), r);
+			process->name, errno_name(r), r);
 		vfs_close(process->files[0]);
 		vfs_close(process->files[1]);
 		process->files[0] = NULL;
@@ -1197,13 +1197,13 @@ bool sched_process_exists(pid_t pid)
 int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 {
 	if (!sender)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (pid <= 0)
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 
 	if (signal < 0 || signal > 64)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint64_t flags = irq_save();
 	pcb_t *target = NULL;
@@ -1225,25 +1225,25 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 	if (!process_signal_allowed(sender, target)) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
-		return VFS_ERR_PERM;
+		return -EPERM;
 	}
 
 	if (signal == 0) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
-		return VFS_OK;
+		return 0;
 	}
 
 	if (signal != SCHED_SIGKILL && signal != SCHED_SIGTERM) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 	}
 
 	if (process_is_kernel_owned(target)) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
-		return VFS_ERR_PERM;
+		return -EPERM;
 	}
 
 	target->exit_status = process_kill_status(signal);
@@ -1254,21 +1254,21 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
-	return VFS_OK;
+	return 0;
 }
 
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 					   int *status_out)
 {
 	if (!parent || !pid_out || !status_out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	/* Only WNOHANG is meaningful until job control exists. */
 	if (options & ~1)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (pid == 0 || pid < -1)
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 
 	pcb_t *zombie = NULL;
 	bool have_child = false;
@@ -1296,7 +1296,7 @@ int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 		if (options & 1) {
 			*pid_out = 0;
 			*status_out = 0;
-			return VFS_OK;
+			return 0;
 		}
 
 		return -EAGAIN;
@@ -1305,7 +1305,7 @@ int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 	*pid_out = zombie->pid;
 	*status_out = (zombie->exit_status & 0xff) << 8;
 	process_destroy(zombie);
-	return VFS_OK;
+	return 0;
 }
 
 const char *sched_process_cwd(const pcb_t *process)
@@ -1318,16 +1318,16 @@ const char *sched_process_cwd(const pcb_t *process)
 int sched_process_setcwd(pcb_t *process, const char *path)
 {
 	if (!process || !path || path[0] != '/')
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t len = strlen(path);
 	if (len == 0 || len >= sizeof(process->cwd))
-		return VFS_ERR_NAMETOOLONG;
+		return -ENAMETOOLONG;
 
 	spinlock_acquire(&process->lock);
 	memcpy(process->cwd, path, len + 1);
 	spinlock_release(&process->lock);
-	return VFS_OK;
+	return 0;
 }
 
 void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src)

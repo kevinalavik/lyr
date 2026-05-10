@@ -202,7 +202,7 @@ int kbd_load_keymap_file(const char *path)
 {
 	vfs_file_t *file;
 	int r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &file);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 		/* Read the whole file into a heap buffer. Layout files are tiny. */
@@ -210,13 +210,13 @@ int kbd_load_keymap_file(const char *path)
 	char *buf = kzalloc(KEYMAP_FILE_MAX);
 	if (!buf) {
 		vfs_close(file);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	size_t done = 0;
 	r = vfs_read(file, buf, KEYMAP_FILE_MAX - 1, &done);
 	vfs_close(file);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(buf);
 		return r;
 	}
@@ -267,7 +267,7 @@ int kbd_load_keymap_file(const char *path)
 	memcpy(kbd_current_map, path, plen);
 	kbd_current_map[plen] = '\0';
 
-	return VFS_OK;
+	return 0;
 }
 
 void kbd_submit_event(const lyr_key_event_t *ev)
@@ -321,6 +321,19 @@ void kbd_submit_event(const lyr_key_event_t *ev)
 		kbd_event_head++;
 	}
 
+	if (ev->down && (kbd_mods & LYR_KBD_MOD_ALT)) {
+		switch (ev->keycode) {
+		case LYR_KEY_F1:
+		case LYR_KEY_F2:
+		case LYR_KEY_F3:
+		case LYR_KEY_F4:
+			console_switch_tty((unsigned)(ev->keycode - LYR_KEY_F1));
+			return;
+		default:
+			break;
+		}
+	}
+
 	/* 3. On key-down only: translate to a byte and push to /dev/stdin */
 	if (!ev->down)
 		return;
@@ -357,7 +370,7 @@ void kbd_submit_event(const lyr_key_event_t *ev)
 int kbd_read_event(lyr_key_event_t *ev)
 {
 	if (!ev)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	while (ring_empty())
 		__asm__ volatile("sti; hlt; cli" ::: "memory");
@@ -365,7 +378,7 @@ int kbd_read_event(lyr_key_event_t *ev)
 	*ev = kbd_event_ring[kbd_event_tail & (KBD_EVENT_RING_SIZE - 1)];
 	__asm__ volatile("" ::: "memory");
 	kbd_event_tail++;
-	return VFS_OK;
+	return 0;
 }
 
 int kbd_read_byte(uint8_t *ch)
@@ -375,7 +388,7 @@ int kbd_read_byte(uint8_t *ch)
 	static uint8_t pending_pos;
 
 	if (!ch)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (pending_pos < pending_len) {
 		*ch = pending[pending_pos++];
@@ -383,13 +396,13 @@ int kbd_read_byte(uint8_t *ch)
 			pending_pos = 0;
 			pending_len = 0;
 		}
-		return VFS_OK;
+		return 0;
 	}
 
 	for (;;) {
 		lyr_key_event_t ev;
 		int r = kbd_read_event(&ev);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 		if (!ev.down)
 			continue;
@@ -427,7 +440,7 @@ int kbd_read_byte(uint8_t *ch)
 			pending_len = sym->len;
 			pending_pos = 1;
 		}
-		return VFS_OK;
+		return 0;
 	}
 }
 
@@ -440,7 +453,7 @@ static int kbd_event_dev_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!buf || len < sizeof(lyr_key_event_t))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	while (ring_empty())
 		__asm__ volatile("sti; hlt; cli" ::: "memory");
@@ -457,7 +470,7 @@ static int kbd_event_dev_read(void *ctx, uint64_t off, void *buf, size_t len,
 
 	if (done)
 		*done = n * sizeof(lyr_key_event_t);
-	return VFS_OK;
+	return 0;
 }
 
 static int kbd_event_dev_poll(void *ctx, int events)
@@ -476,19 +489,19 @@ static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 	switch (request) {
 	case LYR_KBDIOCSMAP:
 		if (!arg)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		return kbd_load_keymap_file((const char *)arg);
 
 	case LYR_KBDIOCGMAP:
 		if (!arg)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		if (kbd_current_map[0] == '\0')
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		memcpy(arg, kbd_current_map, LYR_KBD_MAP_PATH_MAX);
-		return VFS_OK;
+		return 0;
 
 	default:
-		return VFS_ERR_NOTTY;
+		return -ENOTTY;
 	}
 }
 
@@ -503,14 +516,14 @@ int kbd_init(void)
 	kbd_load_default_keymap();
 
 	int r = devfs_mkdir("/dev/input", 0755);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/input/event0", 0444, kbd_event_dev_read,
 								NULL, kbd_event_dev_ioctl, kbd_event_dev_poll,
 								NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
-	return VFS_OK;
+	return 0;
 }

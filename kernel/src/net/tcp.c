@@ -162,13 +162,13 @@ static void tcp_parse_syn_options(tcp_conn_t *conn, const tcp_hdr_t *tcp,
 static int tcp_rx_autotune(tcp_conn_t *conn, size_t incoming_len)
 {
 	if (!conn || !conn->rx_buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (incoming_len <= tcp_recv_window_full(conn))
-		return VFS_OK;
+		return 0;
 
 	if (conn->rx_cap >= TCP_RCVBUF_MAX)
-		return VFS_OK;
+		return 0;
 
 	size_t new_cap = conn->rx_cap ? conn->rx_cap : TCP_RCVBUF_MIN;
 	while (new_cap < TCP_RCVBUF_MAX &&
@@ -179,11 +179,11 @@ static int tcp_rx_autotune(tcp_conn_t *conn, size_t incoming_len)
 	}
 
 	if (new_cap <= conn->rx_cap)
-		return VFS_OK;
+		return 0;
 
 	char *new_buf = kzalloc(new_cap);
 	if (!new_buf)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	size_t old_len = conn->rx_len;
 	if (old_len)
@@ -196,7 +196,7 @@ static int tcp_rx_autotune(tcp_conn_t *conn, size_t incoming_len)
 	conn->rx_len = old_len;
 	conn->rcv_wscale = tcp_wscale_for_cap(conn->rx_cap);
 
-	return VFS_OK;
+	return 0;
 }
 
 static int tcp_send_conn_packet(tcp_conn_t *conn, uint8_t flags,
@@ -359,7 +359,7 @@ static int tcp_send_payload(tcp_conn_t *conn, const void *payload, size_t len)
 			conn->dev, conn->peer_mac, conn->remote_ip, conn->local_port,
 			conn->remote_port, seq, conn->ack, TCP_PSH | TCP_ACK,
 			tcp_recv_window(conn), p, chunk);
-		if (r != VFS_OK) {
+		if (r != 0) {
 			conn->seq = seq;
 			return r;
 		}
@@ -368,7 +368,7 @@ static int tcp_send_payload(tcp_conn_t *conn, const void *payload, size_t len)
 		len -= chunk;
 	}
 
-	return VFS_OK;
+	return 0;
 }
 
 static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
@@ -391,14 +391,14 @@ static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
 		response, TCP_PASSIVE_RESPONSE_CAP, &response_len, conn->handler_ctx);
 	log_debug("tcp", "passive handler returned r=%d response_len=%zu", r,
 			  response_len);
-	if (r != VFS_OK)
+	if (r != 0)
 		response_len = 0;
 
 	if (response_len > TCP_PASSIVE_RESPONSE_CAP)
 		response_len = TCP_PASSIVE_RESPONSE_CAP;
 
 	if (response_len) {
-		if (tcp_send_payload(conn, response, response_len) != VFS_OK)
+		if (tcp_send_payload(conn, response, response_len) != 0)
 			response_len = 0;
 	}
 
@@ -410,7 +410,7 @@ static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
 	if (net_send_ipv4_tcp_window(conn->dev, conn->peer_mac, conn->remote_ip,
 								 conn->local_port, conn->remote_port, fin_seq,
 								 conn->ack, TCP_FIN | TCP_ACK,
-								 tcp_recv_window(conn), NULL, 0) != VFS_OK) {
+								 tcp_recv_window(conn), NULL, 0) != 0) {
 		conn->seq = fin_seq;
 		return;
 	}
@@ -482,7 +482,7 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 				int r = conn->accept_handler(conn->dev, conn->remote_ip,
 											 conn->remote_port, conn,
 											 conn->handler_ctx);
-				if (r != VFS_OK) {
+				if (r != 0) {
 					tcp_close_passive(conn);
 					return;
 				}
@@ -573,7 +573,7 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 					   net_tcp_conn_t **out, uint64_t timeout_ms)
 {
 	if (!dev || !dst_ip || !port || !out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	log_debug("tcp", "connect: dst_ip=%x port=%d timeout=%llu", dst_ip, port,
 			  timeout_ms);
@@ -582,7 +582,7 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask)) {
 		if (!dev->ipv4_gateway) {
 			log_debug("tcp", "connect: no gateway for off-link destination");
-			return VFS_ERR_NOENT;
+			return -ENOENT;
 		}
 		next_hop = dev->ipv4_gateway;
 	}
@@ -593,7 +593,7 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 
 	tcp_conn_t *conn = kzalloc(sizeof(*conn));
 	if (!conn)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	conn->dev = dev;
 	conn->remote_ip = dst_ip;
@@ -606,13 +606,13 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 	conn->rx_buf = kzalloc(conn->rx_cap);
 	if (!conn->rx_buf) {
 		kfree(conn);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	log_debug("tcp", "connect: calling arp_resolve");
 	int r = net_arp_resolve(dev, next_hop, timeout_ms, conn->peer_mac);
 	log_debug("tcp", "connect: arp_resolve returned %d", r);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		if (conn->rx_buf)
 			kfree(conn->rx_buf);
 		kfree(conn);
@@ -626,7 +626,7 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 									conn->local_port, port, conn->seq, 0, TCP_SYN,
 									tcp_recv_window(conn), 1, 1, conn->rcv_wscale, 1,
 									NULL, 0);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_debug("tcp", "connect: send SYN failed r=%d", r);
 		tcp_conn_remove(conn);
 		if (conn->rx_buf)
@@ -646,7 +646,7 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 		if (conn->rx_buf)
 			kfree(conn->rx_buf);
 		kfree(conn);
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 
 	if (!conn->connected) {
@@ -655,27 +655,27 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 		if (conn->rx_buf)
 			kfree(conn->rx_buf);
 		kfree(conn);
-		return VFS_ERR_TIMEOUT;
+		return -ETIMEDOUT;
 	}
 
 	log_debug("tcp", "connect: 3-way handshake complete");
 	*out = conn;
-	return VFS_OK;
+	return 0;
 }
 
 int net_tcp_connect(const char *host, uint16_t port, net_tcp_conn_t **out,
 					uint64_t timeout_ms)
 {
 	if (!host || !port || !out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	netdev_t *dev = net_default_dev();
 	if (!dev)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	uint32_t ip = 0;
 	int r = net_dns_resolve_dev(dev, host, timeout_ms, &ip);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return net_tcp_connect_ip(dev, ip, port, out, timeout_ms);
@@ -689,19 +689,19 @@ int net_tcp_send(net_tcp_conn_t *conn_, const void *buf, size_t len,
 	tcp_conn_t *conn = conn_;
 
 	if (!conn || !buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (!conn->connected || conn->closed || conn->error)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	int r = tcp_send_payload(conn, buf, len);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (done)
 		*done = len;
 
-	return VFS_OK;
+	return 0;
 }
 
 int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
@@ -710,13 +710,13 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 	tcp_conn_t *conn = conn_;
 
 	if (!conn || !buf || !cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (done)
 		*done = 0;
 
 	if (!conn->connected)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 
@@ -758,22 +758,22 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 			tcp_send_ack(conn);
 		}
 
-		return VFS_OK;
+		return 0;
 	}
 
 	if (conn->error) {
 		log_debug("tcp", "recv: connection error with empty rx queue");
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 
 	if (conn->closed) {
 		log_debug("tcp", "recv: clean EOF");
-		return VFS_OK;
+		return 0;
 	}
 
 	log_debug("tcp", "recv: timeout/no data closed=%d error=%d", conn->closed,
 			  conn->error);
-	return VFS_ERR_TIMEOUT;
+	return -ETIMEDOUT;
 }
 
 void net_tcp_close(net_tcp_conn_t *conn_)
@@ -807,12 +807,12 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 						 uint64_t timeout_ms)
 {
 	if (!dev || !host || !path || !buf || len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint32_t next_hop = dst_ip;
 	if ((dst_ip & dev->ipv4_netmask) != (dev->ipv4_addr & dev->ipv4_netmask)) {
 		if (!dev->ipv4_gateway)
-			return VFS_ERR_NOENT;
+			return -ENOENT;
 		next_hop = dev->ipv4_gateway;
 	}
 
@@ -828,7 +828,7 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 	conn.rcv_wscale = tcp_wscale_for_cap(conn.rx_cap);
 
 	int r = net_arp_resolve(dev, next_hop, timeout_ms, conn.peer_mac);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	tcp_conn_add(&conn);
@@ -837,12 +837,12 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 									conn.local_port, 80, conn.seq, 0, TCP_SYN,
 									tcp_recv_window(&conn), 1, 1, conn.rcv_wscale, 1,
 									NULL, 0);
-	if (r != VFS_OK)
+	if (r != 0)
 		goto out;
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	net_poll_until(dev, until, &conn.connected);
 	if (!conn.connected || conn.error) {
-		r = VFS_ERR_NOENT;
+		r = -ENOENT;
 		goto out;
 	}
 
@@ -852,26 +852,26 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 		"GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\nUser-Agent: lyr/0\r\n\r\n",
 		path, host);
 	if (n < 0 || (size_t)n >= sizeof(req)) {
-		r = VFS_ERR_INVAL;
+		r = -EINVAL;
 		goto out;
 	}
 
 	r = net_send_ipv4_tcp(dev, conn.peer_mac, dst_ip, conn.local_port, 80,
 						  conn.seq, conn.ack, TCP_PSH | TCP_ACK, req,
 						  (size_t)n);
-	if (r != VFS_OK)
+	if (r != 0)
 		goto out;
 	conn.seq += (uint32_t)n;
 
 	until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	net_poll_until(dev, until, &conn.closed);
 	if (conn.error) {
-		r = VFS_ERR_NOENT;
+		r = -ENOENT;
 		goto out;
 	}
 	if (done)
 		*done = conn.rx_len;
-	r = conn.rx_len ? VFS_OK : VFS_ERR_NOENT;
+	r = conn.rx_len ? 0 : -ENOENT;
 
 out:
 	tcp_conn_remove(&conn);
@@ -900,14 +900,14 @@ static int tcp_listener_add(uint32_t local_ip, uint16_t port,
 							net_tcp_accept_handler_t accept_handler, void *ctx)
 {
 	if (!port || (!handler && !accept_handler))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (tcp_listener_conflicts(local_ip, port))
-		return VFS_ERR_EXIST;
+		return -EEXIST;
 
 	tcp_listener_t *listener = kzalloc(sizeof(*listener));
 	if (!listener)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	listener->local_ip = local_ip;
 	listener->port = port;
 	listener->handler = handler;
@@ -918,7 +918,7 @@ static int tcp_listener_add(uint32_t local_ip, uint16_t port,
 	log_debug("tcp", "listening on %u.%u.%u.%u:%u", (local_ip >> 24) & 0xff,
 			  (local_ip >> 16) & 0xff, (local_ip >> 8) & 0xff, local_ip & 0xff,
 			  port);
-	return VFS_OK;
+	return 0;
 }
 
 int net_tcp_listen(uint16_t port, net_tcp_listen_handler_t handler, void *ctx)

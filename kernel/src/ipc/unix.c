@@ -83,7 +83,7 @@ static int endpoint_dev_read(void *ctx, uint64_t off, void *buf, size_t len,
 int ipc_unix_init(void)
 {
 	int r = devfs_mkdir("/dev/ipc", 0755);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 	return IPC_OK;
 }
@@ -137,7 +137,7 @@ int ipc_endpoint_unregister(const char *name)
 	npf_snprintf(path, sizeof(path), "/dev/ipc/%s", ep->name);
 	int r = devfs_unregister(path);
 	kfree(ep);
-	return r == VFS_OK || r == VFS_ERR_NOENT ? IPC_OK : r;
+	return r == 0 || r == -ENOENT ? IPC_OK : r;
 }
 
 int ipc_call(const char *name, const ipc_msg_t *msg)

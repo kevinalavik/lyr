@@ -395,7 +395,7 @@ static int mouse_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!buf || len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint8_t *p = buf;
 	size_t count = 0;
@@ -410,7 +410,7 @@ static int mouse_read(void *ctx, uint64_t off, void *buf, size_t len,
 
 	if (done)
 		*done = count;
-	return VFS_OK;
+	return 0;
 }
 
 static int mouse_poll(void *ctx, int events)
@@ -459,7 +459,7 @@ static int ps2_main(driver_t *driver)
 	uint8_t resp = ps2_cmd_read();
 	if (resp != 0x55) {
 		driver_log(driver, "err", "controller self-test failed");
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 	}
 
 	int have_keyboard = 0;
@@ -500,11 +500,11 @@ static int ps2_main(driver_t *driver)
 
 	if (!have_keyboard && !have_mouse) {
 		driver_log(driver, "err", "no usable PS/2 devices found");
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 	}
 
 	int r = devfs_mkdir("/dev/input", 0755);
-	if (r != 0 && r != VFS_ERR_EXIST) {
+	if (r != 0 && r != -EEXIST) {
 		driver_log(driver, "err", "failed to create /dev/input");
 		return r;
 	}
@@ -519,27 +519,27 @@ static int ps2_main(driver_t *driver)
 
 		r = devfs_register_chr_poll("/dev/psaux", 0444, mouse_read, NULL, NULL,
 									mouse_poll, NULL);
-		if (r != 0 && r != VFS_ERR_EXIST) {
+		if (r != 0 && r != -EEXIST) {
 			driver_log(driver, "err", "failed to register /dev/psaux");
 			return r;
 		}
 
 		r = devfs_register_chr_poll("/dev/input/mice", 0444, mouse_read, NULL,
 									NULL, mouse_poll, NULL);
-		if (r != 0 && r != VFS_ERR_EXIST) {
+		if (r != 0 && r != -EEXIST) {
 			driver_log(driver, "err", "failed to register /dev/input/mice");
 			return r;
 		}
 	}
 
 	r = driver_spawn_thread(driver, "ps2-poll", ps2_poll, NULL);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		driver_log(driver, "err", "failed to spawn polling thread");
 		return r;
 	}
 
 	driver_log(driver, "info", "PS/2 driver ready");
-	return VFS_OK;
+	return 0;
 }
 
 static const char *const ps2_imports[] = {

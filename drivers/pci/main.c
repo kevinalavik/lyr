@@ -122,7 +122,7 @@ static void pci_load_ids(driver_t *driver)
 {
 	vfs_file_t *file = NULL;
 	int r = vfs_open("/sys/pci.ids", VFS_O_RDONLY, 0, NULL, &file);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		driver_log(driver, "warn", "could not open /sys/pci.ids");
 		return;
 	}
@@ -140,7 +140,7 @@ static void pci_load_ids(driver_t *driver)
 		size_t done = 0;
 		r = vfs_read(file, pci_ids + pci_ids_len, PCI_IDS_MAX - pci_ids_len,
 					 &done);
-		if (r != VFS_OK || done == 0)
+		if (r != 0 || done == 0)
 			break;
 		pci_ids_len += done;
 	}
@@ -244,7 +244,7 @@ static int copy_text_slice(const char *tmp, size_t total, uint64_t off,
 		*done = 0;
 
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (off >= total || len == 0)
 		return 0;
@@ -270,14 +270,14 @@ static int pci_dev_read(void *ctx, uint64_t off, void *buf, size_t len,
 		*done = 0;
 
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char tmp[4096];
 	size_t pos = 0;
 
 	int n = npf_snprintf(tmp, sizeof(tmp), "count=%zu\n", pci_devices.count);
 	if (n < 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	pos = (size_t)n < sizeof(tmp) ? (size_t)n : sizeof(tmp) - 1;
 
@@ -318,7 +318,7 @@ static int pci_device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 								size_t *done)
 {
 	if (!ctx)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	const pci_device_info_t *dev = ctx;
 
@@ -338,7 +338,7 @@ static int pci_device_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 		dev->subclass, dev->prog_if, dev->revision);
 
 	if (n < 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t total = (size_t)n;
 	if (total >= sizeof(tmp))
@@ -351,14 +351,14 @@ static int pci_device_vendor_read(void *ctx, uint64_t off, void *buf,
 								  size_t len, size_t *done)
 {
 	if (!ctx)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	const pci_device_info_t *dev = ctx;
 
 	char tmp[16];
 	int n = npf_snprintf(tmp, sizeof(tmp), "%04x\n", dev->vendor_id);
 	if (n < 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t total = (size_t)n;
 	if (total >= sizeof(tmp))
@@ -374,7 +374,7 @@ static int pci_device_config_read(void *ctx, uint64_t off, void *buf,
 		*done = 0;
 
 	if (!ctx || !buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (off >= 256 || len == 0)
 		return 0;
@@ -499,7 +499,7 @@ static int pci_main(driver_t *driver)
 			return r;
 		}
 		r = pci_register_kernel_device(&pci_devices.devices[i]);
-		if (r != 0 && r != VFS_ERR_EXIST) {
+		if (r != 0 && r != -EEXIST) {
 			driver_log(driver, "err", "failed to register PCI kernel device");
 			return r;
 		}

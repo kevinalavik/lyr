@@ -47,11 +47,11 @@ static int _hex8(const char in[8], uint32_t *out)
 	for (int i = 0; i < 8; i++) {
 		int n = _hex_nibble(in[i]);
 		if (n < 0)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		v = (v << 4) | (uint32_t)n;
 	}
 	*out = v;
-	return VFS_OK;
+	return 0;
 }
 
 static const char *_clean_name(const char *name)
@@ -67,27 +67,27 @@ static int _make_path(const char *name, char **out)
 {
 	name = _clean_name(name);
 	if (*name == '\0')
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t len = strlen(name);
 	char *path = kmalloc(len + 2);
 	if (!path)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	path[0] = '/';
 	memcpy(path + 1, name, len + 1);
 	*out = path;
-	return VFS_OK;
+	return 0;
 }
 
 static int _ensure_parent_dirs(const char *path)
 {
 	size_t len = strlen(path);
 	if (len < 2)
-		return VFS_OK;
+		return 0;
 
 	char *tmp = kmalloc(len + 1);
 	if (!tmp)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	memcpy(tmp, path, len + 1);
 
 	for (size_t i = 1; tmp[i]; i++) {
@@ -95,7 +95,7 @@ static int _ensure_parent_dirs(const char *path)
 			continue;
 		tmp[i] = '\0';
 		int r = vfs_mkdir(tmp, 0755, &vfs_root_cred);
-		if (r != VFS_OK && r != VFS_ERR_EXIST) {
+		if (r != 0 && r != -EEXIST) {
 			kfree(tmp);
 			return r;
 		}
@@ -103,7 +103,7 @@ static int _ensure_parent_dirs(const char *path)
 	}
 
 	kfree(tmp);
-	return VFS_OK;
+	return 0;
 }
 
 static int _extract_dir(const char *path, vfs_mode_t mode, vfs_uid_t uid,
@@ -112,10 +112,10 @@ static int _extract_dir(const char *path, vfs_mode_t mode, vfs_uid_t uid,
 	log_debug("cpio", "dir  %s mode=0%o uid=%u gid=%u", path, mode & VFS_S_PERM,
 			  uid, gid);
 	int r = vfs_mkdir(path, mode & VFS_S_PERM, &vfs_root_cred);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 	r = vfs_chown(path, uid, gid, &vfs_root_cred);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	return vfs_chmod(path, mode & VFS_S_PERM, &vfs_root_cred);
 }
@@ -128,22 +128,22 @@ static int _extract_file(const char *path, vfs_mode_t mode, vfs_uid_t uid,
 	vfs_file_t *file = NULL;
 	int r = vfs_open(path, VFS_O_CREAT | VFS_O_TRUNC | VFS_O_RDWR,
 					 mode & VFS_S_PERM, &vfs_root_cred, &file);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	size_t done = 0;
 	if (size > 0)
 		r = vfs_write(file, data, size, &done);
 	int close_r = vfs_close(file);
-	if (r == VFS_OK && close_r != VFS_OK)
+	if (r == 0 && close_r != 0)
 		r = close_r;
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	if (done != size)
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 
 	r = vfs_chown(path, uid, gid, &vfs_root_cred);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	return vfs_chmod(path, mode & VFS_S_PERM, &vfs_root_cred);
 }
@@ -153,7 +153,7 @@ int cpio_newc_extract(const void *archive, size_t size, size_t *entries_out)
 	if (entries_out)
 		*entries_out = 0;
 	if (!archive)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	const uint8_t *base = archive;
 	size_t off = 0;
@@ -165,7 +165,7 @@ int cpio_newc_extract(const void *archive, size_t size, size_t *entries_out)
 		const cpio_newc_header_t *hdr =
 			(const cpio_newc_header_t *)(const void *)(base + off);
 		if (memcmp(hdr->magic, CPIO_NEWC_MAGIC, 6) != 0)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		uint32_t mode;
 		uint32_t uid;
@@ -173,35 +173,35 @@ int cpio_newc_extract(const void *archive, size_t size, size_t *entries_out)
 		uint32_t filesize;
 		uint32_t namesize;
 		int r = _hex8(hdr->mode, &mode);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
-		if ((r = _hex8(hdr->uid, &uid)) != VFS_OK)
+		if ((r = _hex8(hdr->uid, &uid)) != 0)
 			return r;
-		if ((r = _hex8(hdr->gid, &gid)) != VFS_OK)
+		if ((r = _hex8(hdr->gid, &gid)) != 0)
 			return r;
-		if ((r = _hex8(hdr->filesize, &filesize)) != VFS_OK)
+		if ((r = _hex8(hdr->filesize, &filesize)) != 0)
 			return r;
-		if ((r = _hex8(hdr->namesize, &namesize)) != VFS_OK)
+		if ((r = _hex8(hdr->namesize, &namesize)) != 0)
 			return r;
 		if (namesize == 0)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		off += CPIO_NEWC_HEADER_SIZE;
 		if (off + namesize > size)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		const char *name = (const char *)(const void *)(base + off);
 		if (name[namesize - 1] != '\0')
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		off = _align4(off + namesize);
 		if (off > size || off + filesize > size)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		if (strcmp(name, CPIO_TRAILER) == 0) {
 			log_debug("cpio", "trailer after %zu entries", entries);
 			if (entries_out)
 				*entries_out = entries;
-			return VFS_OK;
+			return 0;
 		}
 
 		log_trace("cpio", "entry name=%s mode=0%o size=%u", name, mode,
@@ -209,18 +209,18 @@ int cpio_newc_extract(const void *archive, size_t size, size_t *entries_out)
 
 		char *path = NULL;
 		r = _make_path(name, &path);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 
 		r = _ensure_parent_dirs(path);
-		if (r == VFS_OK && VFS_S_ISDIR(mode)) {
+		if (r == 0 && VFS_S_ISDIR(mode)) {
 			r = _extract_dir(path, mode, uid, gid);
-		} else if (r == VFS_OK && VFS_S_ISREG(mode)) {
+		} else if (r == 0 && VFS_S_ISREG(mode)) {
 			r = _extract_file(path, mode, uid, gid, base + off, filesize);
 		}
 
 		kfree(path);
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 		if (VFS_S_ISDIR(mode) || VFS_S_ISREG(mode))
 			entries++;
@@ -228,5 +228,5 @@ int cpio_newc_extract(const void *archive, size_t size, size_t *entries_out)
 		off = _align4(off + filesize);
 	}
 
-	return VFS_ERR_INVAL;
+	return -EINVAL;
 }

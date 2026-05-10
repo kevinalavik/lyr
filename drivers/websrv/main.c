@@ -32,12 +32,12 @@ static int hb_init(htmlbuf_t *b, size_t cap)
 {
 	b->data = kzalloc(cap);
 	if (!b->data)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	b->len = 0;
 	b->cap = cap;
 	b->data[0] = 0;
-	return VFS_OK;
+	return 0;
 }
 
 static void hb_free(htmlbuf_t *b)
@@ -53,13 +53,13 @@ static void hb_free(htmlbuf_t *b)
 static int hb_grow(htmlbuf_t *b, size_t need)
 {
 	if (need <= b->cap)
-		return VFS_OK;
+		return 0;
 
 	size_t ncap = b->cap ? b->cap : WEB_BODY_INIT;
 
 	while (ncap < need) {
 		if (ncap >= WEB_BODY_LIMIT)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		ncap *= 2;
 		if (ncap > WEB_BODY_LIMIT)
 			ncap = WEB_BODY_LIMIT;
@@ -67,23 +67,23 @@ static int hb_grow(htmlbuf_t *b, size_t need)
 
 	char *n = krealloc(b->data, ncap);
 	if (!n)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	b->data = n;
 	b->cap = ncap;
-	return VFS_OK;
+	return 0;
 }
 
 static int hb_append_n(htmlbuf_t *b, const char *s, size_t len)
 {
 	int r = hb_grow(b, b->len + len + 1);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	memcpy(b->data + b->len, s, len);
 	b->len += len;
 	b->data[b->len] = 0;
-	return VFS_OK;
+	return 0;
 }
 
 static int hb_append(htmlbuf_t *b, const char *s)
@@ -101,7 +101,7 @@ static int hb_appendf(htmlbuf_t *b, const char *fmt, ...)
 	va_end(ap);
 
 	if (n < 0 || (size_t)n >= sizeof(tmp))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	return hb_append_n(b, tmp, (size_t)n);
 }
@@ -112,28 +112,28 @@ static int hb_html_escape_n(htmlbuf_t *b, const char *s, size_t len)
 		switch (s[i]) {
 		case '&':
 			if (hb_append(b, "&amp;"))
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			break;
 		case '<':
 			if (hb_append(b, "&lt;"))
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			break;
 		case '>':
 			if (hb_append(b, "&gt;"))
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			break;
 		case '"':
 			if (hb_append(b, "&quot;"))
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			break;
 		default:
 			if (hb_append_n(b, &s[i], 1))
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			break;
 		}
 	}
 
-	return VFS_OK;
+	return 0;
 }
 
 static int hb_html_escape(htmlbuf_t *b, const char *s)
@@ -163,7 +163,7 @@ static int url_decode_component(const char *src, size_t len, char *dst,
 			int b = hexval(src[i + 2]);
 
 			if (a < 0 || b < 0)
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 
 			dst[pos++] = (char)((a << 4) | b);
 			i += 3;
@@ -178,9 +178,9 @@ static int url_decode_component(const char *src, size_t len, char *dst,
 	dst[pos] = 0;
 
 	if (pos + 1 == cap && len)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
-	return VFS_OK;
+	return 0;
 }
 
 static int url_path_decode(const char *src, char *dst, size_t cap)
@@ -190,13 +190,13 @@ static int url_path_decode(const char *src, char *dst, size_t cap)
 	while (src[len] && src[len] != ' ' && src[len] != '?')
 		len++;
 
-	if (url_decode_component(src, len, dst, cap, 0) != VFS_OK)
-		return VFS_ERR_INVAL;
+	if (url_decode_component(src, len, dst, cap, 0) != 0)
+		return -EINVAL;
 
 	if (!dst[0] || strstr(dst, ".."))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
-	return VFS_OK;
+	return 0;
 }
 
 static const char *find_http_body(const char *req, size_t len, size_t *out_len)
@@ -235,14 +235,14 @@ static int parse_content_length(const char *req, size_t len, size_t *out)
 			}
 
 			if (!any)
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 
 			*out = n;
-			return VFS_OK;
+			return 0;
 		}
 	}
 
-	return VFS_ERR_INVAL;
+	return -EINVAL;
 }
 
 static int path_parent(const char *path, char *out, size_t cap)
@@ -251,10 +251,10 @@ static int path_parent(const char *path, char *out, size_t cap)
 
 	if (len <= 1) {
 		if (cap < 2)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		out[0] = '/';
 		out[1] = 0;
-		return VFS_OK;
+		return 0;
 	}
 
 	size_t end = len;
@@ -269,18 +269,18 @@ static int path_parent(const char *path, char *out, size_t cap)
 
 	if (slash <= 1) {
 		if (cap < 2)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		out[0] = '/';
 		out[1] = 0;
-		return VFS_OK;
+		return 0;
 	}
 
 	if (slash >= cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	memcpy(out, path, slash - 1);
 	out[slash - 1] = 0;
-	return VFS_OK;
+	return 0;
 }
 
 static int join_path(const char *dir, const char *name, char *out, size_t cap)
@@ -293,9 +293,9 @@ static int join_path(const char *dir, const char *name, char *out, size_t cap)
 		n = npf_snprintf(out, cap, "%s/%s", dir, name);
 
 	if (n < 0 || (size_t)n >= cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
-	return VFS_OK;
+	return 0;
 }
 
 static int read_file_limited(const char *path, char **out, size_t *out_len,
@@ -303,14 +303,14 @@ static int read_file_limited(const char *path, char **out, size_t *out_len,
 {
 	vfs_file_t *f;
 	int r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &f);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	size_t cap = 4096;
 	char *buf = kzalloc(cap + 1);
 	if (!buf) {
 		vfs_close(f);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	size_t total = 0;
@@ -332,7 +332,7 @@ static int read_file_limited(const char *path, char **out, size_t *out_len,
 			if (!n) {
 				kfree(buf);
 				vfs_close(f);
-				return VFS_ERR_NOMEM;
+				return -ENOMEM;
 			}
 
 			buf = n;
@@ -341,7 +341,7 @@ static int read_file_limited(const char *path, char **out, size_t *out_len,
 
 		size_t got = 0;
 		r = vfs_read(f, buf + total, cap - total, &got);
-		if (r != VFS_OK) {
+		if (r != 0) {
 			kfree(buf);
 			vfs_close(f);
 			return r;
@@ -358,14 +358,14 @@ static int read_file_limited(const char *path, char **out, size_t *out_len,
 	buf[total] = 0;
 	*out = buf;
 	*out_len = total;
-	return VFS_OK;
+	return 0;
 }
 
 static int write_file_all(const char *path, const char *data, size_t len)
 {
 	vfs_file_t *f;
 	int r = vfs_open(path, VFS_O_WRONLY | VFS_O_TRUNC, 0, &vfs_root_cred, &f);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	size_t off = 0;
@@ -374,21 +374,21 @@ static int write_file_all(const char *path, const char *data, size_t len)
 		size_t written = 0;
 
 		r = vfs_write(f, data + off, len - off, &written);
-		if (r != VFS_OK) {
+		if (r != 0) {
 			vfs_close(f);
 			return r;
 		}
 
 		if (!written) {
 			vfs_close(f);
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		}
 
 		off += written;
 	}
 
 	vfs_close(f);
-	return VFS_OK;
+	return 0;
 }
 
 static int build_header(htmlbuf_t *b, const char *title)
@@ -403,7 +403,7 @@ static int build_header(htmlbuf_t *b, const char *title)
 	hb_append(b, "<a href=\"/fs/\">files</a> | ");
 	hb_append(b, "<a href=\"/stats\">stats</a>");
 	hb_append(b, "</nav></fieldset></header>");
-	return VFS_OK;
+	return 0;
 }
 
 static int build_footer(htmlbuf_t *b)
@@ -411,7 +411,7 @@ static int build_footer(htmlbuf_t *b)
 	hb_append(b, "<footer><fieldset><legend>footer</legend>");
 	hb_append(b, "<p>lyrOS websrv</p>");
 	hb_append(b, "</fieldset></footer></body></html>");
-	return VFS_OK;
+	return 0;
 }
 
 static int build_home(htmlbuf_t *b)
@@ -465,19 +465,19 @@ static int build_home(htmlbuf_t *b)
 	hb_append(b, "</main>");
 
 	build_footer(b);
-	return VFS_OK;
+	return 0;
 }
 
 static int build_listing(const char *path, htmlbuf_t *b)
 {
 	vfs_node_t *dir;
 	int r = vfs_resolve(path, &vfs_root_cred, &dir);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (!VFS_S_ISDIR(dir->mode)) {
 		vfs_node_release(dir);
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	}
 
 	size_t files = 0;
@@ -495,7 +495,7 @@ static int build_listing(const char *path, htmlbuf_t *b)
 
 	if (strcmp(path, "/")) {
 		char parent[512];
-		if (path_parent(path, parent, sizeof(parent)) == VFS_OK) {
+		if (path_parent(path, parent, sizeof(parent)) == 0) {
 			hb_append(b, " | <a href=\"/fs");
 			hb_html_escape(b, parent);
 			hb_append(b, "\">parent</a>");
@@ -510,11 +510,11 @@ static int build_listing(const char *path, htmlbuf_t *b)
 
 	for (size_t i = 0;; i++) {
 		vfs_dirent_t ent;
-		if (vfs_readdir(dir, i, &ent) != VFS_OK)
+		if (vfs_readdir(dir, i, &ent) != 0)
 			break;
 
 		char full[512];
-		if (join_path(path, ent.name, full, sizeof(full)) != VFS_OK)
+		if (join_path(path, ent.name, full, sizeof(full)) != 0)
 			continue;
 
 		int is_dir = VFS_S_ISDIR(ent.mode);
@@ -574,7 +574,7 @@ static int build_listing(const char *path, htmlbuf_t *b)
 
 	vfs_node_release(dir);
 	build_footer(b);
-	return VFS_OK;
+	return 0;
 }
 
 static int build_raw(const char *path, htmlbuf_t *b)
@@ -584,7 +584,7 @@ static int build_raw(const char *path, htmlbuf_t *b)
 	int truncated = 0;
 
 	int r = read_file_limited(path, &buf, &len, &truncated);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	build_header(b, "view");
@@ -602,7 +602,7 @@ static int build_raw(const char *path, htmlbuf_t *b)
 
 	kfree(buf);
 	build_footer(b);
-	return VFS_OK;
+	return 0;
 }
 
 static int build_edit(const char *path, htmlbuf_t *b)
@@ -612,7 +612,7 @@ static int build_edit(const char *path, htmlbuf_t *b)
 	int truncated = 0;
 
 	int r = read_file_limited(path, &buf, &len, &truncated);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	build_header(b, "edit");
@@ -634,7 +634,7 @@ static int build_edit(const char *path, htmlbuf_t *b)
 		hb_append(b, "</pre></fieldset></main>");
 		kfree(buf);
 		build_footer(b);
-		return VFS_OK;
+		return 0;
 	}
 
 	hb_append(b, "<form method=\"POST\" action=\"/save\">");
@@ -649,7 +649,7 @@ static int build_edit(const char *path, htmlbuf_t *b)
 
 	kfree(buf);
 	build_footer(b);
-	return VFS_OK;
+	return 0;
 }
 
 static int extract_field(const char *body, size_t len, const char *name,
@@ -681,7 +681,7 @@ static int extract_field(const char *body, size_t len, const char *name,
 		i = val_end + 1;
 	}
 
-	return VFS_ERR_INVAL;
+	return -EINVAL;
 }
 
 static int handle_save(const void *req, size_t len, void *resp, size_t cap,
@@ -689,48 +689,48 @@ static int handle_save(const void *req, size_t len, void *resp, size_t cap,
 {
 	size_t declared_len = 0;
 	int r = parse_content_length((const char *)req, len, &declared_len);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (declared_len > WEB_FORM_LIMIT)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t body_len = 0;
 	const char *body = find_http_body((const char *)req, len, &body_len);
 	if (!body)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (body_len != declared_len)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char path[512];
 
 	r = extract_field(body, body_len, "path", path, sizeof(path));
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (!path[0] || strstr(path, ".."))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char *old = NULL;
 	size_t old_len = 0;
 	int old_truncated = 0;
 
 	r = read_file_limited(path, &old, &old_len, &old_truncated);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	kfree(old);
 
 	if (old_truncated)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char *content = kzalloc(WEB_FORM_LIMIT + 1);
 	if (!content)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	r = extract_field(body, body_len, "content", content, WEB_FORM_LIMIT + 1);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(content);
 		return r;
 	}
@@ -738,7 +738,7 @@ static int handle_save(const void *req, size_t len, void *resp, size_t cap,
 	r = write_file_all(path, content, strlen(content));
 	kfree(content);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	web_stat_saves++;
@@ -751,10 +751,10 @@ static int handle_save(const void *req, size_t len, void *resp, size_t cap,
 						 path);
 
 	if (n < 0 || (size_t)n >= cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	*out_len = (size_t)n;
-	return VFS_OK;
+	return 0;
 }
 
 static int build_stats(htmlbuf_t *b)
@@ -827,7 +827,7 @@ static int build_stats(htmlbuf_t *b)
 	hb_append(b, "</main>");
 
 	build_footer(b);
-	return VFS_OK;
+	return 0;
 }
 
 static int build_error(htmlbuf_t *b, const char *title, const char *msg)
@@ -839,7 +839,7 @@ static int build_error(htmlbuf_t *b, const char *title, const char *msg)
 	hb_html_escape(b, msg);
 	hb_append(b, "</p><p><a href=\"/fs/\">files</a></p></fieldset></main>");
 	build_footer(b);
-	return VFS_OK;
+	return 0;
 }
 
 static int send_html(htmlbuf_t *b, void *resp, size_t cap, size_t *out)
@@ -852,12 +852,12 @@ static int send_html(htmlbuf_t *b, void *resp, size_t cap, size_t *out)
 						 b->len);
 
 	if (n < 0 || (size_t)n + b->len >= cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	memcpy((char *)resp + n, b->data, b->len);
 	*out = (size_t)n + b->len;
 	web_stat_bytes_sent += *out;
-	return VFS_OK;
+	return 0;
 }
 
 static int send_raw(const void *data, size_t len, const char *content_type,
@@ -874,14 +874,14 @@ static int send_raw(const void *data, size_t len, const char *content_type,
 						 content_type, len);
 
 	if (n < 0 || (size_t)n + len >= cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	memcpy((char *)resp + n, data, len);
 
 	*out = (size_t)n + len;
 	web_stat_bytes_sent += *out;
 
-	return VFS_OK;
+	return 0;
 }
 
 static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
@@ -907,13 +907,13 @@ static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 
 	if (is_get) {
 		if (url_path_decode((const char *)req + 4, url, sizeof(url)) !=
-			VFS_OK) {
+			0) {
 			url[0] = '/';
 			url[1] = 0;
 		}
 	} else if (is_post) {
 		if (url_path_decode((const char *)req + 5, url, sizeof(url)) !=
-			VFS_OK) {
+			0) {
 			url[0] = '/';
 			url[1] = 0;
 		}
@@ -924,7 +924,7 @@ static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 
 	htmlbuf_t b;
 	int r = hb_init(&b, WEB_BODY_INIT);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (!strcmp(url, "/")) {
@@ -960,10 +960,10 @@ static int websrv_handle(netdev_t *dev, uint32_t ip, uint16_t port,
 		return send_raw(alive_msg, sizeof(alive_msg) - 1,
 						"text/plain; charset=utf-8", resp, cap, out);
 	} else {
-		r = VFS_ERR_NOENT;
+		r = -ENOENT;
 	}
 
-	if (r != VFS_OK) {
+	if (r != 0) {
 		web_stat_errors++;
 		b.len = 0;
 		if (b.data)
@@ -989,15 +989,15 @@ static void websrv_thread(void *arg)
 static int websrv_main(driver_t *d)
 {
 	int r = net_tcp_listen(6969, websrv_handle, d);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	r = driver_spawn_thread(d, "websrv", websrv_thread, d);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	driver_log(d, "info", "websrv online");
-	return VFS_OK;
+	return 0;
 }
 
 static const char *const websrv_imports[] = {

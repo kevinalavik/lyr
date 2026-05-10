@@ -142,7 +142,7 @@ int procfs_mount(const char *target)
 {
 	vfs_node_t *root = procfs_create_root();
 	if (!root)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	int r = vfs_mount(target, root, &vfs_root_cred);
 	vfs_node_release(root);
@@ -156,21 +156,21 @@ static int lookup_pid_root(const char *name, size_t len, vfs_node_t **out)
 	if (name_eq(name, len, "self")) {
 		pid = effective_pid(-1);
 		if (pid < 0)
-			return VFS_ERR_NOENT;
+			return -ENOENT;
 	} else if (!parse_pid(name, len, &pid)) {
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 
 	sched_process_info_t info;
 	if (!sched_process_get_info(pid, &info))
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	procfs_node_t *node = alloc_node(PROCFS_PID_DIR, pid, VFS_S_IFDIR | 0555);
 	if (!node)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	*out = &node->vnode;
-	return VFS_OK;
+	return 0;
 }
 
 static int lookup_pid_file(procfs_node_t *dir, const char *name, size_t len,
@@ -189,46 +189,46 @@ static int lookup_pid_file(procfs_node_t *dir, const char *name, size_t len,
 	else if (name_eq(name, len, "cwd"))
 		kind = PROCFS_FILE_CWD;
 	else
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	sched_process_info_t info;
 	if (!proc_info_for(dir->pid, &info))
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	procfs_node_t *node = alloc_node(kind, dir->pid, VFS_S_IFREG | 0444);
 	if (!node)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	*out = &node->vnode;
-	return VFS_OK;
+	return 0;
 }
 
 static int procfs_lookup(vfs_node_t *dir_node, const char *name, size_t len,
 						 vfs_node_t **out)
 {
 	if (!dir_node || !name || !out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 
 	procfs_node_t *dir = procfs_to_node(dir_node);
 
 	if (len == 1 && name[0] == '.') {
 		vfs_node_ref(dir_node);
 		*out = dir_node;
-		return VFS_OK;
+		return 0;
 	}
 	if (len == 2 && name[0] == '.' && name[1] == '.') {
 		if (dir->kind == PROCFS_ROOT) {
 			vfs_node_ref(dir_node);
 			*out = dir_node;
-			return VFS_OK;
+			return 0;
 		}
 		procfs_node_t *root = alloc_node(PROCFS_ROOT, -1, VFS_S_IFDIR | 0555);
 		if (!root)
-			return VFS_ERR_NOMEM;
+			return -ENOMEM;
 		*out = &root->vnode;
-		return VFS_OK;
+		return 0;
 	}
 
 	switch (dir->kind) {
@@ -237,7 +237,7 @@ static int procfs_lookup(vfs_node_t *dir_node, const char *name, size_t len,
 	case PROCFS_PID_DIR:
 		return lookup_pid_file(dir, name, len, out);
 	default:
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	}
 }
 
@@ -259,25 +259,25 @@ static int procfs_root_readdir(size_t index, vfs_dirent_t *out)
 {
 	if (index == 0) {
 		dirent_fill(out, ".", VFS_S_IFDIR | 0555);
-		return VFS_OK;
+		return 0;
 	}
 	if (index == 1) {
 		dirent_fill(out, "..", VFS_S_IFDIR | 0555);
-		return VFS_OK;
+		return 0;
 	}
 	if (index == 2) {
 		dirent_fill(out, "self", VFS_S_IFDIR | 0555);
-		return VFS_OK;
+		return 0;
 	}
 
 	sched_process_info_t info;
 	if (!sched_process_get_nth(index - 3, &info))
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	char name[VFS_NAME_MAX + 1];
 	pid_to_name(info.pid, name);
 	dirent_fill(out, name, VFS_S_IFDIR | 0555);
-	return VFS_OK;
+	return 0;
 }
 
 static int procfs_pid_readdir(procfs_node_t *dir, size_t index,
@@ -285,48 +285,48 @@ static int procfs_pid_readdir(procfs_node_t *dir, size_t index,
 {
 	sched_process_info_t info;
 	if (!proc_info_for(dir->pid, &info))
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	switch (index) {
 	case 0:
 		dirent_fill(out, ".", VFS_S_IFDIR | 0555);
-		return VFS_OK;
+		return 0;
 	case 1:
 		dirent_fill(out, "..", VFS_S_IFDIR | 0555);
-		return VFS_OK;
+		return 0;
 	case 2:
 		dirent_fill(out, "status", VFS_S_IFREG | 0444);
-		return VFS_OK;
+		return 0;
 	case 3:
 		dirent_fill(out, "stat", VFS_S_IFREG | 0444);
-		return VFS_OK;
+		return 0;
 	case 4:
 		dirent_fill(out, "cmdline", VFS_S_IFREG | 0444);
-		return VFS_OK;
+		return 0;
 	case 5:
 		dirent_fill(out, "comm", VFS_S_IFREG | 0444);
-		return VFS_OK;
+		return 0;
 	case 6:
 		dirent_fill(out, "cwd", VFS_S_IFREG | 0444);
-		return VFS_OK;
+		return 0;
 	default:
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	}
 }
 
 static int procfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 {
 	if (!dir_node || !out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (!VFS_S_ISDIR(dir_node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 
 	procfs_node_t *dir = procfs_to_node(dir_node);
 	if (dir->kind == PROCFS_ROOT)
 		return procfs_root_readdir(index, out);
 	if (dir->kind == PROCFS_PID_DIR)
 		return procfs_pid_readdir(dir, index, out);
-	return VFS_ERR_NOTDIR;
+	return -ENOTDIR;
 }
 
 static char proc_state(const sched_process_info_t *info)
@@ -428,9 +428,9 @@ static int procfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!node || !buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (VFS_S_ISDIR(node->mode))
-		return VFS_ERR_ISDIR;
+		return -EISDIR;
 
 	char tmp[1024];
 	procfs_node_t *pn = procfs_to_node(node);
@@ -439,10 +439,10 @@ static int procfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 	if (!total && (pn->kind == PROCFS_FILE_STATUS || pn->kind == PROCFS_FILE_STAT ||
 				 pn->kind == PROCFS_FILE_CMDLINE || pn->kind == PROCFS_FILE_COMM ||
 				 pn->kind == PROCFS_FILE_CWD))
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	if (off >= total || len == 0)
-		return VFS_OK;
+		return 0;
 
 	size_t n = total - (size_t)off;
 	if (n > len)
@@ -450,7 +450,7 @@ static int procfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 	memcpy(buf, tmp + off, n);
 	if (done)
 		*done = n;
-	return VFS_OK;
+	return 0;
 }
 
 static void procfs_release(vfs_node_t *node)

@@ -10,14 +10,14 @@ int net_send_ipv4_udp(netdev_t *dev, const uint8_t dst_mac[6],
 					  size_t payload_len)
 {
 	if (!dev || !payload || payload_len > 1400)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint8_t frame[NET_ETH_FRAME_MAX];
 	size_t udp_len = sizeof(udp_hdr_t) + payload_len;
 	size_t ip_len = sizeof(ipv4_hdr_t) + udp_len;
 	size_t frame_len = sizeof(eth_hdr_t) + ip_len;
 	if (frame_len > sizeof(frame))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	eth_hdr_t *eth = (eth_hdr_t *)frame;
 	ipv4_hdr_t *ip = (ipv4_hdr_t *)(frame + sizeof(*eth));
@@ -53,7 +53,7 @@ int net_send_ipv4_udp(netdev_t *dev, const uint8_t dst_mac[6],
 	if (dst_ip == dev->ipv4_addr) {
 		dev->tx_packets++;
 		net_receive_frame(dev, frame, frame_len);
-		return VFS_OK;
+		return 0;
 	}
 
 	return dev->send(dev, frame, frame_len);
@@ -64,13 +64,13 @@ int net_send_ipv4_icmp(netdev_t *dev, const uint8_t dst_mac[6],
 					   const void *payload, size_t payload_len)
 {
 	if (!dev || !payload || payload_len > 1400)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint8_t frame[NET_ETH_FRAME_MAX];
 	size_t ip_len = sizeof(ipv4_hdr_t) + payload_len;
 	size_t frame_len = sizeof(eth_hdr_t) + ip_len;
 	if (frame_len > sizeof(frame))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	eth_hdr_t *eth = (eth_hdr_t *)frame;
 	ipv4_hdr_t *ip = (ipv4_hdr_t *)(frame + sizeof(*eth));
@@ -95,7 +95,7 @@ int net_send_ipv4_icmp(netdev_t *dev, const uint8_t dst_mac[6],
 	if (dst_ip == dev->ipv4_addr) {
 		dev->tx_packets++;
 		net_receive_frame(dev, frame, frame_len);
-		return VFS_OK;
+		return 0;
 	}
 
 	return dev->send(dev, frame, frame_len);
@@ -109,7 +109,7 @@ static int net_send_ipv4_tcp_with_window_opts_impl(
 	size_t payload_len)
 {
 	if (!dev || !dst_mac || payload_len > 1400)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint8_t frame[NET_ETH_FRAME_MAX];
 	size_t tcp_opt_len = 0;
@@ -130,7 +130,7 @@ static int net_send_ipv4_tcp_with_window_opts_impl(
 	size_t ip_len = sizeof(ipv4_hdr_t) + tcp_len;
 	size_t frame_len = sizeof(eth_hdr_t) + ip_len;
 	if (frame_len > sizeof(frame))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	eth_hdr_t *eth = (eth_hdr_t *)frame;
 	ipv4_hdr_t *ip = (ipv4_hdr_t *)(frame + sizeof(*eth));
@@ -207,7 +207,7 @@ static int net_send_ipv4_tcp_with_window_opts_impl(
 	if (dst_ip == dev->ipv4_addr) {
 		dev->tx_packets++;
 		net_receive_frame(dev, frame, frame_len);
-		return VFS_OK;
+		return 0;
 	}
 
 	return dev->send(dev, frame, frame_len);

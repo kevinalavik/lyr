@@ -16,19 +16,19 @@ static int header_name_eq(const char *p, size_t len, const char *name)
 int net_http_parse(const char *buf, size_t len, net_http_response_t *out)
 {
 	if (!buf || !out || len < 12)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (memcmp(buf, "HTTP/", 5) != 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t pos = 0;
 	while (pos < len && buf[pos] != ' ')
 		pos++;
 	if (pos + 4 >= len || buf[pos] != ' ')
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	pos++;
 	if (!ascii_digit(buf[pos]) || !ascii_digit(buf[pos + 1]) ||
 		!ascii_digit(buf[pos + 2]))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	memset(out, 0, sizeof(*out));
 	out->status = (uint16_t)((buf[pos] - '0') * 100 +
@@ -44,7 +44,7 @@ int net_http_parse(const char *buf, size_t len, net_http_response_t *out)
 		}
 	}
 	if (!header_end)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	out->header_len = header_end;
 
 	size_t line = 0;
@@ -67,13 +67,13 @@ int net_http_parse(const char *buf, size_t len, net_http_response_t *out)
 				v++;
 			}
 			out->body_len = n;
-			return VFS_OK;
+			return 0;
 		}
 		line = next + 2;
 	}
 
 	out->body_len = len - header_end;
-	return VFS_OK;
+	return 0;
 }
 
 int net_http_get(const char *host, const char *path, char *buf, size_t len,
@@ -83,26 +83,26 @@ int net_http_get(const char *host, const char *path, char *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!host || !path || !buf || len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint32_t ip = 0;
 	int r = net_dns_resolve(host, timeout_ms, &ip);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	netdev_t *dev = net_route(ip, NULL);
 	if (!dev)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	size_t got = 0;
 	r = net_tcp_http_request(dev, ip, host, path, buf, len, &got, timeout_ms);
 	if (done)
 		*done = got;
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	if (response)
 		return net_http_parse(buf, got, response);
-	return VFS_OK;
+	return 0;
 }
 
 int net_http_get_dev(netdev_t *dev, const char *host, const char *path,
@@ -112,20 +112,20 @@ int net_http_get_dev(netdev_t *dev, const char *host, const char *path,
 	if (done)
 		*done = 0;
 	if (!dev || !host || !path || !buf || len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint32_t ip = 0;
 	int r = net_dns_resolve_dev(dev, host, timeout_ms, &ip);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	size_t got = 0;
 	r = net_tcp_http_request(dev, ip, host, path, buf, len, &got, timeout_ms);
 	if (done)
 		*done = got;
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	if (response)
 		return net_http_parse(buf, got, response);
-	return VFS_OK;
+	return 0;
 }

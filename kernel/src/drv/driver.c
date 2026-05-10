@@ -166,13 +166,13 @@ static int module_symbol_resolve(const char *name, uint64_t *out, void *ctx)
 {
 	(void)ctx;
 	if (!name || !out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	for (size_t i = 0; i < sizeof(kernel_symbols) / sizeof(kernel_symbols[0]);
 		 i++) {
 		if (strcmp(kernel_symbols[i].name, name) == 0) {
 			*out = kernel_symbols[i].value;
-			return VFS_OK;
+			return 0;
 		}
 	}
 
@@ -181,17 +181,17 @@ static int module_symbol_resolve(const char *name, uint64_t *out, void *ctx)
 	if (sym) {
 		*out = sym->value;
 		spinlock_release(&driver_lock);
-		return VFS_OK;
+		return 0;
 	}
 	spinlock_release(&driver_lock);
-	return VFS_ERR_NOENT;
+	return -ENOENT;
 }
 
 static driver_metadata_t *driver_metadata_from_elf(elf_image_t *image)
 {
 	uint64_t value = 0;
 	if (elf_find_symbol_value(image, "lyr_driver_metadata", &value,
-							  module_symbol_resolve, NULL) != VFS_OK)
+							  module_symbol_resolve, NULL) != 0)
 		return NULL;
 	return (driver_metadata_t *)value;
 }
@@ -201,13 +201,13 @@ static int driver_metadata_imports_resolved(driver_t *driver)
 	const driver_metadata_t *m = driver->metadata;
 	for (size_t i = 0; i < m->import_count; i++) {
 		uint64_t value = 0;
-		if (module_symbol_resolve(m->imports[i], &value, NULL) != VFS_OK) {
+		if (module_symbol_resolve(m->imports[i], &value, NULL) != 0) {
 			log_err("driver", "%s missing import %s", driver->name,
 					m->imports[i]);
-			return VFS_ERR_NOENT;
+			return -ENOENT;
 		}
 	}
-	return VFS_OK;
+	return 0;
 }
 
 static int driver_register_exports(driver_t *driver, elf_image_t *image)
@@ -216,7 +216,7 @@ static int driver_register_exports(driver_t *driver, elf_image_t *image)
 	for (size_t i = 0; i < m->export_count; i++) {
 		uint64_t value = 0;
 		int r = elf_find_defined_symbol_value(image, m->exports[i], &value);
-		if (r != VFS_OK) {
+		if (r != 0) {
 			log_err("driver", "%s export %s is not defined", driver->name,
 					m->exports[i]);
 			return r;
@@ -224,7 +224,7 @@ static int driver_register_exports(driver_t *driver, elf_image_t *image)
 
 		module_symbol_t *sym = kzalloc(sizeof(*sym));
 		if (!sym)
-			return VFS_ERR_NOMEM;
+			return -ENOMEM;
 		copy_cstr(sym->name, sizeof(sym->name), m->exports[i]);
 		sym->value = value;
 		sym->driver = driver;
@@ -233,7 +233,7 @@ static int driver_register_exports(driver_t *driver, elf_image_t *image)
 		if (module_symbol_find_locked(sym->name)) {
 			spinlock_release(&driver_lock);
 			kfree(sym);
-			return VFS_ERR_EXIST;
+			return -EEXIST;
 		}
 		sym->next = module_symbols;
 		module_symbols = sym;
@@ -241,7 +241,7 @@ static int driver_register_exports(driver_t *driver, elf_image_t *image)
 		log_trace("driver", "%s exports %s=0x%llx", driver->name, sym->name,
 				  sym->value);
 	}
-	return VFS_OK;
+	return 0;
 }
 
 static int driver_runtime_write_file(const char *path, const char *data)
@@ -249,12 +249,12 @@ static int driver_runtime_write_file(const char *path, const char *data)
 	vfs_file_t *file = NULL;
 	int r = vfs_open(path, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644,
 					 &vfs_root_cred, &file);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	size_t done = 0;
 	r = vfs_write(file, data, strlen(data), &done);
 	vfs_close(file);
-	return r == VFS_OK && done == strlen(data) ? VFS_OK : r;
+	return r == 0 && done == strlen(data) ? 0 : r;
 }
 
 void driver_log(driver_t *driver, const char *level, const char *message)
@@ -287,34 +287,34 @@ int driver_spawn_thread(driver_t *driver, const char *name,
 						driver_thread_entry_t entry, void *arg)
 {
 	if (!driver || !driver->process || !entry)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	tcb_t *thread =
 		sched_create_thread((pcb_t *)driver->process, name, entry, arg);
-	return thread ? VFS_OK : VFS_ERR_NOMEM;
+	return thread ? 0 : -ENOMEM;
 }
 
 static int driver_read_file(const char *path, uint8_t **out, size_t *out_size)
 {
 	vfs_file_t *file = NULL;
 	int r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &file);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	size_t size = (size_t)file->node->size;
 	uint8_t *buf = kzalloc(size + 1);
 	if (!buf) {
 		vfs_close(file);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 	size_t done = 0;
 	r = vfs_read(file, buf, size, &done);
 	vfs_close(file);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(buf);
 		return r;
 	}
 	*out = buf;
 	*out_size = done;
-	return VFS_OK;
+	return 0;
 }
 
 static int driver_load_module(const char *path)
@@ -322,7 +322,7 @@ static int driver_load_module(const char *path)
 	uint8_t *file = NULL;
 	size_t file_size = 0;
 	int r = driver_read_file(path, &file, &file_size);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err("driver", "cannot read %s status=%d", path, r);
 		return r;
 	}
@@ -330,7 +330,7 @@ static int driver_load_module(const char *path)
 	elf_image_t image;
 	r = elf_load_relocatable(&image, file, file_size, module_alloc_section,
 							 NULL, module_symbol_resolve, NULL);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(file);
 		kfree(image.sections);
 		return r;
@@ -342,14 +342,14 @@ static int driver_load_module(const char *path)
 		!metadata->entry) {
 		kfree(file);
 		kfree(image.sections);
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	}
 
 	driver_t *driver = kzalloc(sizeof(*driver));
 	if (!driver) {
 		kfree(file);
 		kfree(image.sections);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 	copy_cstr(driver->name, sizeof(driver->name), metadata->name);
 	copy_cstr(driver->image_path, sizeof(driver->image_path), path);
@@ -358,19 +358,19 @@ static int driver_load_module(const char *path)
 	driver->metadata = metadata;
 
 	r = driver_metadata_imports_resolved(driver);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	pcb_t *process = sched_process_create(driver->name, _lyr_kernel_vas);
 	if (!process)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	driver->pid = process->pid;
 	driver->process = process;
 
 	log_debug("driver", "loaded ELF %s as %s pid=%d", path, driver->name,
 			  driver->pid);
 	r = driver_register_exports(driver, &image);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	driver->status = metadata->entry(driver);
@@ -391,26 +391,26 @@ static int driver_load_module(const char *path)
 				 driver->name, driver->pid, driver->image_path,
 				 metadata->export_count, metadata->import_count);
 	driver_runtime_write_file(pathbuf, body);
-	return VFS_OK;
+	return 0;
 }
 
 int driver_manager_init(void)
 {
 	int r = vfs_mkdir("/run", 0755, &vfs_root_cred);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 	r = vfs_mkdir("/run/drivers", 0755, &vfs_root_cred);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	for (size_t i = 0;
 		 i < sizeof(boot_driver_paths) / sizeof(boot_driver_paths[0]); i++) {
 		r = driver_load_module(boot_driver_paths[i]);
-		if (r != VFS_OK)
+		if (r != 0)
 			log_err("driver", "load %s failed status=%d", boot_driver_paths[i],
 					r);
 	}
 	log_debug("driver", "manager loaded %zu ELF driver(s)",
 			  loaded_driver_count);
-	return VFS_OK;
+	return 0;
 }

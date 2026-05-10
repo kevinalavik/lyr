@@ -39,47 +39,47 @@ static int host_token_eq(const char *token, size_t token_len, const char *name)
 static int parse_ipv4_literal(const char *s, size_t len, uint32_t *out_ip)
 {
 	if (!s || !out_ip || len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	uint32_t parts[4];
 	size_t pos = 0;
 	for (size_t part = 0; part < 4; part++) {
 		if (pos >= len || !ascii_digit(s[pos]))
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		uint32_t value = 0;
 		size_t digits = 0;
 		while (pos < len && ascii_digit(s[pos])) {
 			value = value * 10 + (uint32_t)(s[pos] - '0');
 			if (value > 255)
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			pos++;
 			digits++;
 		}
 		if (!digits)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		parts[part] = value;
 		if (part < 3) {
 			if (pos >= len || s[pos] != '.')
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			pos++;
 		}
 	}
 	if (pos != len)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	*out_ip = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) |
 			  parts[3];
-	return VFS_OK;
+	return 0;
 }
 
 static int hosts_lookup(const char *name, uint32_t *out_ip)
 {
 	if (!name || !out_ip)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = NULL;
 	int r = vfs_open("/etc/hosts", VFS_O_RDONLY, 0, &vfs_root_cred, &file);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	size_t cap = file->node->size;
@@ -88,13 +88,13 @@ static int hosts_lookup(const char *name, uint32_t *out_ip)
 	char *buf = kzalloc(cap + 1);
 	if (!buf) {
 		vfs_close(file);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	size_t done = 0;
 	r = vfs_read(file, buf, cap, &done);
 	vfs_close(file);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kfree(buf);
 		return r;
 	}
@@ -125,7 +125,7 @@ static int hosts_lookup(const char *name, uint32_t *out_ip)
 			continue;
 
 		uint32_t ip = 0;
-		if (parse_ipv4_literal(buf + ip_start, ip_len, &ip) != VFS_OK)
+		if (parse_ipv4_literal(buf + ip_start, ip_len, &ip) != 0)
 			continue;
 
 		while (p < line_end) {
@@ -138,13 +138,13 @@ static int hosts_lookup(const char *name, uint32_t *out_ip)
 			if (host_len && host_token_eq(buf + host_start, host_len, name)) {
 				*out_ip = ip;
 				kfree(buf);
-				return VFS_OK;
+				return 0;
 			}
 		}
 	}
 
 	kfree(buf);
-	return VFS_ERR_NOENT;
+	return -ENOENT;
 }
 
 static int dns_encode_name(const char *name, uint8_t *out, size_t cap,
@@ -155,18 +155,18 @@ static int dns_encode_name(const char *name, uint8_t *out, size_t cap,
 	size_t label_pos = 0;
 
 	if (!name || !name[0] || !out || !done)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	while (*name) {
 		if (label_len == 0) {
 			if (pos >= cap)
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			label_pos = pos++;
 		}
 
 		if (*name == '.') {
 			if (label_len == 0 || label_len > 63)
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			out[label_pos] = (uint8_t)label_len;
 			label_len = 0;
 			name++;
@@ -174,51 +174,51 @@ static int dns_encode_name(const char *name, uint8_t *out, size_t cap,
 		}
 
 		if (pos >= cap)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		out[pos++] = (uint8_t)*name++;
 		label_len++;
 		if (label_len > 63)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 	}
 
 	if (label_len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	out[label_pos] = (uint8_t)label_len;
 	if (pos >= cap)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	out[pos++] = 0;
 	*done = pos;
-	return VFS_OK;
+	return 0;
 }
 
 static int dns_skip_name(const uint8_t *msg, size_t len, size_t *pos)
 {
 	size_t p;
 	if (!msg || !pos)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	p = *pos;
 
 	for (;;) {
 		if (p >= len)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		uint8_t n = msg[p++];
 		if (n == 0)
 			break;
 		if ((n & 0xc0) == 0xc0) {
 			if (p >= len)
-				return VFS_ERR_INVAL;
+				return -EINVAL;
 			p++;
 			break;
 		}
 		if (n & 0xc0)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		if (p + n > len)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 		p += n;
 	}
 
 	*pos = p;
-	return VFS_OK;
+	return 0;
 }
 
 static int send_dns_query(netdev_t *dev, uint32_t server_ip, const char *name)
@@ -234,11 +234,11 @@ static int send_dns_query(netdev_t *dev, uint32_t server_ip, const char *name)
 	hdr->qdcount = htons(1);
 
 	int r = dns_encode_name(name, query + pos, sizeof(query) - pos, &name_len);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	pos += name_len;
 	if (pos + 4 > sizeof(query))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	query[pos++] = 0;
 	query[pos++] = 1;
 	query[pos++] = 0;
@@ -250,7 +250,7 @@ static int send_dns_query(netdev_t *dev, uint32_t server_ip, const char *name)
 		next_hop = dev->ipv4_gateway;
 
 	r = net_arp_resolve(dev, next_hop, 1000, mac);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return net_send_ipv4_udp(dev, mac, dev->ipv4_addr, server_ip,
@@ -277,13 +277,13 @@ void net_dns_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
 	uint16_t qd = ntohs(hdr->qdcount);
 	uint16_t an = ntohs(hdr->ancount);
 	for (uint16_t i = 0; i < qd; i++) {
-		if (dns_skip_name(msg, len, &pos) != VFS_OK || pos + 4 > len)
+		if (dns_skip_name(msg, len, &pos) != 0 || pos + 4 > len)
 			return;
 		pos += 4;
 	}
 
 	for (uint16_t i = 0; i < an; i++) {
-		if (dns_skip_name(msg, len, &pos) != VFS_OK || pos + 10 > len)
+		if (dns_skip_name(msg, len, &pos) != 0 || pos + 10 > len)
 			return;
 		uint16_t type = ((uint16_t)msg[pos] << 8) | msg[pos + 1];
 		uint16_t klass = ((uint16_t)msg[pos + 2] << 8) | msg[pos + 3];
@@ -306,18 +306,18 @@ int net_dns_resolve_dev(netdev_t *dev, const char *name, uint64_t timeout_ms,
 						uint32_t *out_ip)
 {
 	if (!dev || !name || !out_ip)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	int r = parse_ipv4_literal(name, strlen(name), out_ip);
-	if (r == VFS_OK)
-		return VFS_OK;
+	if (r == 0)
+		return 0;
 
 	r = hosts_lookup(name, out_ip);
-	if (r == VFS_OK)
-		return VFS_OK;
+	if (r == 0)
+		return 0;
 
 	if (!dev->dns_server)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	dns_query_id++;
 	if (!dns_query_id)
@@ -328,22 +328,22 @@ int net_dns_resolve_dev(netdev_t *dev, const char *name, uint64_t timeout_ms,
 	dns_ready = 0;
 
 	r = send_dns_query(dev, dev->dns_server, name);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	net_poll_until(dev, until, &dns_ready);
 	if (!dns_ready || !dns_result_ip)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	*out_ip = dns_result_ip;
-	return VFS_OK;
+	return 0;
 }
 
 int net_dns_resolve(const char *name, uint64_t timeout_ms, uint32_t *out_ip)
 {
 	netdev_t *dev = net_default_dev();
 	if (!dev)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 	return net_dns_resolve_dev(dev, name, timeout_ms, out_ip);
 }

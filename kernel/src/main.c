@@ -39,6 +39,7 @@
 #include <net/socket.h>
 #include <sys/syscall.h>
 #include <dev/console.h>
+#include <dev/fb.h>
 #include <dev/kbd.h>
 
 #ifndef LYR_VERSION
@@ -194,26 +195,28 @@ void lyr_entry(void)
 	vfs_init(root);
 	devfs_init();
 	log_info("entry", "devfs ok");
-	assert(console_init() == VFS_OK);
+	assert(fbdev_init() == 0);
+	log_info("entry", "framebuffer device ok");
+	assert(console_init() == 0);
 	log_info("entry", "console ok");
 	assert(vfs_root() == root);
-	assert(vfs_mkdir("/proc", 0755, &vfs_root_cred) == VFS_OK);
-	assert(procfs_mount("/proc") == VFS_OK);
+	assert(vfs_mkdir("/proc", 0755, &vfs_root_cred) == 0);
+	assert(procfs_mount("/proc") == 0);
 	log_info("entry", "procfs ok");
 	log_info("entry", "VFS ok");
 	vfs_tmpfs_test(_lyr_kernel_vas);
-	assert(initrd_load_from_limine(module_request.response) == VFS_OK);
+	assert(initrd_load_from_limine(module_request.response) == 0);
 
-	assert(device_system_init() == VFS_OK);
+	assert(device_system_init() == 0);
 	log_info("entry", "Device system ok");
-	assert(time_init() == VFS_OK);
-	assert(rtc_init() == VFS_OK);
+	assert(time_init() == 0);
+	assert(rtc_init() == 0);
 	log_info("entry", "RTC/time ok");
-	assert(block_system_init() == VFS_OK);
+	assert(block_system_init() == 0);
 	log_info("entry", "Block layer ok");
-	assert(net_init() == VFS_OK);
+	assert(net_init() == 0);
 	log_info("entry", "Network core ok");
-	assert(socket_init() == VFS_OK);
+	assert(socket_init() == 0);
 	log_info("entry", "Socket layer ok");
 
 	/* ACPI */
@@ -260,10 +263,10 @@ void lyr_entry(void)
 	ipc_test();
 	log_info("entry", "IPC ok");
 
-	assert(driver_manager_init() == VFS_OK);
+	assert(driver_manager_init() == 0);
 	log_info("entry", "Driver manager ok");
 
-	assert(kbd_init() == VFS_OK);
+	assert(kbd_init() == 0);
 	log_info("entry", "Keyboard manager ok");
 
 #if _DEBUG_INIT
@@ -274,6 +277,6 @@ void lyr_entry(void)
 	log_info("entry", "lyr-kernel " LYR_VERSION
 					  " done initializing, launching init proc");
 
-	assert(init_spawn("/early-init") == VFS_OK);
+	assert(init_spawn("/early-init") == 0);
 	sched_exit(); /* finished */
 }

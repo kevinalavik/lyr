@@ -150,21 +150,21 @@ static int syscall_user_range_ok(uint64_t addr, size_t len)
 static int syscall_copy_user_string(uint64_t user, char *out, size_t out_len)
 {
 	if (!user || user >= VAS_USER_END || !out || out_len == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	for (size_t i = 0; i < out_len; i++) {
 		if (user + i >= VAS_USER_END)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		char c = ((const char *)user)[i];
 		out[i] = c;
 
 		if (c == '\0')
-			return VFS_OK;
+			return 0;
 	}
 
 	out[out_len - 1] = '\0';
-	return VFS_ERR_NAMETOOLONG;
+	return -ENAMETOOLONG;
 }
 
 static int syscall_normalize_path(const char *input, char *out, size_t out_len)
@@ -173,13 +173,13 @@ static int syscall_normalize_path(const char *input, char *out, size_t out_len)
 	size_t pos = 0;
 
 	if (!input || !out || out_len < 2 || input[0] == '\0')
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (input[0] == '/') {
 		size_t len = strlen(input);
 
 		if (len >= sizeof(tmp))
-			return VFS_ERR_NAMETOOLONG;
+			return -ENAMETOOLONG;
 
 		memcpy(tmp, input, len + 1);
 	} else {
@@ -190,7 +190,7 @@ static int syscall_normalize_path(const char *input, char *out, size_t out_len)
 		int need_slash = !(cwd_len == 1 && cwd[0] == '/');
 
 		if (cwd_len + (size_t)need_slash + input_len >= sizeof(tmp))
-			return VFS_ERR_NAMETOOLONG;
+			return -ENAMETOOLONG;
 
 		memcpy(tmp, cwd, cwd_len);
 		pos = cwd_len;
@@ -240,20 +240,20 @@ static int syscall_normalize_path(const char *input, char *out, size_t out_len)
 
 		if (pos > 1) {
 			if (pos + 1 >= out_len)
-				return VFS_ERR_NAMETOOLONG;
+				return -ENAMETOOLONG;
 
 			out[pos++] = '/';
 		}
 
 		if (pos + len >= out_len)
-			return VFS_ERR_NAMETOOLONG;
+			return -ENAMETOOLONG;
 
 		memcpy(out + pos, start, len);
 		pos += len;
 		out[pos] = '\0';
 	}
 
-	return VFS_OK;
+	return 0;
 }
 
 static int syscall_copy_user_path_abs(uint64_t user, char *out, size_t out_len)
@@ -261,7 +261,7 @@ static int syscall_copy_user_path_abs(uint64_t user, char *out, size_t out_len)
 	char raw[SYS_PATH_MAX];
 	int r = syscall_copy_user_string(user, raw, sizeof(raw));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return syscall_normalize_path(raw, out, out_len);
@@ -271,28 +271,28 @@ static int syscall_copy_user_ptrs(uint64_t user, uint64_t *out, size_t cap,
 								  size_t *count_out)
 {
 	if (!out || !count_out)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	*count_out = 0;
 
 	if (!user)
-		return VFS_OK;
+		return 0;
 
 	for (size_t i = 0; i < cap; i++) {
 		if (!syscall_user_range_ok(user + i * sizeof(uint64_t),
 								   sizeof(uint64_t)))
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		uint64_t ptr = ((const uint64_t *)user)[i];
 
 		if (!ptr)
-			return VFS_OK;
+			return 0;
 
 		out[i] = ptr;
 		*count_out = i + 1;
 	}
 
-	return VFS_ERR_NAMETOOLONG;
+	return -ENAMETOOLONG;
 }
 
 static uint32_t syscall_mmap_prot_to_vmm(int prot)
@@ -311,7 +311,7 @@ static uint32_t syscall_mmap_prot_to_vmm(int prot)
 static long syscall_copy_stat_out(uint64_t user, const vfs_stat_t *st)
 {
 	if (!st || !syscall_user_range_ok(user, sizeof(syscall_stat_t)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	syscall_stat_t out;
 	memset(&out, 0, sizeof(out));
@@ -328,7 +328,7 @@ static long syscall_copy_stat_out(uint64_t user, const vfs_stat_t *st)
 	out.st_blocks = (int64_t)st->blocks;
 
 	memcpy((void *)user, &out, sizeof(out));
-	return VFS_OK;
+	return 0;
 }
 
 static size_t syscall_strnlen(const char *s, size_t max)
@@ -432,19 +432,19 @@ static int syscall_copy_timespec_timeout(uint64_t user_ts,
 										 time_timeout_t *timeout)
 {
 	if (!timeout)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (!user_ts)
 		return time_timeout_after_ms(-1, timeout);
 
 	if (!syscall_user_range_ok(user_ts, sizeof(syscall_timespec_t)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	int64_t sec = *(int64_t *)user_ts;
 	long nsec = *(long *)(user_ts + 8);
 	int r = time_timeout_after_timespec(sec, nsec, timeout);
 
-	return r == 0 ? VFS_OK : r;
+	return r == 0 ? 0 : r;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -456,7 +456,7 @@ static long sys_read_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 	void *buf = (void *)frame->rsi;
@@ -464,12 +464,12 @@ static long sys_read_handler(interrupt_frame_t *frame)
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf ||
 		!syscall_user_range_ok((uint64_t)buf, len))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (file->private_data)
 		return net_recv((socket_t *)file->private_data, buf, len, 0);
@@ -477,7 +477,7 @@ static long sys_read_handler(interrupt_frame_t *frame)
 	size_t done = 0;
 	int r = vfs_read(file, buf, len, &done);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return (long)done;
@@ -488,33 +488,33 @@ static long sys_write_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 	const char *buf = (const char *)frame->rsi;
 	size_t len = (size_t)frame->rdx;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (len && (!buf || !syscall_user_range_ok((uint64_t)buf, len)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (file->private_data)
 		return net_send((socket_t *)file->private_data, buf, len, 0);
 
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t done = 0;
 	int r = vfs_write(file, buf, len, &done);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return (long)done;
@@ -525,12 +525,12 @@ static long sys_open_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	for (int fd = 0; fd < SCHED_FILE_MAX; fd++) {
@@ -541,14 +541,14 @@ static long sys_open_handler(interrupt_frame_t *frame)
 		r = vfs_open(path, (uint32_t)frame->rsi, (vfs_mode_t)frame->rdx,
 					 syscall_current_cred(), &file);
 
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 
 		thread->process->files[fd] = file;
 		return fd;
 	}
 
-	return VFS_ERR_NOMEM;
+	return -ENOMEM;
 }
 
 static long sys_close_handler(interrupt_frame_t *frame)
@@ -556,12 +556,12 @@ static long sys_close_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !thread->process->files[fd])
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
@@ -572,7 +572,7 @@ static long sys_close_handler(interrupt_frame_t *frame)
 	thread->process->files[fd] = NULL;
 	thread->process->fd_flags[fd] = 0;
 
-	return VFS_OK;
+	return 0;
 }
 
 static long sys_fcntl_handler(interrupt_frame_t *frame)
@@ -580,7 +580,7 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 	int cmd = (int)frame->rsi;
@@ -588,10 +588,10 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 	pcb_t *process = thread->process;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !process->files[fd])
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	long ret = 0;
-	long err = VFS_OK;
+	long err = 0;
 
 	switch (cmd) {
 	case SYS_F_DUPFD:
@@ -599,16 +599,16 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 		int minfd = (int)arg;
 
 		if (minfd < 0) {
-			err = VFS_ERR_INVAL;
+			err = -EINVAL;
 			break;
 		}
 
 		if (minfd >= SCHED_FILE_MAX) {
-			err = VFS_ERR_BADF;
+			err = -EBADF;
 			break;
 		}
 
-		err = VFS_ERR_NOMEM;
+		err = -ENOMEM;
 
 		for (int newfd = minfd; newfd < SCHED_FILE_MAX; newfd++) {
 			if (process->files[newfd])
@@ -616,7 +616,7 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 
 			vfs_file_t *dup = syscall_dup_file(process->files[fd]);
 			if (!dup) {
-				err = VFS_ERR_NOMEM;
+				err = -ENOMEM;
 				break;
 			}
 
@@ -625,7 +625,7 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 				(cmd == SYS_F_DUPFD_CLOEXEC) ? SYS_FD_CLOEXEC : 0;
 
 			ret = newfd;
-			err = VFS_OK;
+			err = 0;
 			break;
 		}
 
@@ -634,13 +634,13 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 
 	case SYS_F_GETFD:
 		ret = (long)(process->fd_flags[fd] & SYS_FD_CLOEXEC);
-		err = VFS_OK;
+		err = 0;
 		break;
 
 	case SYS_F_SETFD:
 		process->fd_flags[fd] = (uint32_t)arg & SYS_FD_CLOEXEC;
 		ret = 0;
-		err = VFS_OK;
+		err = 0;
 		break;
 
 	case SYS_F_GETFL: {
@@ -661,7 +661,7 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 		}
 
 		ret = (long)flags;
-		err = VFS_OK;
+		err = 0;
 		break;
 	}
 
@@ -685,16 +685,16 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 		}
 
 		ret = 0;
-		err = VFS_OK;
+		err = 0;
 		break;
 	}
 
 	default:
-		err = VFS_ERR_INVAL;
+		err = -EINVAL;
 		break;
 	}
 
-	if (err != VFS_OK)
+	if (err != 0)
 		return err;
 
 	return ret;
@@ -705,13 +705,13 @@ static long sys_stat_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	vfs_stat_t st;
 	r = vfs_stat(path, syscall_current_cred(), &st);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return syscall_copy_stat_out(frame->rsi, &st);
@@ -722,22 +722,22 @@ static long sys_lseek_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	uint64_t new_off = 0;
 	int r = vfs_seek(file, (int)frame->rdx, (int64_t)frame->rsi, &new_off);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return (long)new_off;
@@ -748,13 +748,13 @@ static long sys_access_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	vfs_node_t *node = NULL;
 	r = vfs_resolve(path, syscall_current_cred(), &node);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	r = vfs_access(node, syscall_current_cred(), (int)frame->rsi);
@@ -768,28 +768,28 @@ static long sys_getdents_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 	uint64_t user = frame->rsi;
 	size_t cap = (size_t)frame->rdx;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (!user || cap == 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (!syscall_user_range_ok(user, cap))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file || !file->node)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (!VFS_S_ISDIR(file->node->mode))
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 
 	size_t copied = 0;
 	size_t base_size = sizeof(syscall_dirent_t);
@@ -800,10 +800,10 @@ static long sys_getdents_handler(interrupt_frame_t *frame)
 
 		int r = vfs_readdir(file->node, (size_t)file->offset, &ent);
 
-		if (r == VFS_ERR_NOENT)
+		if (r == -ENOENT)
 			break;
 
-		if (r != VFS_OK)
+		if (r != 0)
 			return copied ? (long)copied : r;
 
 		file->offset++;
@@ -815,7 +815,7 @@ static long sys_getdents_handler(interrupt_frame_t *frame)
 		size_t reclen = syscall_align_up(base_size + name_len + 1, 8);
 
 		if (reclen > cap)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		if (copied + reclen > cap) {
 			file->offset--;
@@ -848,7 +848,7 @@ static long sys_chroot_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return vfs_chroot(path, syscall_current_cred());
@@ -863,22 +863,22 @@ static long sys_mount_handler(interrupt_frame_t *frame)
 
 	int r = syscall_copy_user_string(frame->rdi, source, sizeof(source));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	r = syscall_copy_user_string(frame->rsi, target_raw, sizeof(target_raw));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	r = syscall_normalize_path(target_raw, target, sizeof(target));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	r = syscall_copy_user_string(frame->rdx, fstype, sizeof(fstype));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return fs_mount_spec(source, target, fstype, frame->r10,
@@ -892,31 +892,31 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 	char init_path[256];
 
 	int r = syscall_copy_user_string(frame->rdi, source, sizeof(source));
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"syscall",
 			"change_root: failed to copy source from user: status=%s(%d); exiting caller",
-			vfs_err_name(r), r);
+			errno_name(r), r);
 
 		return (long)(uintptr_t)sched_syscall_exit(frame, r);
 	}
 
 	r = syscall_copy_user_string(frame->rsi, fstype, sizeof(fstype));
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"syscall",
 			"change_root: failed to copy filesystem type from user: source='%s' status=%s(%d); exiting caller",
-			source, vfs_err_name(r), r);
+			source, errno_name(r), r);
 
 		return (long)(uintptr_t)sched_syscall_exit(frame, r);
 	}
 
 	r = syscall_copy_user_string(frame->rdx, init_path, sizeof(init_path));
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"syscall",
 			"change_root: failed to copy init path from user: source='%s' fstype='%s' status=%s(%d); exiting caller",
-			source, fstype, vfs_err_name(r), r);
+			source, fstype, errno_name(r), r);
 
 		return (long)(uintptr_t)sched_syscall_exit(frame, r);
 	}
@@ -924,7 +924,7 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 	if (source[0] == '\0') {
 		log_err("syscall", "change_root: empty source path; exiting caller");
 
-		return (long)(uintptr_t)sched_syscall_exit(frame, VFS_ERR_INVAL);
+		return (long)(uintptr_t)sched_syscall_exit(frame, -EINVAL);
 	}
 
 	if (fstype[0] == '\0') {
@@ -933,7 +933,7 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 			"change_root: empty filesystem type for source='%s'; exiting caller",
 			source);
 
-		return (long)(uintptr_t)sched_syscall_exit(frame, VFS_ERR_INVAL);
+		return (long)(uintptr_t)sched_syscall_exit(frame, -EINVAL);
 	}
 
 	if (init_path[0] == '\0') {
@@ -942,65 +942,65 @@ static long sys_change_root_handler(interrupt_frame_t *frame)
 			"change_root: empty init path for source='%s' fstype='%s'; exiting caller",
 			source, fstype);
 
-		return (long)(uintptr_t)sched_syscall_exit(frame, VFS_ERR_INVAL);
+		return (long)(uintptr_t)sched_syscall_exit(frame, -EINVAL);
 	}
 
 	r = vfs_mkdir("/newroot", 0755, syscall_current_cred());
-	if (r != VFS_OK && r != VFS_ERR_EXIST) {
+	if (r != 0 && r != -EEXIST) {
 		log_err(
 			"syscall",
 			"change_root: failed to create /newroot: status=%s(%d); exiting caller",
-			vfs_err_name(r), r);
+			errno_name(r), r);
 
 		return (long)(uintptr_t)sched_syscall_exit(frame, r);
 	}
 
-	if (r == VFS_ERR_EXIST) {
+	if (r == -EEXIST) {
 		log_warn("syscall", "change_root: /newroot already exists, continuing");
 	}
 
 	r = fs_mount_spec(source, "/newroot", fstype, 0, NULL);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"syscall",
 			"change_root: failed to mount source='%s' type='%s' on /newroot: status=%s(%d); exiting caller",
-			source, fstype, vfs_err_name(r), r);
+			source, fstype, errno_name(r), r);
 
 		return (long)(uintptr_t)sched_syscall_exit(frame, r);
 	}
 
 	r = vfs_change_root("/newroot", syscall_current_cred());
-	if (r != VFS_OK) {
+	if (r != 0) {
 		log_err(
 			"syscall",
 			"change_root: mounted source='%s' type='%s' on /newroot but failed to switch root: status=%s(%d); exiting caller",
-			source, fstype, vfs_err_name(r), r);
+			source, fstype, errno_name(r), r);
 
 		return (long)(uintptr_t)sched_syscall_exit(frame, r);
 	}
 
 	r = vfs_mkdir("/dev", 0755, syscall_current_cred());
-	if (r != VFS_OK && r != VFS_ERR_EXIST) {
+	if (r != 0 && r != -EEXIST) {
 		kpanic(
 			frame,
 			"change_root: new root is active, but failed to create /dev: source='%s' error=%s(%d)",
-			source, vfs_err_name(r), r);
+			source, errno_name(r), r);
 	}
 
 	r = fs_mount_spec("devfs", "/dev", "devfs", 0, NULL);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kpanic(
 			frame,
 			"change_root: new root is active, but failed to mount devfs on /dev: source='%s' error=%s(%d)",
-			source, vfs_err_name(r), r);
+			source, errno_name(r), r);
 	}
 
 	r = init_spawn(init_path);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		kpanic(
 			frame,
 			"change_root: failed to launch init='%s' on new root from source='%s' type='%s': error=%s(%d)",
-			init_path, source, fstype, vfs_err_name(r), r);
+			init_path, source, fstype, errno_name(r), r);
 	}
 
 	log_info(
@@ -1016,7 +1016,7 @@ static long sys_mkdir_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return vfs_mkdir(path, (vfs_mode_t)frame->rsi, syscall_current_cred());
@@ -1027,7 +1027,7 @@ static long sys_rmdir_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return vfs_rmdir(path, syscall_current_cred());
@@ -1038,7 +1038,7 @@ static long sys_unlink_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return vfs_unlink(path, syscall_current_cred());
@@ -1049,7 +1049,7 @@ static long sys_chmod_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return vfs_chmod(path, (vfs_mode_t)frame->rsi, syscall_current_cred());
@@ -1060,7 +1060,7 @@ static long sys_chown_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return vfs_chown(path, (vfs_uid_t)frame->rsi, (vfs_gid_t)frame->rdx,
@@ -1072,24 +1072,24 @@ static long sys_chdir_handler(interrupt_frame_t *frame)
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	vfs_node_t *node = NULL;
 	r = vfs_resolve(path, syscall_current_cred(), &node);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (!VFS_S_ISDIR(node->mode)) {
 		vfs_node_release(node);
-		return VFS_ERR_NOTDIR;
+		return -ENOTDIR;
 	}
 
 	r = vfs_access(node, syscall_current_cred(), VFS_X_OK);
 	vfs_node_release(node);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	return sched_process_setcwd(syscall_current_process(), path);
@@ -1104,10 +1104,10 @@ static long sys_getcwd_handler(interrupt_frame_t *frame)
 	size_t needed = strlen(cwd) + 1;
 
 	if (!user || len == 0 || !syscall_user_range_ok(user, len))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (len < needed)
-		return VFS_ERR_NAMETOOLONG;
+		return -ENAMETOOLONG;
 
 	memcpy((void *)user, cwd, needed);
 	return (long)needed;
@@ -1137,12 +1137,12 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process || !thread->process->vas)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	char path[SYS_PATH_MAX];
 	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	uint64_t argv_ptrs[EXEC_ARG_MAX + 1];
@@ -1154,19 +1154,19 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 
 	r = syscall_copy_user_ptrs(frame->rsi, argv_ptrs, EXEC_ARG_MAX + 1, &argc);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (argc > EXEC_ARG_MAX)
-		return VFS_ERR_NAMETOOLONG;
+		return -ENAMETOOLONG;
 
 	r = syscall_copy_user_ptrs(frame->rdx, env_ptrs, EXEC_ARG_MAX + 1, &envc);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (envc > EXEC_ARG_MAX)
-		return VFS_ERR_NAMETOOLONG;
+		return -ENAMETOOLONG;
 
 	char *argv[EXEC_ARG_MAX];
 	char *envp[EXEC_ARG_MAX];
@@ -1175,7 +1175,7 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 		r = syscall_copy_user_string(argv_ptrs[i], arg_bufs[i],
 									 sizeof(arg_bufs[i]));
 
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 
 		argv[i] = arg_bufs[i];
@@ -1185,7 +1185,7 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 		r = syscall_copy_user_string(env_ptrs[i], env_bufs[i],
 									 sizeof(env_bufs[i]));
 
-		if (r != VFS_OK)
+		if (r != 0)
 			return r;
 
 		envp[i] = env_bufs[i];
@@ -1194,12 +1194,12 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	vas_t *new_vas = vas_create(NULL);
 
 	if (!new_vas)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	elf_user_image_t image;
 	r = elf_load_user_executable(new_vas, path, &image);
 
-	if (r != VFS_OK) {
+	if (r != 0) {
 		vas_destroy(new_vas);
 		return r;
 	}
@@ -1212,7 +1212,7 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 					 VMM_PRESENT | VMM_WRITABLE | VMM_USER | VMM_NX |
 						 VAD_FIXED) != stack_base) {
 		vas_destroy(new_vas);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	uint64_t user_rsp = 0;
@@ -1220,7 +1220,7 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 		new_vas, stack_top, path, (const char *const *)argv, argc,
 		(const char *const *)envp, envc, &image, &user_rsp);
 
-	if (r != VFS_OK) {
+	if (r != 0) {
 		vas_destroy(new_vas);
 		return r;
 	}
@@ -1261,7 +1261,7 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	thread->rsp = (uint64_t)frame;
 	thread->mode = TCB_MODE_USER;
 
-	return VFS_OK;
+	return 0;
 }
 
 static long sys_arch_prctl_handler(interrupt_frame_t *frame)
@@ -1269,26 +1269,26 @@ static long sys_arch_prctl_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	switch ((long)frame->rdi) {
 	case ARCH_SET_FS:
 		if (frame->rsi >= VAS_USER_END)
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		thread->fs_base = frame->rsi;
 		write_fs_base(frame->rsi);
-		return VFS_OK;
+		return 0;
 
 	case ARCH_GET_FS:
 		if (!syscall_user_range_ok(frame->rsi, sizeof(uint64_t)))
-			return VFS_ERR_INVAL;
+			return -EINVAL;
 
 		*(uint64_t *)frame->rsi = thread->fs_base;
-		return VFS_OK;
+		return 0;
 
 	default:
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 	}
 }
 
@@ -1297,7 +1297,7 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process || !thread->process->vas)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	uint64_t addr = frame->rdi;
 	size_t length = (size_t)frame->rsi;
@@ -1310,7 +1310,7 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 	(void)offset;
 
 	if (!length || (flags & 0x01) || !(flags & 0x02) || !(flags & 0x20))
-		return VFS_ERR_NOSYS;
+		return -ENOSYS;
 
 	uint64_t vmm_flags = syscall_mmap_prot_to_vmm(prot);
 
@@ -1321,7 +1321,7 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 		vas_map_anon(thread->process->vas, addr, length, vmm_flags);
 
 	if (!mapped)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	return (long)mapped;
 }
@@ -1331,7 +1331,7 @@ static long sys_munmap_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process || !thread->process->vas)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return vas_unmap(thread->process->vas, frame->rdi, (size_t)frame->rsi);
 }
@@ -1341,7 +1341,7 @@ static long sys_mprotect_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process || !thread->process->vas)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return vas_protect(thread->process->vas, frame->rdi, (size_t)frame->rsi,
 					   syscall_mmap_prot_to_vmm((int)frame->rdx));
@@ -1360,17 +1360,17 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 	int options = (int)frame->rdx;
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (status_user && !syscall_user_range_ok(status_user, sizeof(int)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	for (;;) {
 		pid_t waited = 0;
 		int status = 0;
 		int r = sched_process_wait(process, pid, options, &waited, &status);
 
-		if (r == VFS_OK) {
+		if (r == 0) {
 			if (status_user && waited != 0)
 				*(int *)status_user = status;
 
@@ -1397,18 +1397,18 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process || !thread->process->vas)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vas_t *child_vas = vas_clone(thread->process->vas);
 
 	if (!child_vas)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 
 	pcb_t *child = sched_process_create(thread->process->name, child_vas);
 
 	if (!child) {
 		vas_destroy(child_vas);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	sched_process_copy_ids(child, thread->process);
@@ -1426,7 +1426,7 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 			for (int j = 0; j < SCHED_FILE_MAX; j++)
 				syscall_close_file_slot(&child->files[j]);
 
-			return VFS_ERR_NOMEM;
+			return -ENOMEM;
 		}
 
 		child->fd_flags[i] = thread->process->fd_flags[i];
@@ -1438,7 +1438,7 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 		for (int i = 0; i < SCHED_FILE_MAX; i++)
 			syscall_close_file_slot(&child->files[i]);
 
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 
 	child_thread->fs_base = thread->fs_base;
@@ -1455,7 +1455,7 @@ static long sys_uname_handler(interrupt_frame_t *frame)
 	uint64_t user = frame->rdi;
 
 	if (!user || !syscall_user_range_ok(user, sizeof(syscall_utsname_t)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	syscall_utsname_t uts;
 	memset(&uts, 0, sizeof(uts));
@@ -1474,7 +1474,7 @@ static long sys_uname_handler(interrupt_frame_t *frame)
 	syscall_uts_copy(uts.domainname, "localdomain");
 
 	memcpy((void *)user, &uts, sizeof(uts));
-	return VFS_OK;
+	return 0;
 }
 
 static long sys_ioctl_handler(interrupt_frame_t *frame)
@@ -1482,19 +1482,19 @@ static long sys_ioctl_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int fd = (int)frame->rdi;
 	unsigned long request = (unsigned long)frame->rsi;
 	void *arg = (void *)frame->rdx;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return vfs_ioctl(file, request, arg);
 }
@@ -1505,7 +1505,7 @@ static long sys_clock_get_handler(interrupt_frame_t *frame)
 	uint64_t user_ts = frame->rsi;
 
 	if (!user_ts || !syscall_user_range_ok(user_ts, sizeof(syscall_timespec_t)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	int64_t sec = 0;
 	long nsec = 0;
@@ -1515,7 +1515,7 @@ static long sys_clock_get_handler(interrupt_frame_t *frame)
 		return r;
 
 	if (nsec < 0 || nsec >= SYS_NSEC_PER_SEC)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	syscall_timespec_t ts = {
 		.tv_sec = sec,
@@ -1523,7 +1523,7 @@ static long sys_clock_get_handler(interrupt_frame_t *frame)
 	};
 
 	memcpy((void *)user_ts, &ts, sizeof(ts));
-	return VFS_OK;
+	return 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1539,7 +1539,7 @@ static long sys_socket_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = NULL;
 	int r = net_socket(&sock, domain, type, protocol);
@@ -1553,7 +1553,7 @@ static long sys_socket_handler(interrupt_frame_t *frame)
 
 			if (!file) {
 				net_close(sock);
-				return VFS_ERR_NOMEM;
+				return -ENOMEM;
 			}
 
 			file->node = NULL;
@@ -1568,7 +1568,7 @@ static long sys_socket_handler(interrupt_frame_t *frame)
 	}
 
 	net_close(sock);
-	return VFS_ERR_NOMEM;
+	return -ENOMEM;
 }
 
 static long sys_bind_handler(interrupt_frame_t *frame)
@@ -1580,23 +1580,23 @@ static long sys_bind_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (!addr_ptr || !syscall_user_range_ok(addr_ptr, addrlen))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	sockaddr_t addr;
 
@@ -1617,23 +1617,23 @@ static long sys_connect_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (!addr_ptr || !syscall_user_range_ok(addr_ptr, addrlen))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	sockaddr_t addr;
 
@@ -1653,20 +1653,20 @@ static long sys_listen_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return net_listen(sock, backlog);
 }
@@ -1680,20 +1680,20 @@ static long sys_accept_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *client = NULL;
 	sockaddr_t addr;
@@ -1713,7 +1713,7 @@ static long sys_accept_handler(interrupt_frame_t *frame)
 
 			if (!newfile) {
 				net_close(client);
-				return VFS_ERR_NOMEM;
+				return -ENOMEM;
 			}
 
 			newfile->node = NULL;
@@ -1737,7 +1737,7 @@ static long sys_accept_handler(interrupt_frame_t *frame)
 	}
 
 	net_close(client);
-	return VFS_ERR_NOMEM;
+	return -ENOMEM;
 }
 
 static long sys_send_handler(interrupt_frame_t *frame)
@@ -1750,21 +1750,21 @@ static long sys_send_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
 		!syscall_user_range_ok(buf_ptr, len))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return net_send(sock, (const void *)buf_ptr, len, flags);
 }
@@ -1779,21 +1779,21 @@ static long sys_recv_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
 		!syscall_user_range_ok(buf_ptr, len))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return net_recv(sock, (void *)buf_ptr, len, flags);
 }
@@ -1810,21 +1810,21 @@ static long sys_sendto_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
 		!syscall_user_range_ok(buf_ptr, len))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	sockaddr_t dest;
 
@@ -1853,21 +1853,21 @@ static long sys_recvfrom_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf_ptr ||
 		!syscall_user_range_ok(buf_ptr, len))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	sockaddr_t addr;
 	socklen_t addrlen = 0;
@@ -1897,20 +1897,20 @@ static long sys_shutdown_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return net_shutdown(sock, how);
 }
@@ -1924,20 +1924,20 @@ static long sys_getsockname_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socklen_t addrlen = 0;
 
@@ -1970,20 +1970,20 @@ static long sys_getpeername_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socklen_t addrlen = 0;
 
@@ -2018,20 +2018,20 @@ static long sys_setsockopt_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	void *optval = NULL;
 	char optbuf[256];
@@ -2056,20 +2056,20 @@ static long sys_getsockopt_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socket_t *sock = file->private_data;
 
 	if (!sock)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	socklen_t optlen = 0;
 
@@ -2102,7 +2102,7 @@ static int sys_poll_scan(struct lyr_pollfd *fds, size_t nfds)
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int ready = 0;
 	net_poll_all();
@@ -2153,11 +2153,11 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 	int timeout_ms = (int)frame->rdx;
 
 	if (nfds > SYS_POLL_NFDS_MAX)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (nfds &&
 		!syscall_user_range_ok(user_fds, nfds * sizeof(struct lyr_pollfd)))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	struct lyr_pollfd *fds = NULL;
 
@@ -2165,7 +2165,7 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 		fds = kzalloc(nfds * sizeof(*fds));
 
 		if (!fds)
-			return VFS_ERR_NOMEM;
+			return -ENOMEM;
 
 		memcpy(fds, (void *)user_fds, nfds * sizeof(*fds));
 	}
@@ -2223,29 +2223,29 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 	(void)sigmask_ptr;
 
 	if (nfds < 0 || nfds > SYS_POLL_NFDS_MAX || nfds > SCHED_FILE_MAX)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t set_bytes = ((size_t)nfds + 7) / 8;
 
 	if (readfds_ptr && !syscall_user_range_ok(readfds_ptr, set_bytes))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (writefds_ptr && !syscall_user_range_ok(writefds_ptr, set_bytes))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	if (exceptfds_ptr && !syscall_user_range_ok(exceptfds_ptr, set_bytes))
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	time_timeout_t timeout;
 	int tr = syscall_copy_timespec_timeout(timeout_ptr, &timeout);
 
-	if (tr != VFS_OK)
+	if (tr != 0)
 		return tr;
 
 	tcb_t *thread = sched_current();
 
 	if (!thread || !thread->process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	struct lyr_pollfd *fds = NULL;
 
@@ -2253,7 +2253,7 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 		fds = kzalloc((size_t)nfds * sizeof(*fds));
 
 		if (!fds)
-			return VFS_ERR_NOMEM;
+			return -ENOMEM;
 
 		for (int i = 0; i < nfds; i++) {
 			fds[i].fd = -1;
@@ -2345,7 +2345,7 @@ static long sys_getpid_handler(interrupt_frame_t *frame)
 	pcb_t *process = syscall_current_process();
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)process->pid;
 }
@@ -2357,7 +2357,7 @@ static long sys_getppid_handler(interrupt_frame_t *frame)
 	pcb_t *process = syscall_current_process();
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)process->ppid;
 }
@@ -2369,7 +2369,7 @@ static long sys_gettid_handler(interrupt_frame_t *frame)
 	tcb_t *thread = sched_current();
 
 	if (!thread)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)thread->tid;
 }
@@ -2381,7 +2381,7 @@ static long sys_getuid_handler(interrupt_frame_t *frame)
 	pcb_t *process = syscall_current_process();
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)process->ruid;
 }
@@ -2393,7 +2393,7 @@ static long sys_geteuid_handler(interrupt_frame_t *frame)
 	pcb_t *process = syscall_current_process();
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)process->euid;
 }
@@ -2405,7 +2405,7 @@ static long sys_getgid_handler(interrupt_frame_t *frame)
 	pcb_t *process = syscall_current_process();
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)process->rgid;
 }
@@ -2417,7 +2417,7 @@ static long sys_getegid_handler(interrupt_frame_t *frame)
 	pcb_t *process = syscall_current_process();
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	return (long)process->egid;
 }
@@ -2453,18 +2453,18 @@ static long sys_kill_handler(interrupt_frame_t *frame)
 	int signal = (int)frame->rsi;
 
 	if (!process)
-		return VFS_ERR_BADF;
+		return -EBADF;
 
 	int r = sched_process_signal(process, pid, signal);
 
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	if (pid == process->pid && (signal == SYS_SIGKILL || signal == SYS_SIGTERM))
 		return (long)(uintptr_t)sched_syscall_exit(
 			frame, 128 + signal);
 
-	return VFS_OK;
+	return 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2479,7 +2479,7 @@ static long sys_nsleep_handler(interrupt_frame_t *frame)
 		return -EINVAL;
 
 	if (sec == 0 && nsec == 0)
-		return VFS_OK;
+		return 0;
 
 	time_timeout_t timeout;
 	int r = time_timeout_after_timespec(sec, nsec, &timeout);
@@ -2490,7 +2490,7 @@ static long sys_nsleep_handler(interrupt_frame_t *frame)
 	while (!time_timeout_expired(&timeout))
 		time_sleep_until_interrupt_or_timeout(&timeout);
 
-	return VFS_OK;
+	return 0;
 }
 
 /* -------------------------------------------------------------------------- */

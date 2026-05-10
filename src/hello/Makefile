@@ -15,7 +15,7 @@ OBJ_DIR := obj
 PROJECT_OBJ := $(patsubst %.c,$(OBJ_DIR)/%.c.o,$(PROJECT_SRC))
 
 CFLAGS := -g -O2 -pipe -Wall -Wextra -Werror -std=gnu11
-CFLAGS += -I include -I ../../kernel/include/sys -isystem $(shell $(TOOLCHAIN_PREFIX)gcc -print-sysroot)/usr/include
+CFLAGS += -I include -I ../../kernel/include -I ../../kernel/include/sys -isystem $(shell $(TOOLCHAIN_PREFIX)gcc -print-sysroot)/usr/include
 
 LDFLAGS :=
 

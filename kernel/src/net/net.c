@@ -16,24 +16,24 @@ static netdev_t *default_netdev;
 static int loopback_send(netdev_t *dev, const void *frame, size_t len)
 {
 	if (!dev || !frame || len == 0 || len > NET_ETH_FRAME_MAX)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	dev->tx_packets++;
 	net_receive_frame(dev, frame, len);
-	return VFS_OK;
+	return 0;
 }
 
 static int loopback_poll(netdev_t *dev)
 {
 	(void)dev;
-	return VFS_OK;
+	return 0;
 }
 
 static int net_poll_dev(netdev_t *dev)
 {
 	if (!dev || !dev->poll)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	if (__sync_lock_test_and_set(&dev->poll_busy, 1))
-		return VFS_OK;
+		return 0;
 	int r = dev->poll(dev);
 	__sync_lock_release(&dev->poll_busy);
 	return r;
@@ -163,7 +163,7 @@ static int netdevs_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char tmp[1024];
 	size_t pos = 0;
@@ -191,14 +191,14 @@ static int netdevs_read(void *ctx, uint64_t off, void *buf, size_t len,
 	}
 
 	if (off >= pos || len == 0)
-		return VFS_OK;
+		return 0;
 	size_t copy = pos - (size_t)off;
 	if (copy > len)
 		copy = len;
 	memcpy(buf, tmp + off, copy);
 	if (done)
 		*done = copy;
-	return VFS_OK;
+	return 0;
 }
 
 static int routes_read(void *ctx, uint64_t off, void *buf, size_t len,
@@ -208,7 +208,7 @@ static int routes_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char tmp[1024];
 	size_t pos = 0;
@@ -246,14 +246,14 @@ static int routes_read(void *ctx, uint64_t off, void *buf, size_t len,
 	}
 
 	if (off >= pos || len == 0)
-		return VFS_OK;
+		return 0;
 	size_t copy = pos - (size_t)off;
 	if (copy > len)
 		copy = len;
 	memcpy(buf, tmp + off, copy);
 	if (done)
 		*done = copy;
-	return VFS_OK;
+	return 0;
 }
 
 static void netdev_enqueue_rx(netdev_t *dev, const void *frame, size_t len)
@@ -285,21 +285,21 @@ static int netdev_chr_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!dev || !buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	net_poll_dev(dev);
 
 	spinlock_acquire(&net_lock);
 	if (!dev->rx_count) {
 		spinlock_release(&net_lock);
-		return VFS_OK;
+		return 0;
 	}
 
 	size_t idx = dev->rx_head;
 	size_t frame_len = dev->rx_len[idx];
 	if (len < frame_len) {
 		spinlock_release(&net_lock);
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 	}
 
 	memcpy(buf, dev->rx_queue + idx * NET_ETH_FRAME_MAX, frame_len);
@@ -310,7 +310,7 @@ static int netdev_chr_read(void *ctx, uint64_t off, void *buf, size_t len,
 
 	if (done)
 		*done = frame_len;
-	return VFS_OK;
+	return 0;
 }
 
 static int netdev_chr_write(void *ctx, uint64_t off, const void *buf,
@@ -321,15 +321,15 @@ static int netdev_chr_write(void *ctx, uint64_t off, const void *buf,
 	if (done)
 		*done = 0;
 	if (!dev || !buf || len == 0 || len > NET_ETH_FRAME_MAX)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	int r = dev->send(dev, buf, len);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	dev->tx_packets++;
 	if (done)
 		*done = len;
-	return VFS_OK;
+	return 0;
 }
 
 static int netdev_info_read(void *ctx, uint64_t off, void *buf, size_t len,
@@ -339,7 +339,7 @@ static int netdev_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (done)
 		*done = 0;
 	if (!dev || !buf)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	char ip[24];
 	char gw[24];
@@ -371,20 +371,20 @@ static int netdev_info_read(void *ctx, uint64_t off, void *buf, size_t len,
 		(unsigned long long)dev->tx_packets,
 		(unsigned long long)dev->rx_dropped, dev->rx_count);
 	if (n < 0)
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	size_t total = (size_t)n;
 	if (total >= sizeof(tmp))
 		total = sizeof(tmp) - 1;
 	if (off >= total || len == 0)
-		return VFS_OK;
+		return 0;
 	size_t copy = total - (size_t)off;
 	if (copy > len)
 		copy = len;
 	memcpy(buf, tmp + off, copy);
 	if (done)
 		*done = copy;
-	return VFS_OK;
+	return 0;
 }
 
 static int netdev_publish(netdev_t *dev)
@@ -393,30 +393,30 @@ static int netdev_publish(netdev_t *dev)
 	npf_snprintf(path, sizeof(path), "/dev/net/%s", dev->name);
 	int r = devfs_register_chr(path, 0660, netdev_chr_read, netdev_chr_write,
 							   dev);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 
 	npf_snprintf(path, sizeof(path), "/dev/net/%s.info", dev->name);
 	r = devfs_register_chr(path, 0444, netdev_info_read, NULL, dev);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		char raw_path[64];
 		npf_snprintf(raw_path, sizeof(raw_path), "/dev/net/%s", dev->name);
 		devfs_unregister(raw_path);
 		return r;
 	}
-	return VFS_OK;
+	return 0;
 }
 
 int net_init(void)
 {
 	int r = devfs_mkdir("/dev/net", 0755);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 	r = devfs_register_chr("/dev/net/devices", 0444, netdevs_read, NULL, NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 	r = devfs_register_chr("/dev/net/routes", 0444, routes_read, NULL, NULL);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	netdev_t lo;
@@ -430,21 +430,21 @@ int net_init(void)
 	lo.send = loopback_send;
 	lo.poll = loopback_poll;
 	r = netdev_register(&lo);
-	if (r != VFS_OK && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	log_info("net", "network core ok");
-	return VFS_OK;
+	return 0;
 }
 
 int netdev_register(netdev_t *src)
 {
 	if (!src || !src->send || !src->poll || !src->name[0])
-		return VFS_ERR_INVAL;
+		return -EINVAL;
 
 	netdev_t *dev = kzalloc(sizeof(*dev));
 	if (!dev)
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	memcpy(dev, src, sizeof(*dev));
 	dev->rx_queue = NULL;
 	memset(dev->rx_len, 0, sizeof(dev->rx_len));
@@ -457,7 +457,7 @@ int netdev_register(netdev_t *src)
 	dev->rx_queue = kzalloc(NETDEV_RX_QUEUE_LEN * NET_ETH_FRAME_MAX);
 	if (!dev->rx_queue) {
 		kfree(dev);
-		return VFS_ERR_NOMEM;
+		return -ENOMEM;
 	}
 	if (!dev->mtu)
 		dev->mtu = NET_MTU;
@@ -468,13 +468,13 @@ int netdev_register(netdev_t *src)
 			spinlock_release(&net_lock);
 			kfree(dev->rx_queue);
 			kfree(dev);
-			return VFS_ERR_EXIST;
+			return -EEXIST;
 		}
 	}
 	spinlock_release(&net_lock);
 
 	int pr = netdev_publish(dev);
-	if (pr != VFS_OK) {
+	if (pr != 0) {
 		kfree(dev->rx_queue);
 		kfree(dev);
 		return pr;
@@ -500,10 +500,10 @@ int netdev_register(netdev_t *src)
 			 dev->mac[4], dev->mac[5]);
 
 	if (dev->loopback)
-		return VFS_OK;
+		return 0;
 
 	int r = net_dhcp_configure_dev(dev, 2000);
-	if (r != VFS_OK) {
+	if (r != 0) {
 		if (!dev->ipv4_addr)
 			dev->ipv4_addr = net_ipv4(10, 0, 2, 15);
 		if (!dev->ipv4_gateway)
@@ -517,7 +517,7 @@ int netdev_register(netdev_t *src)
 				 (dev->ipv4_addr >> 16) & 0xff,
 				 (dev->ipv4_addr >> 8) & 0xff, dev->ipv4_addr & 0xff);
 	}
-	return VFS_OK;
+	return 0;
 }
 
 void net_receive_frame(netdev_t *dev, const void *frame, size_t len)

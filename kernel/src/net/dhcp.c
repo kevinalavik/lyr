@@ -162,7 +162,7 @@ void net_dhcp_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
 int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 {
 	if (!dev)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	dhcp_xid = 0x4c595244u;
 	dhcp_ready = 0;
@@ -175,11 +175,11 @@ int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	int r = send_dhcp(dev, DHCP_DISCOVER, 0, 0);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	net_poll_until(dev, until, &dhcp_ready);
 	if (!dhcp_ready || dhcp_seen_type != DHCP_OFFER || !dhcp_offered_ip)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	uint32_t offered = dhcp_offered_ip;
 	uint32_t server = dhcp_server_ip;
@@ -187,11 +187,11 @@ int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 	dhcp_seen_type = 0;
 	until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 	r = send_dhcp(dev, DHCP_REQUEST, offered, server);
-	if (r != VFS_OK)
+	if (r != 0)
 		return r;
 	net_poll_until(dev, until, &dhcp_ready);
 	if (!dhcp_ready || dhcp_seen_type != DHCP_ACK)
-		return VFS_ERR_NOENT;
+		return -ENOENT;
 
 	dev->ipv4_addr = dhcp_offered_ip;
 	dev->dhcp_server = dhcp_server_ip;
@@ -211,7 +211,7 @@ int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 	net_ipv4_format(dev->dns_server, dns, sizeof(dns));
 	log_info("net", "%s DHCP lease ip=%s gateway=%s server=%s dns=%s",
 			 dev->name, ip, gw, srv, dns);
-	return VFS_OK;
+	return 0;
 }
 
 int net_dhcp_configure(uint64_t timeout_ms)

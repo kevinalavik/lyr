@@ -216,11 +216,11 @@ int rtc_init(void)
 	rtc_device.bus_type = DEVICE_BUS_PLATFORM;
 	rtc_device.driver_data = NULL;
 	r = device_register(&rtc_device);
-	if (r != 0 && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr("/dev/rtc0", 0444, rtc_dev_read, NULL, NULL);
-	if (r != 0 && r != VFS_ERR_EXIST)
+	if (r != 0 && r != -EEXIST)
 		return r;
 
 	static time_source_t rtc_source = {

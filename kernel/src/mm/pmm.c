@@ -5,6 +5,7 @@
 #include <debug/panic.h>
 #include <debug/assert.h>
 #include <lib/string.h>
+#include <sync/spinlock.h>
 
 #if _PMM_TRACE
 #define _pmm_log_trace(...) log_trace(__VA_ARGS__)
@@ -15,6 +16,20 @@
 static page_t *freelist = NULL;
 static uint64_t free_pages = 0;
 static uint64_t total_pages = 0;
+static spinlock_t pmm_lock = SPINLOCK_INIT;
+
+static uint64_t pmm_irq_save(void)
+{
+	uint64_t flags;
+	__asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+	return flags;
+}
+
+static void pmm_irq_restore(uint64_t flags)
+{
+	if (flags & (1ull << 9))
+		__asm__ volatile("sti" ::: "memory");
+}
 
 static void _page_validate_free(const page_t *page, const char *caller)
 {
@@ -129,6 +144,7 @@ void pmm_init(void)
 
 	assert(pfndb);
 
+	spinlock_acquire(&pmm_lock);
 	freelist = NULL;
 	free_pages = 0;
 	total_pages = max_pfn + 1;
@@ -149,6 +165,7 @@ void pmm_init(void)
 
 		_pmm_push_noscrub(page);
 	}
+	spinlock_release(&pmm_lock);
 
 	log_debug("pmm", "initialized: %llu free pages, %llu total", free_pages,
 			  total_pages);
@@ -156,11 +173,15 @@ void pmm_init(void)
 
 void *palloc_single(void)
 {
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
 	page_t *page = _pmm_pop();
 	if (!page)
 		kpanic(NULL, "pmm: out of memory");
 
 	page->refcount = 1;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
 
 	_pmm_log_trace("pmm", "palloc_single phys=0x%llx",
 				   pfndb_page_to_phys(page));
@@ -169,11 +190,15 @@ void *palloc_single(void)
 
 page_t *palloc_page(void)
 {
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
 	page_t *page = _pmm_pop();
 	if (!page)
 		kpanic(NULL, "pmm: out of memory");
 
 	page->refcount = 1;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
 
 	_pmm_log_trace("pmm", "palloc_page phys=0x%llx", pfndb_page_to_phys(page));
 	return page;
@@ -181,22 +206,38 @@ page_t *palloc_page(void)
 
 void page_ref(page_t *page)
 {
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
 	_page_validate_used(page, "page_ref");
 	page->refcount++;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
 	_pmm_log_trace("pmm", "page_ref phys=0x%llx refcount=%u",
 				   pfndb_page_to_phys(page), page->refcount);
 }
 
 void page_unref(page_t *page)
 {
+	void *caller = __builtin_return_address(0);
+
 	if (!page) {
 		log_warn("pmm", "page_unref: called with NULL page");
 		return;
 	}
 
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
+	if (!page_is_used(page)) {
+		kpanic(NULL,
+			   "page_unref: page not marked used (flags=0x%x refcount=%u sharecount=%llu page=%p phys=0x%llx caller=%p)",
+			   page->flags, page->refcount, page->u2.sharecount, page,
+			   pfndb_page_to_phys(page), caller);
+	}
 	_page_validate_used(page, "page_unref");
 
 	if (page->refcount == 0) {
+		spinlock_release(&pmm_lock);
+		pmm_irq_restore(irq);
 		log_warn("pmm",
 				 "page_unref: double-free @ page=%p phys=0x%llx — ignoring",
 				 page, pfndb_page_to_phys(page));
@@ -219,16 +260,22 @@ void page_unref(page_t *page)
 
 		_pmm_push(page);
 	}
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
 }
 
 void page_share(page_t *page)
 {
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
 	_page_validate_used(page, "page_share");
 
 	page->u2.sharecount++;
 
 	if (page->u2.sharecount > 1)
 		page->flags |= PAGE_SHARED;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
 
 	_pmm_log_trace("pmm", "page_share phys=0x%llx sharecount=%llu",
 				   pfndb_page_to_phys(page), page->u2.sharecount);
@@ -236,9 +283,13 @@ void page_share(page_t *page)
 
 void page_unshare(page_t *page)
 {
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
 	_page_validate_used(page, "page_unshare");
 
 	if (page->u2.sharecount == 0) {
+		spinlock_release(&pmm_lock);
+		pmm_irq_restore(irq);
 		log_warn("pmm",
 				 "page_unshare: sharecount already 0 @ page=%p phys=0x%llx "
 				 "— map/unmap asymmetry (mapped with map_page_phys?)",
@@ -250,6 +301,8 @@ void page_unshare(page_t *page)
 
 	if (page->u2.sharecount <= 1)
 		page->flags &= ~PAGE_SHARED;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
 
 	_pmm_log_trace("pmm", "page_unshare phys=0x%llx sharecount=%llu",
 				   pfndb_page_to_phys(page), page->u2.sharecount);
@@ -257,12 +310,22 @@ void page_unshare(page_t *page)
 
 uint64_t pmm_free_pages(void)
 {
-	return free_pages;
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
+	uint64_t pages = free_pages;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
+	return pages;
 }
 
 uint64_t pmm_total_pages(void)
 {
-	return total_pages;
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
+	uint64_t pages = total_pages;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
+	return pages;
 }
 
 void pmm_dump_stats(void)
