@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <debug/log.h>
 #include <fs/mount.h>
+#include <fs/pipe.h>
 #include <fs/vfs.h>
 #include <init/init.h>
 #include <lib/elf.h>
@@ -40,6 +41,7 @@
 #define SYS_F_DUPFD_CLOEXEC 1030
 
 #define SYS_FD_CLOEXEC 1
+#define SYS_O_CLOEXEC 02000000u
 #define SYS_O_NONBLOCK SOCK_NONBLOCK
 
 #define EXEC_ARG_MAX 32
@@ -49,6 +51,7 @@
 #define SYS_POLL_NFDS_MAX 1024
 
 #define SYS_SIGTERM 15
+#define SYS_SIGPIPE 13
 #define SYS_SIGKILL 9
 
 #define SYS_NSEC_PER_SEC 1000000000LL
@@ -315,6 +318,29 @@ static uint32_t syscall_mmap_prot_to_vmm(int prot)
 	return flags;
 }
 
+static int syscall_mmap_fill_private(vfs_file_t *file, uint64_t addr,
+									 size_t length, uint64_t offset)
+{
+	vfs_node_t *node = vfs_file_node(file);
+	size_t copied = 0;
+
+	if (!node || !node->ops || !node->ops->read)
+		return -ENOSYS;
+
+	while (copied < length) {
+		size_t done = 0;
+		int r = node->ops->read(node, offset + copied, (void *)(addr + copied),
+								length - copied, &done);
+		if (r != 0)
+			return r;
+		if (done == 0)
+			break;
+		copied += done;
+	}
+
+	return 0;
+}
+
 static long syscall_copy_stat_out(uint64_t user, const vfs_stat_t *st)
 {
 	if (!st || !syscall_user_range_ok(user, sizeof(syscall_stat_t)))
@@ -421,6 +447,19 @@ static vfs_file_t *syscall_dup_file(vfs_file_t *file)
 	return dup;
 }
 
+static int syscall_alloc_fd(pcb_t *process, int minfd)
+{
+	if (!process || minfd < 0)
+		return -EINVAL;
+
+	for (int fd = minfd; fd < SCHED_FILE_MAX; fd++) {
+		if (!process->files[fd])
+			return fd;
+	}
+
+	return -ENOMEM;
+}
+
 static void syscall_close_file_slot(vfs_file_t **slot)
 {
 	if (!slot || !*slot)
@@ -481,6 +520,14 @@ static long sys_read_handler(interrupt_frame_t *frame)
 	if (file->private_data)
 		return net_recv((socket_t *)file->private_data, buf, len, 0);
 
+	if (vfs_pipe_is(file)) {
+		size_t done = 0;
+		int r = vfs_pipe_read(file, buf, len, &done);
+		if (r != 0)
+			return r;
+		return (long)done;
+	}
+
 	size_t done = 0;
 	int r = vfs_read(file, buf, len, &done);
 
@@ -517,6 +564,18 @@ static long sys_write_handler(interrupt_frame_t *frame)
 
 	if (!buf)
 		return -EINVAL;
+
+	if (vfs_pipe_is(file)) {
+		size_t done = 0;
+		int r = vfs_pipe_write(file, buf, len, &done);
+		if (r == -EPIPE) {
+			(void)sched_process_signal(thread->process, thread->process->pid,
+									   SYS_SIGPIPE);
+		}
+		if (r != 0)
+			return r;
+		return (long)done;
+	}
 
 	size_t done = 0;
 	int r = vfs_write(file, buf, len, &done);
@@ -707,6 +766,83 @@ static long sys_fcntl_handler(interrupt_frame_t *frame)
 	return ret;
 }
 
+static long sys_dup2_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	int oldfd = (int)frame->rdi;
+	int newfd = (int)frame->rsi;
+	int flags = (int)frame->rdx;
+	pcb_t *process = thread->process;
+
+	if (oldfd < 0 || oldfd >= SCHED_FILE_MAX || newfd < 0 ||
+		newfd >= SCHED_FILE_MAX)
+		return -EBADF;
+	if (!process->files[oldfd])
+		return -EBADF;
+	if (flags & ~(SYS_O_CLOEXEC))
+		return -EINVAL;
+	if (oldfd == newfd)
+		return newfd;
+
+	if (process->files[newfd])
+		syscall_close_file_slot(&process->files[newfd]);
+
+	vfs_file_t *dup = syscall_dup_file(process->files[oldfd]);
+	if (!dup)
+		return -ENOMEM;
+
+	process->files[newfd] = dup;
+	process->fd_flags[newfd] = (flags & SYS_O_CLOEXEC) ? SYS_FD_CLOEXEC : 0;
+	return newfd;
+}
+
+static long sys_pipe_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	uint64_t user_fds = frame->rdi;
+	int flags = (int)frame->rsi;
+	pcb_t *process = thread->process;
+
+	if (!user_fds || !syscall_user_range_ok(user_fds, sizeof(int) * 2))
+		return -EINVAL;
+	if (flags & ~(SYS_O_CLOEXEC | SYS_O_NONBLOCK))
+		return -EINVAL;
+
+	int read_fd = syscall_alloc_fd(process, 0);
+	if (read_fd < 0)
+		return read_fd;
+
+	int write_fd = syscall_alloc_fd(process, read_fd + 1);
+	if (write_fd < 0)
+		return write_fd;
+
+	vfs_file_t *read_end = NULL;
+	vfs_file_t *write_end = NULL;
+	int r = vfs_pipe_create(&read_end, &write_end);
+	if (r != 0)
+		return r;
+
+	if (flags & SYS_O_NONBLOCK) {
+		read_end->flags |= SYS_O_NONBLOCK;
+		write_end->flags |= SYS_O_NONBLOCK;
+	}
+
+	process->files[read_fd] = read_end;
+	process->files[write_fd] = write_end;
+	process->fd_flags[read_fd] = (flags & SYS_O_CLOEXEC) ? SYS_FD_CLOEXEC : 0;
+	process->fd_flags[write_fd] = (flags & SYS_O_CLOEXEC) ? SYS_FD_CLOEXEC : 0;
+
+	((int *)(uintptr_t)user_fds)[0] = read_fd;
+	((int *)(uintptr_t)user_fds)[1] = write_fd;
+	return 0;
+}
+
 static long sys_stat_handler(interrupt_frame_t *frame)
 {
 	char path[SYS_PATH_MAX];
@@ -740,6 +876,9 @@ static long sys_lseek_handler(interrupt_frame_t *frame)
 
 	if (!file)
 		return -EBADF;
+
+	if (VFS_S_ISFIFO(file->node->mode))
+		return -ESPIPE;
 
 	uint64_t new_off = 0;
 	int r = vfs_seek(file, (int)frame->rdx, (int64_t)frame->rsi, &new_off);
@@ -1312,23 +1451,80 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 	int flags = (int)frame->r10;
 	int fd = (int)frame->r8;
 	uint64_t offset = frame->r9;
+	int shared = (flags & 0x01) != 0;
+	int private = (flags & 0x02) != 0;
+	int anonymous = (flags & 0x20) != 0;
+	vfs_file_t *file = NULL;
 
-	(void)fd;
-	(void)offset;
-
-	if (!length || (flags & 0x01) || !(flags & 0x02) || !(flags & 0x20))
-		return -ENOSYS;
+	if (!length)
+		return -EINVAL;
+	if (shared == private)
+		return -EINVAL;
+	if ((offset & (PAGE_SIZE - 1)) != 0)
+		return -EINVAL;
 
 	uint64_t vmm_flags = syscall_mmap_prot_to_vmm(prot);
 
 	if (flags & 0x10)
 		vmm_flags |= VAD_FIXED;
+	if (shared)
+		vmm_flags |= VAD_SHARED;
+
+	if (!anonymous) {
+		if (fd < 0 || fd >= SCHED_FILE_MAX)
+			return -EBADF;
+		file = thread->process->files[fd];
+		if (!file)
+			return -EBADF;
+
+		uint32_t accmode = file->flags & VFS_O_ACCMODE;
+		if (private) {
+			if (accmode == VFS_O_WRONLY)
+				return -EACCES;
+		} else {
+			if ((prot & 0x1) && accmode == VFS_O_WRONLY)
+				return -EACCES;
+			if ((prot & 0x2) && accmode == VFS_O_RDONLY)
+				return -EACCES;
+		}
+	}
+
+	if (anonymous) {
+		uint64_t mapped =
+			vas_map_anon(thread->process->vas, addr, length, vmm_flags);
+
+		if (!mapped)
+			return -ENOMEM;
+
+		return (long)mapped;
+	}
+
+	if (shared) {
+		vfs_node_t *node = vfs_file_node(file);
+		if (!node || !node->ops ||
+			(!node->ops->mmap && !node->ops->get_page))
+			return -ENOSYS;
+
+		uint64_t mapped =
+			vfs_mmap(file, thread->process->vas, addr, offset, length, vmm_flags);
+
+		if (!mapped)
+			return -ENOMEM;
+
+		return (long)mapped;
+	}
 
 	uint64_t mapped =
 		vas_map_anon(thread->process->vas, addr, length, vmm_flags);
 
 	if (!mapped)
 		return -ENOMEM;
+
+	int r = syscall_mmap_fill_private(file, mapped, length, offset);
+	if (r != 0) {
+		vas_unmap(thread->process->vas, mapped, length);
+		return r;
+	}
 
 	return (long)mapped;
 }
@@ -2466,6 +2662,31 @@ static long sys_kill_handler(interrupt_frame_t *frame)
 	return sched_process_signal(process, pid, signal);
 }
 
+static long sys_getpgid_handler(interrupt_frame_t *frame)
+{
+	pid_t pgid = 0;
+	int r = sched_process_getpgid(syscall_current_process(), (pid_t)frame->rdi,
+								  &pgid);
+	if (r != 0)
+		return r;
+	return pgid;
+}
+
+static long sys_setpgid_handler(interrupt_frame_t *frame)
+{
+	return sched_process_setpgid(syscall_current_process(), (pid_t)frame->rdi,
+								 (pid_t)frame->rsi);
+}
+
+static long sys_setsid_handler(interrupt_frame_t *frame)
+{
+	pid_t sid = 0;
+	int r = sched_process_setsid(syscall_current_process(), &sid);
+	if (r != 0)
+		return r;
+	return sid;
+}
+
 static long sys_sigaction_handler(interrupt_frame_t *frame)
 {
 	pcb_t *process = syscall_current_process();
@@ -2613,6 +2834,8 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_MPROTECT] = sys_mprotect_handler,
 	[SYS_IOCTL] = sys_ioctl_handler,
 	[SYS_FCNTL] = sys_fcntl_handler,
+	[SYS_DUP2] = sys_dup2_handler,
+	[SYS_PIPE] = sys_pipe_handler,
 	[SYS_UNAME] = sys_uname_handler,
 
 	[SYS_SOCKET] = sys_socket_handler,
@@ -2645,6 +2868,9 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_SETEUID] = sys_seteuid_handler,
 	[SYS_SETGID] = sys_setgid_handler,
 	[SYS_SETEGID] = sys_setegid_handler,
+	[SYS_GETPGID] = sys_getpgid_handler,
+	[SYS_SETPGID] = sys_setpgid_handler,
+	[SYS_SETSID] = sys_setsid_handler,
 	[SYS_KILL] = sys_kill_handler,
 	[SYS_SIGACTION] = sys_sigaction_handler,
 	[SYS_SIGPROCMASK] = sys_sigprocmask_handler,

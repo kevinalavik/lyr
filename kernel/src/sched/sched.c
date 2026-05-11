@@ -21,6 +21,8 @@
 #define RFLAGS_RESERVED (1ULL << 1)
 
 #define SCHED_SIGTERM 15
+#define SCHED_SIGINT 2
+#define SCHED_SIGQUIT 3
 #define SCHED_SIGKILL 9
 #define SCHED_SIGSTOP 19
 #define SCHED_SIG_DFL 0ULL
@@ -147,6 +149,9 @@ void sched_process_copy_ids(pcb_t *dst, const pcb_t *src)
 	dst->sgid = src->sgid;
 	dst->euid = src->euid;
 	dst->egid = src->egid;
+	dst->pgid = src->pgid;
+	dst->sid = src->sid;
+	dst->controlling_tty = src->controlling_tty;
 	dst->cred = src->cred;
 	spinlock_release(&dst->lock);
 }
@@ -501,7 +506,6 @@ static int signal_valid(int signal)
 
 static int signal_default_ignored(int signal)
 {
-	/* Good enough until job control exists. */
 	return signal == 17 /* SIGCHLD */ || signal == 18 /* SIGCONT */;
 }
 
@@ -548,6 +552,40 @@ static int process_is_kernel_owned(const pcb_t *process)
 static int process_kill_status(int signal)
 {
 	return 128 + signal;
+}
+
+static uint64_t process_pending_for_thread_locked(const pcb_t *process,
+												  const tcb_t *thread)
+{
+	if (!process || !thread)
+		return 0;
+
+	uint64_t deliverable = process->pending_signals & ~thread->signal_mask;
+	deliverable &= ~SCHED_UNBLOCKABLE_MASK;
+	return deliverable;
+}
+
+static int process_has_interrupting_signal_locked(const pcb_t *process,
+												  const tcb_t *thread)
+{
+	uint64_t deliverable = process_pending_for_thread_locked(process, thread);
+
+	for (int signal = 1; signal <= SCHED_NSIG; signal++) {
+		sched_sigaction_t action;
+
+		if (!(deliverable & SCHED_SIGNAL_BIT(signal)))
+			continue;
+
+		action = process->sigactions[signal];
+		if (action.handler == SCHED_SIG_IGN)
+			continue;
+		if (action.handler == SCHED_SIG_DFL && signal_default_ignored(signal))
+			continue;
+
+		return 1;
+	}
+
+	return 0;
 }
 
 static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
@@ -739,6 +777,9 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 	process->sgid = 0;
 	process->euid = 0;
 	process->egid = 0;
+	process->pgid = pid;
+	process->sid = pid;
+	process->controlling_tty = -1;
 	memcpy(process->cwd, "/", 2);
 	process_refresh_cred(process);
 
@@ -1254,21 +1295,47 @@ bool sched_process_exists(pid_t pid)
 	return found;
 }
 
-int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
+int sched_process_getpgid(pcb_t *caller, pid_t pid, pid_t *pgid_out)
 {
-	if (!sender)
-		return -EBADF;
+	if (!caller || !pgid_out)
+		return -EINVAL;
 
-	if (pid <= 0)
-		return -ENOSYS;
+	if (pid == 0)
+		pid = caller->pid;
 
-	if (signal < 0 || signal > SCHED_NSIG)
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (process->pid != pid)
+			continue;
+		*pgid_out = process->pgid;
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return 0;
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return -ESRCH;
+}
+
+int sched_process_setpgid(pcb_t *caller, pid_t pid, pid_t pgid)
+{
+	if (!caller)
+		return -EINVAL;
+
+	if (pid == 0)
+		pid = caller->pid;
+	if (pgid == 0)
+		pgid = pid;
+	if (pid < 0 || pgid < 0)
 		return -EINVAL;
 
 	uint64_t flags = irq_save();
-	pcb_t *target = NULL;
-
 	spinlock_acquire(&sched_lock);
+
+	pcb_t *target = NULL;
 	for (pcb_t *process = process_list; process; process = process->next) {
 		if (process->pid == pid) {
 			target = process;
@@ -1282,41 +1349,155 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 		return -ESRCH;
 	}
 
-	if (!process_signal_allowed(sender, target)) {
+	if (target != caller && target->ppid != caller->pid) {
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+		return -ESRCH;
+	}
+
+	if (caller->sid != target->sid) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
 		return -EPERM;
 	}
 
-	if (signal == 0) {
-		spinlock_release(&sched_lock);
-		irq_restore(flags);
-		return 0;
-	}
-
-	if (process_is_kernel_owned(target)) {
+	if (target->pid == target->sid) {
 		spinlock_release(&sched_lock);
 		irq_restore(flags);
 		return -EPERM;
 	}
 
-	if (signal == SCHED_SIGKILL) {
-		process_terminate_by_signal_locked(target, signal);
-	} else {
-		target->pending_signals |= SCHED_SIGNAL_BIT(signal);
-
-		/* If all threads block it, keep it pending. If not, normal return-to-user
-		 * delivery will run the handler/default action on the next eligible thread.
-		 */
-		(void)process_any_thread_can_take_locked(target, signal);
+	if (pgid != target->pid) {
+		int found = 0;
+		for (pcb_t *process = process_list; process; process = process->next) {
+			if (process->pgid == pgid && process->sid == target->sid) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			spinlock_release(&sched_lock);
+			irq_restore(flags);
+			return -EPERM;
+		}
 	}
 
-	log_trace("sched", "pid=%d signalled by pid=%d signal=%d", pid,
-			  sender->pid, signal);
+	target->pgid = pgid;
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return 0;
+}
+
+int sched_process_setsid(pcb_t *caller, pid_t *sid_out)
+{
+	if (!caller)
+		return -EINVAL;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (process != caller && process->pgid == caller->pid) {
+			spinlock_release(&sched_lock);
+			irq_restore(flags);
+			return -EPERM;
+		}
+	}
+
+	caller->sid = caller->pid;
+	caller->pgid = caller->pid;
+	caller->controlling_tty = -1;
+	if (sid_out)
+		*sid_out = caller->sid;
 
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
 	return 0;
+}
+
+int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
+{
+	if (!sender)
+		return -EBADF;
+
+	if (signal < 0 || signal > SCHED_NSIG)
+		return -EINVAL;
+
+	if (pid == 0)
+		pid = -sender->pgid;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+	int delivered = 0;
+	int denied = 0;
+
+	for (pcb_t *target = process_list; target; target = target->next) {
+		int match = 0;
+
+		if (pid > 0)
+			match = target->pid == pid;
+		else if (pid == -1)
+			match = target != sender;
+		else if (pid < -1)
+			match = target->pgid == -pid;
+
+		if (!match)
+			continue;
+
+		if (!process_signal_allowed(sender, target) ||
+			process_is_kernel_owned(target)) {
+			denied = 1;
+			continue;
+		}
+
+		delivered = 1;
+		if (signal == 0)
+			continue;
+
+		if (signal == SCHED_SIGKILL) {
+			process_terminate_by_signal_locked(target, signal);
+		} else {
+			target->pending_signals |= SCHED_SIGNAL_BIT(signal);
+			(void)process_any_thread_can_take_locked(target, signal);
+		}
+
+		log_trace("sched", "pid=%d signalled by pid=%d signal=%d",
+				  target->pid, sender->pid, signal);
+
+		if (pid > 0)
+			break;
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	if (delivered)
+		return 0;
+	return denied ? -EPERM : -ESRCH;
+}
+
+int sched_process_signal_group(pid_t pgid, int signal)
+{
+	if (pgid <= 0 || !signal_valid(signal))
+		return -EINVAL;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	int delivered = 0;
+	for (pcb_t *target = process_list; target; target = target->next) {
+		if (target->pgid != pgid || process_is_kernel_owned(target))
+			continue;
+		delivered = 1;
+		if (signal == SCHED_SIGKILL)
+			process_terminate_by_signal_locked(target, signal);
+		else
+			target->pending_signals |= SCHED_SIGNAL_BIT(signal);
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return delivered ? 0 : -ESRCH;
 }
 
 
@@ -1377,6 +1558,20 @@ int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
 	return 0;
 }
 
+int sched_signal_is_pending(tcb_t *thread)
+{
+	if (!thread || !thread->process)
+		return 0;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+	int pending =
+		process_has_interrupting_signal_locked(thread->process, thread);
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return pending;
+}
+
 interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame)
 {
 	if (!frame)
@@ -1409,8 +1604,7 @@ interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame)
 	uint64_t flags = irq_save();
 	spinlock_acquire(&sched_lock);
 
-	uint64_t deliverable = process->pending_signals & ~thread->signal_mask;
-	deliverable &= ~SCHED_UNBLOCKABLE_MASK;
+	uint64_t deliverable = process_pending_for_thread_locked(process, thread);
 
 	for (int i = 1; i <= SCHED_NSIG; i++) {
 		if (deliverable & SCHED_SIGNAL_BIT(i)) {

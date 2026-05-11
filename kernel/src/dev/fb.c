@@ -1,9 +1,12 @@
 #include <dev/fb.h>
 #include <errno.h>
 #include <fs/devfs.h>
+#include <lib/align.h>
 #include <lib/lyrterm.h>
 #include <sys/poll.h>
 #include <lib/string.h>
+#include <mm/page.h>
+#include <mm/vmm.h>
 #include <debug/log.h>
 #include <sched/sched.h>
 
@@ -81,11 +84,35 @@ static int fbdev_poll(void *ctx, int events)
 	return revents;
 }
 
+static uint64_t fbdev_mmap(void *ctx, vas_t *vas, uint64_t hint, uint64_t off,
+						   size_t len, uint64_t flags)
+{
+	(void)ctx;
+
+	if (!vas || !len)
+		return 0;
+	if ((off & (PAGE_SIZE - 1)) != 0)
+		return 0;
+
+	lyrterm_framebuffer_info_t info;
+	int r = lyrterm_get_framebuffer_info(&info);
+	if (r != 0 || !info.address)
+		return 0;
+
+	uint64_t map_limit = ALIGN_UP((uint64_t)info.size, PAGE_SIZE);
+	if (off >= map_limit || len > map_limit - off)
+		return 0;
+
+	lyrterm_framebuffer_acquire();
+	return vas_map_phys(vas, hint, VIRT_TO_PHYS(info.address) + off, len, flags);
+}
+
 int fbdev_init(void)
 {
-	int r = devfs_register_chr_poll_close(LYR_FB_DEVICE, 0666, fbdev_read,
-										  fbdev_write, fbdev_ioctl, fbdev_poll,
-										  fbdev_close, NULL);
+	int r = devfs_register_chr_mmap_poll_close(LYR_FB_DEVICE, 0666, fbdev_read,
+											   fbdev_write, fbdev_ioctl,
+											   fbdev_poll, fbdev_close,
+											   fbdev_mmap, NULL);
 	if (r != 0 && r != -EEXIST)
 		return r;
 

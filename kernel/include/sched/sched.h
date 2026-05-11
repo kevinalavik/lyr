@@ -68,6 +68,9 @@ typedef struct pcb {
 	vfs_gid_t sgid;
 	vfs_uid_t euid;
 	vfs_gid_t egid;
+	pid_t pgid;
+	pid_t sid;
+	int controlling_tty;
 	char cwd[SCHED_CWD_MAX];
 	vfs_file_t *files[SCHED_FILE_MAX];
 	uint32_t fd_flags[SCHED_FILE_MAX];
@@ -139,12 +142,17 @@ bool sched_process_get_nth(size_t index, sched_process_info_t *out);
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 					   int *status_out);
 int sched_process_signal(pcb_t *sender, pid_t pid, int signal);
+int sched_process_signal_group(pid_t pgid, int signal);
 int sched_signal_action(pcb_t *process, int signal, const sched_sigaction_t *act,
 						sched_sigaction_t *oldact);
 int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
 						  uint64_t *oldset);
+int sched_signal_is_pending(tcb_t *thread);
 interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame);
 interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame);
+int sched_process_getpgid(pcb_t *caller, pid_t pid, pid_t *pgid_out);
+int sched_process_setpgid(pcb_t *caller, pid_t pid, pid_t pgid);
+int sched_process_setsid(pcb_t *caller, pid_t *sid_out);
 const char *sched_process_cwd(const pcb_t *process);
 int sched_process_setcwd(pcb_t *process, const char *path);
 void sched_process_copy_cwd(pcb_t *dst, const pcb_t *src);

@@ -35,6 +35,7 @@
 #define VFS_S_ISREG(m) (((m) & VFS_S_IFMT) == VFS_S_IFREG)
 #define VFS_S_ISDIR(m) (((m) & VFS_S_IFMT) == VFS_S_IFDIR)
 #define VFS_S_ISCHR(m) (((m) & VFS_S_IFMT) == VFS_S_IFCHR)
+#define VFS_S_ISFIFO(m) (((m) & VFS_S_IFMT) == VFS_S_IFIFO)
 
 #define VFS_R_OK 4
 #define VFS_W_OK 2
@@ -61,6 +62,7 @@ typedef uint32_t vfs_gid_t;
 typedef struct vfs_node vfs_node_t;
 typedef struct vfs_file vfs_file_t;
 typedef struct vfs_ops vfs_ops_t;
+struct vas;
 
 typedef struct {
 	char name[VFS_NAME_MAX + 1];
@@ -107,6 +109,8 @@ struct vfs_ops {
 	int (*ioctl)(vfs_file_t *file, unsigned long request, void *arg);
 	int (*poll)(vfs_file_t *file, int events);
 	int (*close)(vfs_file_t *file);
+	uint64_t (*mmap)(vfs_file_t *file, struct vas *vas, uint64_t hint,
+					 uint64_t offset, size_t length, uint64_t flags);
 	int (*readdir)(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 	int (*truncate)(vfs_node_t *node, uint64_t size);
 	int (*get_page)(vfs_node_t *node, uint64_t page_index, int for_write,
@@ -167,6 +171,8 @@ int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st);
 int vfs_access(vfs_node_t *node, const vfs_cred_t *cred, int mask);
 int vfs_node_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 					  page_t **out);
+uint64_t vfs_mmap(vfs_file_t *file, struct vas *vas, uint64_t hint,
+				  uint64_t offset, size_t length, uint64_t flags);
 vfs_node_t *vfs_file_node(vfs_file_t *file);
 
 #endif /* _LYR_FS_VFS_H */

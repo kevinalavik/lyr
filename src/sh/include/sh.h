@@ -51,6 +51,7 @@ void sh_command_list_push(sh_command_list_t *cl, sh_command_t cmd);
 void sh_command_list_free(sh_command_list_t *cl);
 
 char *sh_read_line(FILE *fp);
+void sh_restore_terminal(void);
 char *sh_expand_vars(const char *input);
 char *sh_expand_prompt(const char *ps1);
 int sh_parse_line(const char *line, sh_command_list_t *out, char **err);

@@ -15,6 +15,7 @@ typedef struct devfs_node {
 	devfs_ioctl_t ioctl;
 	devfs_poll_t poll;
 	devfs_close_t close;
+	devfs_mmap_t mmap;
 	void *ctx;
 } devfs_node_t;
 
@@ -32,6 +33,8 @@ static int devfs_write_op(vfs_node_t *node, uint64_t off, const void *buf,
 static int devfs_ioctl_op(vfs_file_t *file, unsigned long request, void *arg);
 static int devfs_poll_op(vfs_file_t *file, int events);
 static int devfs_close_op(vfs_file_t *file);
+static uint64_t devfs_mmap_op(vfs_file_t *file, struct vas *vas, uint64_t hint,
+							  uint64_t offset, size_t length, uint64_t flags);
 static int devfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 static void devfs_release(vfs_node_t *node);
 
@@ -45,6 +48,7 @@ static const vfs_ops_t devfs_ops = {
 	.ioctl = devfs_ioctl_op,
 	.poll = devfs_poll_op,
 	.close = devfs_close_op,
+	.mmap = devfs_mmap_op,
 	.readdir = devfs_readdir,
 	.release = devfs_release,
 };
@@ -376,6 +380,19 @@ static int devfs_close_op(vfs_file_t *file)
 	return dn->close(dn->ctx);
 }
 
+static uint64_t devfs_mmap_op(vfs_file_t *file, struct vas *vas, uint64_t hint,
+							  uint64_t offset, size_t length, uint64_t flags)
+{
+	if (!file || !file->node || !vas)
+		return 0;
+	if (VFS_S_ISDIR(file->node->mode))
+		return 0;
+	devfs_node_t *dn = to_devfs(file->node);
+	if (!dn->mmap)
+		return 0;
+	return dn->mmap(dn->ctx, vas, hint, offset, length, flags);
+}
+
 static int devfs_readdir(vfs_node_t *dir_node, size_t index, vfs_dirent_t *out)
 {
 	if (!VFS_S_ISDIR(dir_node->mode))
@@ -470,6 +487,16 @@ int devfs_register_chr_poll_close(const char *path, vfs_mode_t mode,
 								  devfs_ioctl_t ioctl, devfs_poll_t poll,
 								  devfs_close_t close, void *ctx)
 {
+	return devfs_register_chr_mmap_poll_close(path, mode, read, write, ioctl,
+											  poll, close, NULL, ctx);
+}
+
+int devfs_register_chr_mmap_poll_close(const char *path, vfs_mode_t mode,
+									   devfs_read_t read, devfs_write_t write,
+									   devfs_ioctl_t ioctl, devfs_poll_t poll,
+									   devfs_close_t close, devfs_mmap_t mmap,
+									   void *ctx)
+{
 	devfs_node_t *parent = NULL;
 	const char *name = NULL;
 	size_t name_len = 0;
@@ -489,6 +516,7 @@ int devfs_register_chr_poll_close(const char *path, vfs_mode_t mode,
 	node->ioctl = ioctl;
 	node->poll = poll;
 	node->close = close;
+	node->mmap = mmap;
 	node->ctx = ctx;
 	log_debug("devfs", "registered char %s", path);
 	return 0;

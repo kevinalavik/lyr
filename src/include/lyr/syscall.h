@@ -112,6 +112,16 @@ static inline long lyr_arch_prctl(long code, unsigned long addr)
 	return lyr_syscall3(SYS_ARCH_PRCTL, code, addr, 0);
 }
 
+static inline long lyr_dup2(int oldfd, int newfd)
+{
+	return lyr_syscall3(SYS_DUP2, oldfd, newfd, 0);
+}
+
+static inline long lyr_pipe(int fds[2], int flags)
+{
+	return lyr_syscall3(SYS_PIPE, (long)fds, flags, 0);
+}
+
 #define AF_UNIX 1
 #define AF_INET 2
 

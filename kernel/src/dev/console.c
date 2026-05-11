@@ -4,15 +4,25 @@
 #include <fs/vfs.h>
 #include <lib/lyrterm.h>
 #include <lib/string.h>
+#include <sched/sched.h>
 #include <sys/poll.h>
 
-#define LYR_NCCS 19
+#define LYR_NCCS 32
 #define LYR_ECHO 0000010u
 #define LYR_ICANON 0000002u
 #define LYR_ISIG 0000001u
 #define LYR_IEXTEN 0100000u
+#define LYR_NOFLSH 0000200u
+#define LYR_VINTR 0
+#define LYR_VQUIT 1
+#define LYR_VERASE 2
+#define LYR_VKILL 3
+#define LYR_VEOF 4
 #define LYR_VTIME 5
 #define LYR_VMIN 6
+#define LYR_VSTART 8
+#define LYR_VSTOP 9
+#define LYR_VSUSP 10
 #define CONSOLE_INPUT_SIZE 1024
 
 typedef struct lyr_termios {
@@ -39,6 +49,8 @@ typedef struct console_tty {
 	char name[LYR_TTY_NAME_MAX];
 	console_input_ring_t input;
 	lyr_termios_t termios;
+	pid_t foreground_pgrp;
+	volatile uint8_t input_interrupted;
 	lyrterm_state_t render;
 } console_tty_t;
 
@@ -74,23 +86,49 @@ static void console_tty_init(console_tty_t *tty, unsigned index)
 	tty->termios.c_lflag = LYR_ISIG | LYR_ICANON | LYR_ECHO | LYR_IEXTEN;
 	tty->termios.c_ispeed = 38400;
 	tty->termios.c_ospeed = 38400;
+	tty->termios.c_cc[LYR_VINTR] = 3;
+	tty->termios.c_cc[LYR_VQUIT] = 28;
+	tty->termios.c_cc[LYR_VERASE] = 127;
+	tty->termios.c_cc[LYR_VKILL] = 21;
+	tty->termios.c_cc[LYR_VEOF] = 4;
 	tty->termios.c_cc[LYR_VMIN] = 1;
 	tty->termios.c_cc[LYR_VTIME] = 0;
+	tty->termios.c_cc[LYR_VSTART] = 17;
+	tty->termios.c_cc[LYR_VSTOP] = 19;
+	tty->termios.c_cc[LYR_VSUSP] = 26;
+	tty->foreground_pgrp = 0;
 	console_tty_name(index, tty->name, sizeof(tty->name));
 	lyrterm_capture_state(&tty->render);
 }
 
-static void console_wait_input(console_tty_t *tty)
+static void console_input_flush(console_tty_t *tty)
+{
+	if (!tty)
+		return;
+
+	memset(&tty->input, 0, sizeof(tty->input));
+}
+
+static int console_wait_input(console_tty_t *tty)
 {
 	if (tty->index == active_console)
 		lyrterm_flush();
 
 	for (;;) {
+		if (tty->input_interrupted) {
+			tty->input_interrupted = 0;
+			return -EINTR;
+		}
+
+		tcb_t *thread = sched_current();
+		if (thread && sched_signal_is_pending(thread))
+			return -EINTR;
+
 		if (tty->termios.c_lflag & LYR_ICANON) {
 			if (tty->input.lines > 0)
-				return;
+				return 0;
 		} else if (tty->input.count > 0) {
-			return;
+			return 0;
 		}
 		__asm__ volatile("sti; hlt; cli" ::: "memory");
 	}
@@ -159,11 +197,40 @@ static void console_input_backspace(console_tty_t *tty)
 		console_write(tty, 0, "\b \b", 3, NULL);
 }
 
+static void console_raise_signal(console_tty_t *tty, int signal)
+{
+	if (!tty || tty->foreground_pgrp <= 0)
+		return;
+
+	if (!(tty->termios.c_lflag & LYR_NOFLSH))
+		console_input_flush(tty);
+
+	(void)sched_process_signal_group(tty->foreground_pgrp, signal);
+}
+
 void console_input_put(uint8_t ch)
 {
 	console_tty_t *tty = &consoles[active_console];
 	int canonical = (tty->termios.c_lflag & LYR_ICANON) != 0;
 	int echo = (tty->termios.c_lflag & LYR_ECHO) != 0;
+
+	if (tty->termios.c_lflag & LYR_ISIG) {
+		if (ch == tty->termios.c_cc[LYR_VINTR]) {
+			if (echo && tty->index == active_console)
+				console_write(tty, 0, "^C\r\n", 4, NULL);
+			tty->input_interrupted = 1;
+			console_raise_signal(tty, 2);
+			return;
+		}
+
+		if (ch == tty->termios.c_cc[LYR_VQUIT]) {
+			if (echo && tty->index == active_console)
+				console_write(tty, 0, "^\\\r\n", 5, NULL);
+			tty->input_interrupted = 1;
+			console_raise_signal(tty, 3);
+			return;
+		}
+	}
 
 	if (ch == '\r')
 		ch = '\n';
@@ -197,7 +264,9 @@ static int console_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (len == 0)
 		return 0;
 
-	console_wait_input(tty);
+	int wr = console_wait_input(tty);
+	if (wr != 0)
+		return wr;
 
 	uint8_t *p = buf;
 	size_t count = 0;
@@ -304,6 +373,35 @@ static int console_ioctl(void *ctx, unsigned long request, void *arg)
 			return -EINVAL;
 		memcpy(arg, tty->name, strlen(tty->name) + 1);
 		return 0;
+
+	case LYR_TIOCGPGRP:
+		if (!arg)
+			return -EINVAL;
+		*(pid_t *)arg = tty->foreground_pgrp;
+		return 0;
+
+	case LYR_TIOCSPGRP: {
+		pid_t pgid;
+		pcb_t *process = NULL;
+		tcb_t *thread = sched_current();
+
+		if (!arg)
+			return -EINVAL;
+		if (!thread || !thread->process)
+			return -EBADF;
+
+		pgid = *(pid_t *)arg;
+		process = thread->process;
+
+		if (pgid <= 0)
+			return -EINVAL;
+		if (process->sid <= 0)
+			return -EPERM;
+
+		tty->foreground_pgrp = pgid;
+		process->controlling_tty = (int)tty->index;
+		return 0;
+	}
 
 	default:
 		return -ENOTTY;

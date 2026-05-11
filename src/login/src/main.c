@@ -44,8 +44,7 @@ int main(int argc, char **argv)
 		char password[MAX_FIELD];
 
 		memset(username, 0, sizeof(username));
-		if (term_read_line("login: ", username,
-						   sizeof(username)) < 0) {
+		if (term_read_line("login: ", username, sizeof(username)) < 0) {
 			write(STDERR_FILENO, "login: failed to read username\n", 31);
 			return 1;
 		}
@@ -56,8 +55,7 @@ int main(int argc, char **argv)
 		user_entry_t user;
 		if (users_lookup(username, &user) < 0) {
 			memset(password, 0, sizeof(password));
-			term_read_password("Password: ", password,
-							   sizeof(password));
+			term_read_password("Password: ", password, sizeof(password));
 			term_clear_string(password);
 			login_record_failure(username);
 			term_println(NULL, "Login incorrect");
@@ -72,8 +70,8 @@ int main(int argc, char **argv)
 			memset(password, 0, sizeof(password));
 
 			if (user.has_password) {
-				if (term_read_password("Password: ",
-									   password, sizeof(password)) < 0) {
+				if (term_read_password("Password: ", password,
+									   sizeof(password)) < 0) {
 					write(STDERR_FILENO, "login: failed to read password\n",
 						  31);
 					return 1;
@@ -98,8 +96,7 @@ int main(int argc, char **argv)
 
 		if (!authenticated) {
 			login_record_failure(username);
-			term_println(NULL,
-						 "Login incorrect");
+			term_println(NULL, "Login incorrect");
 			sleep(LOCKOUT_SECS);
 			continue;
 		}

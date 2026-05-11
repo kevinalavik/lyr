@@ -10,6 +10,11 @@
 
 static void exec_shell(const user_entry_t *user)
 {
+	if (setsid() < 0)
+		perror("setsid");
+	if (tcsetpgrp(STDIN_FILENO, getpid()) < 0)
+		perror("tcsetpgrp");
+
 	if (setgid(user->gid) < 0) {
 		perror("setgid");
 		_exit(1);

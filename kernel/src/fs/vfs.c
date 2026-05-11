@@ -1,6 +1,7 @@
 #include <fs/vfs.h>
 #include <debug/log.h>
 #include <mm/heap.h>
+#include <mm/vmm.h>
 #include <lib/string.h>
 
 const vfs_cred_t vfs_root_cred = { .uid = 0, .gid = 0, .umask = 0022 };
@@ -730,6 +731,18 @@ int vfs_node_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 	if (!node->ops || !node->ops->get_page)
 		return -ENOSYS;
 	return node->ops->get_page(node, page_index, for_write, out);
+}
+
+uint64_t vfs_mmap(vfs_file_t *file, struct vas *vas, uint64_t hint,
+				  uint64_t offset, size_t length, uint64_t flags)
+{
+	if (!file || !file->node || !vas || !length)
+		return 0;
+	if (VFS_S_ISDIR(file->node->mode))
+		return 0;
+	if (file->node->ops && file->node->ops->mmap)
+		return file->node->ops->mmap(file, vas, hint, offset, length, flags);
+	return vas_map_file(vas, hint, file->node, offset, length, flags);
 }
 
 vfs_node_t *vfs_file_node(vfs_file_t *file)

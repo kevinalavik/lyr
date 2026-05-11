@@ -152,6 +152,12 @@ int sh_parse_line(const char *line, sh_command_list_t *out, char **err)
 			continue;
 		}
 
+		if (!sq && !dq && c == '|') {
+			finish_word(&cmd.words, &word, &wlen, &wcap);
+			sh_wordv_push(&cmd.words, sh_xstrdup("|"));
+			continue;
+		}
+
 		sb_start_word(&word, &wlen, &wcap);
 		sb_add(&word, &wlen, &wcap, c);
 	}

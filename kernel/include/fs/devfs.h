@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <fs/vfs.h>
+struct vas;
 
 typedef int (*devfs_read_t)(void *ctx, uint64_t off, void *buf, size_t len,
 							size_t *done);
@@ -12,6 +13,8 @@ typedef int (*devfs_write_t)(void *ctx, uint64_t off, const void *buf,
 typedef int (*devfs_ioctl_t)(void *ctx, unsigned long request, void *arg);
 typedef int (*devfs_poll_t)(void *ctx, int events);
 typedef int (*devfs_close_t)(void *ctx);
+typedef uint64_t (*devfs_mmap_t)(void *ctx, struct vas *vas, uint64_t hint,
+								 uint64_t off, size_t len, uint64_t flags);
 
 int devfs_init(void);
 int devfs_mount(const char *target);
@@ -31,6 +34,11 @@ int devfs_register_chr_poll_close(const char *path, vfs_mode_t mode,
 								  devfs_read_t read, devfs_write_t write,
 								  devfs_ioctl_t ioctl, devfs_poll_t poll,
 								  devfs_close_t close, void *ctx);
+int devfs_register_chr_mmap_poll_close(const char *path, vfs_mode_t mode,
+									   devfs_read_t read, devfs_write_t write,
+									   devfs_ioctl_t ioctl, devfs_poll_t poll,
+									   devfs_close_t close, devfs_mmap_t mmap,
+									   void *ctx);
 
 int devfs_set_size(const char *path, uint64_t size);
 int devfs_unregister(const char *path);

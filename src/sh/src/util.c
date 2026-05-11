@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
 #include <unistd.h>
 #include <sh.h>
 
@@ -188,8 +189,15 @@ char *sh_read_line(FILE *fp)
 	for (;;) {
 		int c = fgetc(fp);
 		if (c == EOF) {
+			if (ferror(fp) && errno == EINTR) {
+				clearerr(fp);
+				free(buf);
+				errno = EINTR;
+				return NULL;
+			}
 			if (len == 0) {
 				free(buf);
+				errno = 0;
 				return NULL;
 			}
 			break;
@@ -204,6 +212,27 @@ char *sh_read_line(FILE *fp)
 	}
 	buf[len] = '\0';
 	return buf;
+}
+
+void sh_restore_terminal(void)
+{
+	struct termios tio;
+
+	if (!isatty(STDIN_FILENO))
+		return;
+	if (tcgetattr(STDIN_FILENO, &tio) < 0)
+		return;
+
+	tio.c_lflag |= (tcflag_t)(ECHO | ICANON | ISIG | IEXTEN);
+	tio.c_cc[VINTR] = 3;
+	tio.c_cc[VQUIT] = 28;
+	tio.c_cc[VERASE] = 127;
+	tio.c_cc[VKILL] = 21;
+	tio.c_cc[VEOF] = 4;
+	tio.c_cc[VMIN] = 1;
+	tio.c_cc[VTIME] = 0;
+
+	(void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &tio);
 }
 
 void sh_history_add(sh_shell_t *sh, const char *line)

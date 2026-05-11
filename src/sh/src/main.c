@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,13 @@ int main(int argc, char **argv)
 	sh.interactive = isatty(STDIN_FILENO);
 	sh.last_status = 0;
 
+	if (sh.interactive) {
+		(void)setpgid(0, 0);
+		(void)tcsetpgrp(STDIN_FILENO, getpgrp());
+		signal(SIGINT, SIG_IGN);
+		signal(SIGQUIT, SIG_IGN);
+	}
+
 	if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
 		int status = sh_run_line(&sh, argv[2]);
 		sh_history_free(&sh);
@@ -69,6 +77,9 @@ int main(int argc, char **argv)
 	run_startup_files(&sh);
 
 	while (!sh.should_exit) {
+		if (sh.interactive)
+			sh_restore_terminal();
+
 		if (sh.interactive) {
 			char *prompt = sh_expand_prompt(getenv("PS1"));
 			fputs(prompt, stdout);
@@ -78,6 +89,10 @@ int main(int argc, char **argv)
 
 		char *line = sh_read_line(stdin);
 		if (!line) {
+			if (sh.interactive && errno == EINTR) {
+				errno = 0;
+				continue;
+			}
 			if (sh.interactive)
 				putchar('\n');
 			break;
@@ -87,6 +102,8 @@ int main(int argc, char **argv)
 			sh_history_add(&sh, line);
 
 		sh_run_line(&sh, line);
+		if (sh.interactive)
+			sh_restore_terminal();
 		free(line);
 	}
 
