@@ -29,9 +29,40 @@ static int bind_tty(const char *path)
 	return 0;
 }
 
+static int handle_session(const user_entry_t *user)
+{
+	login_print_lastlog(user);
+	login_record_success(user);
+	banner_print_motd();
+	return session_run(user);
+}
+
 int main(int argc, char **argv)
 {
-	if (argc > 1 && bind_tty(argv[1]) < 0) {
+	const char *tty_path = NULL;
+	const char *autologin_user = NULL;
+
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--autologin") == 0) {
+			if (i + 1 >= argc) {
+				write(STDERR_FILENO,
+					  "usage: login [TTY] [--autologin USER]\n", 39);
+				return 1;
+			}
+			autologin_user = argv[++i];
+			continue;
+		}
+
+		if (!tty_path) {
+			tty_path = argv[i];
+			continue;
+		}
+
+		write(STDERR_FILENO, "usage: login [TTY] [--autologin USER]\n", 39);
+		return 1;
+	}
+
+	if (tty_path && bind_tty(tty_path) < 0) {
 		perror("login: bind_tty");
 		return 1;
 	}
@@ -40,6 +71,22 @@ int main(int argc, char **argv)
 
 	for (;;) {
 		banner_print_issue();
+
+		if (autologin_user && autologin_user[0]) {
+			user_entry_t user;
+			if (users_lookup(autologin_user, &user) < 0) {
+				dprintf(STDERR_FILENO,
+						"login: autologin user '%s' not found\n",
+						autologin_user);
+				return 1;
+			}
+
+			term_println(NULL, "");
+			dprintf(STDOUT_FILENO, "Autologin: %s\n", user.username);
+			handle_session(&user);
+			continue;
+		}
+
 		char username[MAX_FIELD];
 		char password[MAX_FIELD];
 
@@ -101,9 +148,6 @@ int main(int argc, char **argv)
 			continue;
 		}
 
-		login_print_lastlog(&user);
-		login_record_success(&user);
-		banner_print_motd();
-		session_run(&user);
+		handle_session(&user);
 	}
 }

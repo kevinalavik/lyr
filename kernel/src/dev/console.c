@@ -54,8 +54,23 @@ typedef struct console_tty {
 	lyrterm_state_t render;
 } console_tty_t;
 
+typedef enum console_target_kind {
+	CONSOLE_TARGET_ACTIVE = 0,
+	CONSOLE_TARGET_PROCESS_TTY,
+} console_target_kind_t;
+
+typedef struct console_target {
+	console_target_kind_t kind;
+} console_target_t;
+
 static console_tty_t consoles[LYR_TTY_COUNT];
 static unsigned active_console;
+static const console_target_t console_target_active = {
+	.kind = CONSOLE_TARGET_ACTIVE,
+};
+static const console_target_t console_target_process_tty = {
+	.kind = CONSOLE_TARGET_PROCESS_TTY,
+};
 
 static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 						 size_t *done);
@@ -64,6 +79,21 @@ static console_tty_t *console_ctx_to_tty(void *ctx)
 {
 	if (!ctx)
 		return &consoles[active_console];
+
+	const console_target_t *target = (const console_target_t *)ctx;
+	if (target == &console_target_active)
+		return &consoles[active_console];
+
+	if (target == &console_target_process_tty) {
+		tcb_t *thread = sched_current();
+		if (thread && thread->process) {
+			int tty_index = thread->process->controlling_tty;
+			if (tty_index >= 0 && tty_index < (int)LYR_TTY_COUNT)
+				return &consoles[tty_index];
+		}
+		return &consoles[active_console];
+	}
+
 	return (console_tty_t *)ctx;
 }
 
@@ -298,7 +328,7 @@ static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 
 	if (tty->index == active_console) {
 		uart_wbuf(buf, len);
-		lyrterm_wbuf(buf, len);
+		lyrterm_write(buf, len);
 	} else {
 		lyrterm_update_state(&tty->render, buf, len);
 	}
@@ -413,6 +443,7 @@ int console_switch_tty(unsigned index)
 	if (index >= LYR_TTY_COUNT || index == active_console)
 		return index < LYR_TTY_COUNT ? 0 : -EINVAL;
 
+	lyrterm_flush();
 	lyrterm_capture_state(&consoles[active_console].render);
 	active_console = index;
 	lyrterm_restore_state(&consoles[active_console].render);
@@ -441,27 +472,31 @@ int console_init(void)
 
 	int r = devfs_register_chr_poll("/dev/console", 0666, console_read,
 									console_write, console_ioctl, console_poll,
-									NULL);
+									(void *)&console_target_active);
 	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/tty", 0666, console_read, console_write,
-								console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll,
+								(void *)&console_target_process_tty);
 	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stdin", 0444, console_read, NULL,
-								console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll,
+								(void *)&console_target_process_tty);
 	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stdout", 0222, NULL, console_write,
-								console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll,
+								(void *)&console_target_process_tty);
 	if (r != 0 && r != -EEXIST)
 		return r;
 
 	r = devfs_register_chr_poll("/dev/stderr", 0222, NULL, console_write,
-								console_ioctl, console_poll, NULL);
+								console_ioctl, console_poll,
+								(void *)&console_target_process_tty);
 	if (r != 0 && r != -EEXIST)
 		return r;
 

@@ -61,6 +61,7 @@ typedef struct {
 void lyrterm_init(const struct limine_framebuffer *fb);
 void lyrterm_putch(char c);
 void lyrterm_putstr(const char *str);
+void lyrterm_write(const char *buf, size_t len);
 void lyrterm_wbuf(const char *buf, size_t len);
 size_t lyrterm_drain(size_t budget);
 void lyrterm_flush(void);

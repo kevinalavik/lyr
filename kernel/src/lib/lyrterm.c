@@ -997,6 +997,19 @@ void lyrterm_putstr(const char *str)
 	spinlock_release(&lyrterm_render_lock);
 }
 
+void lyrterm_write(const char *buf, size_t len)
+{
+	if (!buf || len == 0)
+		return;
+
+	spinlock_acquire(&lyrterm_render_lock);
+
+	for (size_t i = 0; i < len; i++)
+		lyrterm_putch_locked(buf[i]);
+
+	spinlock_release(&lyrterm_render_lock);
+}
+
 void lyrterm_wbuf(const char *buf, size_t len)
 {
 	if (!buf || len == 0)
