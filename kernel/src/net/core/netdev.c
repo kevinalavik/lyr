@@ -418,6 +418,9 @@ int net_init(void)
 	r = devfs_register_chr("/dev/net/routes", 0444, routes_read, NULL, NULL);
 	if (r != 0 && r != -EEXIST)
 		return r;
+	r = net_proto_init();
+	if (r != 0)
+		return r;
 
 	netdev_t lo;
 	memset(&lo, 0, sizeof(lo));
@@ -547,26 +550,15 @@ void net_receive_frame(netdev_t *dev, const void *frame, size_t len)
 	if (ip_len < ihl || len < sizeof(*eth) + ip_len)
 		return;
 
-	if (ip->proto == IP_PROTO_UDP) {
-		if (ip_len < ihl + sizeof(udp_hdr_t))
-			return;
-		const udp_hdr_t *udp = (const udp_hdr_t *)(buf + sizeof(*eth) + ihl);
-		size_t udp_len = ntohs(udp->len);
-		if (udp_len < sizeof(*udp) || ihl + udp_len > ip_len)
-			return;
-		net_socket_udp_receive(dev, ip, udp, udp_len);
-		net_dhcp_receive(dev, udp, udp_len);
-		net_dns_receive(dev, udp, udp_len);
-		return;
-	}
-
-	if (ip->proto == IP_PROTO_TCP) {
-		net_tcp_receive(dev, eth->src, ip, ihl, ip_len);
-		return;
-	}
-
-	if (ip->proto == IP_PROTO_ICMP)
-		net_icmp_receive(dev, ip, ihl, ip_len);
+	net_ipv4_rx_info_t rx = {
+		.dev = dev,
+		.src_mac = eth->src,
+		.eth = eth,
+		.ip = ip,
+		.ihl = ihl,
+		.ip_len = ip_len,
+	};
+	(void)net_ipv4_receive(&rx);
 }
 
 void net_poll_until(netdev_t *dev, uint64_t until_tick, int *flag)

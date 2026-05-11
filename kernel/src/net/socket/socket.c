@@ -84,6 +84,7 @@ static int socket_builtin_domains_ready;
 static int socket_add(socket_t *sock);
 static void socket_remove(socket_t *sock);
 static int udp_auto_bind(socket_t *sock);
+static int socket_udp_receive(const net_udp_dgram_t *dgram, void *ctx);
 static int tcp_socket_accept(netdev_t *dev, uint32_t remote_ip,
 							 uint16_t remote_port, net_tcp_conn_t *conn,
 							 void *ctx);
@@ -110,6 +111,12 @@ static const net_socket_domain_ops_t inet_socket_domain = {
 	.validate = inet_socket_validate,
 	.init = inet_socket_init,
 	.destroy = inet_socket_destroy,
+};
+
+static const net_udp_handler_ops_t socket_udp_handler = {
+	.name = "socket",
+	.receive = socket_udp_receive,
+	.ctx = NULL,
 };
 
 int net_socket_register_domain(const net_socket_domain_ops_t *ops)
@@ -408,29 +415,6 @@ static int udp_port_in_use(uint16_t port)
 	return 0;
 }
 
-static uint32_t udp_dns_tx_ip(netdev_t *dev, uint32_t requested_ip,
-								 uint16_t requested_port)
-{
-	if (requested_port == 53 && dev && dev->dns_server &&
-		dev->dns_server != requested_ip)
-		return dev->dns_server;
-
-	return requested_ip;
-}
-
-static int udp_dns_reply_matches(netdev_t *dev, uint32_t requested_ip,
-								 uint32_t src_ip, uint16_t requested_port,
-								 uint16_t src_port)
-{
-	if (requested_port != 53 || src_port != 53)
-		return 0;
-
-	if (src_ip == requested_ip)
-		return 1;
-
-	return dev && dev->dns_server && src_ip == dev->dns_server;
-}
-
 static int udp_auto_bind(socket_t *sock)
 {
 	if (!sock || sock->domain != AF_INET || sock->type != SOCK_DGRAM ||
@@ -475,7 +459,7 @@ static int udp_send_packet(socket_t *sock, uint32_t dst_ip, uint16_t dst_port,
 	if (!dev || !dev->ipv4_addr)
 		return NET_SOCK_ERR_NETUNREACH;
 
-	tx_dst_ip = udp_dns_tx_ip(dev, dst_ip, dst_port);
+	tx_dst_ip = net_udp_resolve_remote_ip(dev, dst_ip, dst_port);
 	if (tx_dst_ip != dst_ip) {
 		log_debug("socket",
 				  "UDP DNS using netdev resolver %u.%u.%u.%u instead of %u.%u.%u.%u",
@@ -1321,21 +1305,17 @@ void net_socket_raw_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
 int socket_init(void)
 {
 	socket_register_builtin_domains();
+	(void)net_udp_register_handler(&socket_udp_handler);
 	log_info("socket", "initializing socket layer");
 	return NET_SOCK_OK;
 }
-void net_socket_udp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
-							const udp_hdr_t *udp, size_t udp_len)
-{
-	if (!ip || !udp || udp_len < sizeof(*udp))
-		return;
 
-	uint16_t dst_port = ntohs(udp->dst_port);
-	uint16_t src_port = ntohs(udp->src_port);
-	uint32_t src_ip = ntohl(ip->src);
-	uint32_t dst_ip = ntohl(ip->dst);
-	const uint8_t *payload = (const uint8_t *)udp + sizeof(*udp);
-	size_t payload_len = udp_len - sizeof(*udp);
+static int socket_udp_receive(const net_udp_dgram_t *dgram, void *ctx)
+{
+	(void)ctx;
+
+	if (!dgram)
+		return NET_SOCK_ERR_INVAL;
 
 	for (socket_entry_t *entry = socket_list; entry; entry = entry->next) {
 		socket_t *sock = entry->socket;
@@ -1344,39 +1324,43 @@ void net_socket_udp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
 			continue;
 
 		inet_sock_t *is = sock->inet_data;
-		if (is->local_port != dst_port)
+		if (is->local_port != dgram->dst_port)
 			continue;
 
-		if (is->local_ip != 0 && is->local_ip != dst_ip)
+		if (is->local_ip != 0 && is->local_ip != dgram->dst_ip)
 			continue;
 
 		if (sock->flags & NET_SOCK_CONNECTED) {
-			if (!udp_dns_reply_matches(dev, is->remote_ip, src_ip,
-								   is->remote_port, src_port) &&
-				(is->remote_ip != src_ip || is->remote_port != src_port))
+			if (!net_udp_peer_matches(dgram->ipv4 ? dgram->ipv4->dev : NULL,
+									  is->remote_ip, is->remote_port,
+									  dgram->src_ip, dgram->src_port))
 				continue;
 		}
 
+		size_t payload_len = dgram->payload_len;
 		if (payload_len > sizeof(is->rx_buf))
 			payload_len = sizeof(is->rx_buf);
 
 		/* Single-packet receive queue for now. Drop if userspace is behind. */
 		if (is->rx_len != 0)
-			return;
+			return 0;
 
-		memcpy(is->rx_buf, payload, payload_len);
+		memcpy(is->rx_buf, dgram->payload, payload_len);
 		is->rx_len = payload_len;
 		is->rx_head = 0;
-		is->packet_src_ip = src_ip;
-		is->packet_src_port = src_port;
+		is->packet_src_ip = dgram->src_ip;
+		is->packet_src_port = dgram->src_port;
 		is->readable = 1;
 
 		log_debug("socket", "UDP rx %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u len=%zu",
-				  (src_ip >> 24) & 0xff, (src_ip >> 16) & 0xff,
-				  (src_ip >> 8) & 0xff, src_ip & 0xff, src_port,
-				  (dst_ip >> 24) & 0xff, (dst_ip >> 16) & 0xff,
-				  (dst_ip >> 8) & 0xff, dst_ip & 0xff, dst_port,
+				  (dgram->src_ip >> 24) & 0xff, (dgram->src_ip >> 16) & 0xff,
+				  (dgram->src_ip >> 8) & 0xff, dgram->src_ip & 0xff,
+				  dgram->src_port, (dgram->dst_ip >> 24) & 0xff,
+				  (dgram->dst_ip >> 16) & 0xff, (dgram->dst_ip >> 8) & 0xff,
+				  dgram->dst_ip & 0xff, dgram->dst_port,
 				  payload_len);
-		return;
+		return 1;
 	}
+
+	return 0;
 }

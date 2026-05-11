@@ -59,6 +59,15 @@ typedef struct tcp_listener {
 static tcp_conn_t *tcp_conns;
 static tcp_listener_t *tcp_listeners;
 
+static int tcp_ipv4_receive(const net_ipv4_rx_info_t *rx, void *ctx);
+
+static const net_ipv4_protocol_ops_t tcp_ipv4_protocol = {
+	.protocol = IP_PROTO_TCP,
+	.name = "tcp",
+	.receive = tcp_ipv4_receive,
+	.ctx = NULL,
+};
+
 static size_t tcp_recv_window_full(const tcp_conn_t *conn)
 {
 	if (!conn || !conn->rx_buf || conn->rx_len >= conn->rx_cap)
@@ -942,4 +951,20 @@ int net_tcp_listen_accept_addr(uint32_t local_ip, uint16_t port,
 							   net_tcp_accept_handler_t handler, void *ctx)
 {
 	return tcp_listener_add(local_ip, port, NULL, handler, ctx);
+}
+
+static int tcp_ipv4_receive(const net_ipv4_rx_info_t *rx, void *ctx)
+{
+	(void)ctx;
+
+	if (!rx || !rx->dev || !rx->src_mac || !rx->ip)
+		return -EINVAL;
+
+	net_tcp_receive(rx->dev, rx->src_mac, rx->ip, rx->ihl, rx->ip_len);
+	return 1;
+}
+
+int net_tcp_init(void)
+{
+	return net_ipv4_register_protocol(&tcp_ipv4_protocol);
 }

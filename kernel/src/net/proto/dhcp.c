@@ -40,6 +40,14 @@ static uint32_t dhcp_dns_server;
 static uint8_t dhcp_seen_type;
 static int dhcp_ready;
 
+static int dhcp_udp_receive(const net_udp_dgram_t *dgram, void *ctx);
+
+static const net_udp_handler_ops_t dhcp_udp_handler = {
+	.name = "dhcp",
+	.receive = dhcp_udp_receive,
+	.ctx = NULL,
+};
+
 static size_t dhcp_add_u8(uint8_t *opts, size_t pos, uint8_t code, uint8_t val)
 {
 	opts[pos++] = code;
@@ -94,21 +102,25 @@ static int send_dhcp(netdev_t *dev, uint8_t type, uint32_t requested_ip,
 							 sizeof(pkt) - sizeof(pkt.options) + pos);
 }
 
-void net_dhcp_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
+static int dhcp_udp_receive(const net_udp_dgram_t *dgram, void *ctx)
 {
-	if (udp_len < sizeof(*udp) + sizeof(dhcp_pkt_t) - 312)
-		return;
-	if (ntohs(udp->src_port) != DHCP_SERVER_PORT ||
-		ntohs(udp->dst_port) != DHCP_CLIENT_PORT)
-		return;
+	(void)ctx;
 
-	const dhcp_pkt_t *pkt = (const dhcp_pkt_t *)((const uint8_t *)udp +
-												 sizeof(*udp));
-	size_t pkt_len = udp_len - sizeof(*udp);
+	if (!dgram || !dgram->ipv4 || !dgram->ipv4->dev || !dgram->udp)
+		return -EINVAL;
+	if (dgram->udp_len < sizeof(*dgram->udp) + sizeof(dhcp_pkt_t) - 312)
+		return 0;
+	if (dgram->src_port != DHCP_SERVER_PORT ||
+		dgram->dst_port != DHCP_CLIENT_PORT)
+		return 0;
+
+	netdev_t *dev = dgram->ipv4->dev;
+	const dhcp_pkt_t *pkt = (const dhcp_pkt_t *)dgram->payload;
+	size_t pkt_len = dgram->payload_len;
 	if (pkt_len < sizeof(*pkt) - sizeof(pkt->options) ||
 		ntohl(pkt->xid) != dhcp_xid || ntohl(pkt->magic) != DHCP_MAGIC ||
 		pkt->op != 2 || memcmp(pkt->chaddr, dev->mac, NET_ETH_ALEN) != 0)
-		return;
+		return 0;
 
 	size_t opt_len = pkt_len - (sizeof(*pkt) - sizeof(pkt->options));
 	size_t pos = 0;
@@ -148,7 +160,7 @@ void net_dhcp_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
 	}
 
 	if (type != DHCP_OFFER && type != DHCP_ACK)
-		return;
+		return 0;
 
 	dhcp_offered_ip = ntohl(pkt->yiaddr);
 	dhcp_server_ip = server;
@@ -157,6 +169,7 @@ void net_dhcp_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
 	dhcp_dns_server = dns;
 	dhcp_seen_type = type;
 	dhcp_ready = 1;
+	return 1;
 }
 
 int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
@@ -217,4 +230,9 @@ int net_dhcp_configure_dev(netdev_t *dev, uint64_t timeout_ms)
 int net_dhcp_configure(uint64_t timeout_ms)
 {
 	return net_dhcp_configure_dev(net_default_dev(), timeout_ms);
+}
+
+int net_dhcp_init(void)
+{
+	return net_udp_register_handler(&dhcp_udp_handler);
 }

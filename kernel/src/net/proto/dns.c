@@ -21,6 +21,14 @@ static uint32_t dns_result_ip;
 static netdev_t *dns_dev;
 static int dns_ready;
 
+static int dns_udp_receive(const net_udp_dgram_t *dgram, void *ctx);
+
+static const net_udp_handler_ops_t dns_udp_handler = {
+	.name = "dns",
+	.receive = dns_udp_receive,
+	.ctx = NULL,
+};
+
 static int ascii_space(char c)
 {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -257,49 +265,54 @@ static int send_dns_query(netdev_t *dev, uint32_t server_ip, const char *name)
 							 dns_query_port, DNS_PORT, query, pos);
 }
 
-void net_dns_receive(netdev_t *dev, const udp_hdr_t *udp, size_t udp_len)
+static int dns_udp_receive(const net_udp_dgram_t *dgram, void *ctx)
 {
-	if (dev != dns_dev)
-		return;
-	if (ntohs(udp->src_port) != DNS_PORT ||
-		ntohs(udp->dst_port) != dns_query_port)
-		return;
-	if (udp_len < sizeof(*udp) + sizeof(dns_hdr_t))
-		return;
+	(void)ctx;
 
-	const uint8_t *msg = (const uint8_t *)udp + sizeof(*udp);
-	size_t len = udp_len - sizeof(*udp);
+	if (!dgram || !dgram->ipv4 || !dgram->udp)
+		return -EINVAL;
+	if (dgram->ipv4->dev != dns_dev)
+		return 0;
+	if (dgram->src_port != DNS_PORT || dgram->dst_port != dns_query_port)
+		return 0;
+	if (dgram->udp_len < sizeof(*dgram->udp) + sizeof(dns_hdr_t))
+		return 0;
+
+	const uint8_t *msg = dgram->payload;
+	size_t len = dgram->payload_len;
 	const dns_hdr_t *hdr = (const dns_hdr_t *)msg;
 	if (ntohs(hdr->id) != dns_query_id || !(ntohs(hdr->flags) & 0x8000))
-		return;
+		return 0;
 
 	size_t pos = sizeof(*hdr);
 	uint16_t qd = ntohs(hdr->qdcount);
 	uint16_t an = ntohs(hdr->ancount);
 	for (uint16_t i = 0; i < qd; i++) {
 		if (dns_skip_name(msg, len, &pos) != 0 || pos + 4 > len)
-			return;
+			return -EINVAL;
 		pos += 4;
 	}
 
 	for (uint16_t i = 0; i < an; i++) {
 		if (dns_skip_name(msg, len, &pos) != 0 || pos + 10 > len)
-			return;
+			return -EINVAL;
 		uint16_t type = ((uint16_t)msg[pos] << 8) | msg[pos + 1];
 		uint16_t klass = ((uint16_t)msg[pos + 2] << 8) | msg[pos + 3];
 		uint16_t rdlen = ((uint16_t)msg[pos + 8] << 8) | msg[pos + 9];
 		pos += 10;
 		if (pos + rdlen > len)
-			return;
+			return -EINVAL;
 		if (type == 1 && klass == 1 && rdlen == 4) {
 			dns_result_ip = ((uint32_t)msg[pos] << 24) |
 							((uint32_t)msg[pos + 1] << 16) |
 							((uint32_t)msg[pos + 2] << 8) | msg[pos + 3];
 			dns_ready = 1;
-			return;
+			return 1;
 		}
 		pos += rdlen;
 	}
+
+	return 0;
 }
 
 int net_dns_resolve_dev(netdev_t *dev, const char *name, uint64_t timeout_ms,
@@ -346,4 +359,9 @@ int net_dns_resolve(const char *name, uint64_t timeout_ms, uint32_t *out_ip)
 	if (!dev)
 		return -ENOENT;
 	return net_dns_resolve_dev(dev, name, timeout_ms, out_ip);
+}
+
+int net_dns_init(void)
+{
+	return net_udp_register_handler(&dns_udp_handler);
 }

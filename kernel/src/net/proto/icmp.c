@@ -14,6 +14,15 @@ static netdev_t *ping_dev;
 static uint64_t ping_started_tick;
 static net_ping_result_t ping_result;
 
+static int icmp_ipv4_receive(const net_ipv4_rx_info_t *rx, void *ctx);
+
+static const net_ipv4_protocol_ops_t icmp_ipv4_protocol = {
+	.protocol = IP_PROTO_ICMP,
+	.name = "icmp",
+	.receive = icmp_ipv4_receive,
+	.ctx = NULL,
+};
+
 static int send_icmp_echo_packet(netdev_t *dev, const uint8_t dst_mac[6],
 								 uint32_t src_ip, uint32_t dst_ip,
 								 uint8_t type, uint16_t ident, uint16_t seq,
@@ -60,38 +69,50 @@ static int send_icmp_echo(netdev_t *dev, const uint8_t dst_mac[6],
 								 ICMP_ECHO_REQUEST, ident, seq, NULL);
 }
 
-void net_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip, size_t ihl,
-					  size_t ip_len)
+static int icmp_ipv4_receive(const net_ipv4_rx_info_t *rx, void *ctx)
 {
-	if (!dev || ntohl(ip->dst) != dev->ipv4_addr)
-		return;
-	if (ip_len < ihl + sizeof(icmp_echo_t))
-		return;
+	(void)ctx;
 
-	const icmp_echo_t *icmp = (const icmp_echo_t *)((const uint8_t *)ip + ihl);
-	net_socket_raw_icmp_receive(dev, ip, ihl, ip_len);
+	if (!rx || !rx->dev || !rx->ip)
+		return -EINVAL;
+	if (ntohl(rx->ip->dst) != rx->dev->ipv4_addr)
+		return 0;
+	if (rx->ip_len < rx->ihl + sizeof(icmp_echo_t))
+		return -EINVAL;
+
+	const icmp_echo_t *icmp =
+		(const icmp_echo_t *)((const uint8_t *)rx->ip + rx->ihl);
+	net_socket_raw_icmp_receive(rx->dev, rx->ip, rx->ihl, rx->ip_len);
 
 	if (icmp->type == ICMP_ECHO_REQUEST) {
-		send_icmp_echo_packet(dev, dev->mac, ntohl(ip->dst), ntohl(ip->src),
+		send_icmp_echo_packet(rx->dev, rx->dev->mac, ntohl(rx->ip->dst),
+							  ntohl(rx->ip->src),
 							  ICMP_ECHO_REPLY, ntohs(icmp->ident),
 							  ntohs(icmp->seq), icmp->payload);
-		return;
+		return 1;
 	}
 
-	if (dev != ping_dev)
-		return;
+	if (rx->dev != ping_dev)
+		return 0;
 	if (icmp->type == ICMP_ECHO_REPLY && ntohs(icmp->ident) == ping_ident &&
-		ntohs(icmp->seq) == ping_seq && ntohl(ip->src) == ping_src) {
+		ntohs(icmp->seq) == ping_seq && ntohl(rx->ip->src) == ping_src) {
 		uint64_t hz = pit_get_hz();
 		uint64_t elapsed_ticks = pit_get_ticks() - ping_started_tick;
 		memset(&ping_result, 0, sizeof(ping_result));
-		ping_result.src_ip = ntohl(ip->src);
+		ping_result.src_ip = ntohl(rx->ip->src);
 		ping_result.seq = ntohs(icmp->seq);
-		ping_result.bytes = (uint16_t)(ip_len - ihl);
-		ping_result.ttl = ip->ttl;
+		ping_result.bytes = (uint16_t)(rx->ip_len - rx->ihl);
+		ping_result.ttl = rx->ip->ttl;
 		ping_result.time_ms = hz ? (elapsed_ticks * 1000) / hz : 0;
 		ping_ready = 1;
 	}
+
+	return 1;
+}
+
+int net_icmp_init(void)
+{
+	return net_ipv4_register_protocol(&icmp_ipv4_protocol);
 }
 
 int net_ping_echo(uint32_t dst_ip, uint16_t ident, uint16_t seq,
