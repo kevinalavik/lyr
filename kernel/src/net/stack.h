@@ -1,5 +1,5 @@
-#ifndef _LYR_NET_INTERNAL_H
-#define _LYR_NET_INTERNAL_H
+#ifndef _LYR_NET_STACK_H
+#define _LYR_NET_STACK_H
 
 #include <net/net.h>
 #include <stddef.h>
@@ -144,4 +144,4 @@ int net_tcp_http_request(netdev_t *dev, uint32_t dst_ip, const char *host,
 						 const char *path, char *buf, size_t len,
 						 size_t *done, uint64_t timeout_ms);
 
-#endif /* _LYR_NET_INTERNAL_H */
+#endif /* _LYR_NET_STACK_H */

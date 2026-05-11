@@ -1,4 +1,4 @@
-#include "internal.h"
+#include "../stack.h"
 #include <dev/pit.h>
 #include <debug/log.h>
 #include <fs/vfs.h>

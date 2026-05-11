@@ -1,4 +1,4 @@
-#include "internal.h"
+#include "../stack.h"
 #include <fs/vfs.h>
 #include <lib/string.h>
 
