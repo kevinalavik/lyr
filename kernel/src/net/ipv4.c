@@ -91,6 +91,17 @@ int net_send_ipv4_icmp(netdev_t *dev, const uint8_t dst_mac[6],
 	ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
 
 	memcpy(body, payload, payload_len);
+	if (payload_len >= 4) {
+		/*
+		 * Raw ICMP sockets hand us the userspace payload verbatim. Normalize the
+		 * checksum here so externally routed echo requests are valid even if the
+		 * caller used host-endian words while building the packet.
+		 */
+		body[2] = 0;
+		body[3] = 0;
+		uint16_t checksum = htons(net_checksum(body, payload_len));
+		memcpy(body + 2, &checksum, sizeof(checksum));
+	}
 
 	if (dst_ip == dev->ipv4_addr) {
 		dev->tx_packets++;
