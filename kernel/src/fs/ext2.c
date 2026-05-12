@@ -115,6 +115,10 @@ static int ext2_create(vfs_node_t *dir, const char *name, size_t len,
 static int ext2_mkdir(vfs_node_t *dir, const char *name, size_t len,
 					  vfs_mode_t mode, const vfs_cred_t *cred,
 					  vfs_node_t **out);
+static int ext2_unlink(vfs_node_t *dir, const char *name, size_t len);
+static int ext2_rmdir(vfs_node_t *dir, const char *name, size_t len);
+static int ext2_rename(vfs_node_t *old_dir, const char *old_name, size_t old_len,
+					   vfs_node_t *new_dir, const char *new_name, size_t new_len);
 static int ext2_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 					 size_t *done);
 static int ext2_write(vfs_node_t *node, uint64_t off, const void *buf,
@@ -129,6 +133,9 @@ static const vfs_ops_t ext2_ops = {
 	.lookup = ext2_lookup,
 	.create = ext2_create,
 	.mkdir = ext2_mkdir,
+	.unlink = ext2_unlink,
+	.rmdir = ext2_rmdir,
+	.rename = ext2_rename,
 	.read = ext2_read,
 	.write = ext2_write,
 	.readdir = ext2_readdir,
@@ -170,6 +177,18 @@ static int publish_mounts(void)
 static uint16_t rec_len_for(size_t name_len)
 {
 	return (uint16_t)((8 + name_len + 3) & ~3u);
+}
+
+static uint8_t file_type_for_mode(vfs_mode_t mode)
+{
+	switch (mode & VFS_S_IFMT) {
+	case VFS_S_IFREG:
+		return 1;
+	case VFS_S_IFDIR:
+		return 2;
+	default:
+		return 0;
+	}
 }
 
 static uint64_t inode_size(const ext2_inode_t *inode)
@@ -845,6 +864,164 @@ static int add_dirent(ext2_node_t *dir, const char *name, size_t len,
 	return r;
 }
 
+static int find_dirent(ext2_node_t *dir, const char *name, size_t len,
+					   uint64_t *entry_off, uint64_t *prev_off,
+					   uint32_t *ino_out, uint16_t *rec_len_out,
+					   uint8_t *name_len_out)
+{
+	uint8_t hdr[8];
+	uint64_t prev = UINT64_MAX;
+
+	for (uint64_t off = 0; off + sizeof(hdr) <= dir->vnode.size;) {
+		int r = read_dir_chunk(dir, off, hdr, sizeof(hdr));
+		if (r != 0)
+			return r;
+
+		uint32_t ino = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+					   ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+		uint16_t rec_len = (uint16_t)hdr[4] | ((uint16_t)hdr[5] << 8);
+		uint8_t name_len = hdr[6];
+		if (rec_len < 8 || off + rec_len > dir->vnode.size)
+			return -EINVAL;
+
+		if (ino && name_len == len) {
+			char tmp[VFS_NAME_MAX + 1];
+			r = read_dir_chunk(dir, off + 8, tmp, name_len);
+			if (r != 0)
+				return r;
+			if (memcmp(tmp, name, len) == 0) {
+				if (entry_off)
+					*entry_off = off;
+				if (prev_off)
+					*prev_off = prev;
+				if (ino_out)
+					*ino_out = ino;
+				if (rec_len_out)
+					*rec_len_out = rec_len;
+				if (name_len_out)
+					*name_len_out = name_len;
+				return 0;
+			}
+		}
+
+		prev = off;
+		off += rec_len;
+	}
+
+	return -ENOENT;
+}
+
+static int remove_dirent(ext2_node_t *dir, const char *name, size_t len)
+{
+	uint64_t off = 0;
+	uint64_t prev = UINT64_MAX;
+	uint16_t rec_len = 0;
+	int r = find_dirent(dir, name, len, &off, &prev, NULL, &rec_len, NULL);
+	if (r != 0)
+		return r;
+
+	if (prev != UINT64_MAX) {
+		uint8_t prev_hdr[8];
+		r = read_dir_chunk(dir, prev, prev_hdr, sizeof(prev_hdr));
+		if (r != 0)
+			return r;
+		uint16_t prev_len = (uint16_t)prev_hdr[4] | ((uint16_t)prev_hdr[5] << 8);
+		if (prev_len < 8 || prev + prev_len > dir->vnode.size)
+			return -EINVAL;
+		prev_len = (uint16_t)(prev_len + rec_len);
+		prev_hdr[4] = (uint8_t)prev_len;
+		prev_hdr[5] = (uint8_t)(prev_len >> 8);
+		return write_dir_chunk(dir, prev, prev_hdr, sizeof(prev_hdr));
+	}
+
+	uint8_t hdr[8];
+	r = read_dir_chunk(dir, off, hdr, sizeof(hdr));
+	if (r != 0)
+		return r;
+	memset(hdr, 0, 4);
+	return write_dir_chunk(dir, off, hdr, sizeof(hdr));
+}
+
+static int replace_dirent_ino(ext2_node_t *dir, const char *name, size_t len,
+							  uint32_t ino, uint8_t file_type)
+{
+	uint64_t off = 0;
+	int r = find_dirent(dir, name, len, &off, NULL, NULL, NULL, NULL);
+	if (r != 0)
+		return r;
+
+	uint8_t hdr[8];
+	r = read_dir_chunk(dir, off, hdr, sizeof(hdr));
+	if (r != 0)
+		return r;
+	hdr[0] = (uint8_t)ino;
+	hdr[1] = (uint8_t)(ino >> 8);
+	hdr[2] = (uint8_t)(ino >> 16);
+	hdr[3] = (uint8_t)(ino >> 24);
+	hdr[7] = file_type;
+	return write_dir_chunk(dir, off, hdr, sizeof(hdr));
+}
+
+static int dir_is_empty(ext2_node_t *dir)
+{
+	uint8_t hdr[8];
+	for (uint64_t off = 0; off + sizeof(hdr) <= dir->vnode.size;) {
+		int r = read_dir_chunk(dir, off, hdr, sizeof(hdr));
+		if (r != 0)
+			return r;
+
+		uint32_t ino = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) |
+					   ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+		uint16_t rec_len = (uint16_t)hdr[4] | ((uint16_t)hdr[5] << 8);
+		uint8_t name_len = hdr[6];
+		if (rec_len < 8 || off + rec_len > dir->vnode.size)
+			return -EINVAL;
+
+		if (ino && name_len) {
+			char tmp[VFS_NAME_MAX + 1];
+			r = read_dir_chunk(dir, off + 8, tmp, name_len);
+			if (r != 0)
+				return r;
+			if (!((name_len == 1 && tmp[0] == '.') ||
+				  (name_len == 2 && tmp[0] == '.' && tmp[1] == '.')))
+				return 0;
+		}
+
+		off += rec_len;
+	}
+
+	return 1;
+}
+
+static int is_ancestor_dir(ext2_node_t *dir, ext2_node_t *candidate_child)
+{
+	vfs_node_t *cur = &candidate_child->vnode;
+	for (;;) {
+		if (cur->ino == dir->vnode.ino) {
+			if (cur != &candidate_child->vnode)
+				vfs_node_release(cur);
+			return 1;
+		}
+		vfs_node_t *parent = NULL;
+		int r = ext2_lookup(cur, "..", 2, &parent);
+		if (r != 0) {
+			if (cur != &candidate_child->vnode)
+				vfs_node_release(cur);
+			return 0;
+		}
+		if (parent->ino == cur->ino) {
+			if (cur != &candidate_child->vnode)
+				vfs_node_release(cur);
+			vfs_node_release(parent);
+			return 0;
+		}
+		vfs_node_t *old = cur;
+		cur = parent;
+		if (old != &candidate_child->vnode)
+			vfs_node_release(old);
+	}
+}
+
 static int ext2_create(vfs_node_t *vdir, const char *name, size_t len,
 					   vfs_mode_t mode, const vfs_cred_t *cred,
 					   vfs_node_t **out)
@@ -1005,6 +1182,259 @@ static int ext2_readdir(vfs_node_t *vdir, size_t index, vfs_dirent_t *out)
 		off += rec_len;
 	}
 	return -ENOENT;
+}
+
+static int ext2_unlink(vfs_node_t *vdir, const char *name, size_t len)
+{
+	if (!VFS_S_ISDIR(vdir->mode))
+		return -ENOTDIR;
+
+	vfs_node_t *target_vnode = NULL;
+	int r = ext2_lookup(vdir, name, len, &target_vnode);
+	if (r != 0)
+		return r;
+
+	if (VFS_S_ISDIR(target_vnode->mode)) {
+		vfs_node_release(target_vnode);
+		return -EISDIR;
+	}
+
+	ext2_node_t *dir = vdir->private_data;
+	ext2_node_t *target = target_vnode->private_data;
+	uint16_t old_links = target->inode.links_count;
+
+	if (target->inode.links_count > 0)
+		target->inode.links_count--;
+	target_vnode->nlink = target->inode.links_count;
+
+	r = write_inode(target->fs, target->ino, &target->inode);
+	if (r == 0)
+		r = remove_dirent(dir, name, len);
+
+	if (r != 0) {
+		target->inode.links_count = old_links;
+		target_vnode->nlink = old_links;
+		(void)write_inode(target->fs, target->ino, &target->inode);
+	}
+
+	vfs_node_release(target_vnode);
+	return r;
+}
+
+static int ext2_rmdir(vfs_node_t *vdir, const char *name, size_t len)
+{
+	if (!VFS_S_ISDIR(vdir->mode))
+		return -ENOTDIR;
+	if ((len == 1 && name[0] == '.') ||
+		(len == 2 && name[0] == '.' && name[1] == '.'))
+		return -EINVAL;
+
+	vfs_node_t *target_vnode = NULL;
+	int r = ext2_lookup(vdir, name, len, &target_vnode);
+	if (r != 0)
+		return r;
+
+	if (!VFS_S_ISDIR(target_vnode->mode)) {
+		vfs_node_release(target_vnode);
+		return -ENOTDIR;
+	}
+
+	ext2_node_t *dir = vdir->private_data;
+	ext2_node_t *target = target_vnode->private_data;
+
+	r = dir_is_empty(target);
+	if (r < 0) {
+		vfs_node_release(target_vnode);
+		return r;
+	}
+	if (!r) {
+		vfs_node_release(target_vnode);
+		return -ENOTEMPTY;
+	}
+	if (dir->inode.links_count == 0) {
+		vfs_node_release(target_vnode);
+		return -EINVAL;
+	}
+
+	uint16_t old_parent_links = dir->inode.links_count;
+	uint16_t old_target_links = target->inode.links_count;
+
+	dir->inode.links_count--;
+	vdir->nlink = dir->inode.links_count;
+	target->inode.links_count = 0;
+	target_vnode->nlink = 0;
+
+	r = write_inode(target->fs, target->ino, &target->inode);
+	if (r == 0)
+		r = write_inode(dir->fs, dir->ino, &dir->inode);
+	if (r == 0)
+		r = remove_dirent(dir, name, len);
+
+	if (r != 0) {
+		dir->inode.links_count = old_parent_links;
+		vdir->nlink = old_parent_links;
+		target->inode.links_count = old_target_links;
+		target_vnode->nlink = old_target_links;
+		(void)write_inode(dir->fs, dir->ino, &dir->inode);
+		(void)write_inode(target->fs, target->ino, &target->inode);
+	}
+
+	vfs_node_release(target_vnode);
+	return r;
+}
+
+static int ext2_rename(vfs_node_t *old_dir_node, const char *old_name, size_t old_len,
+					   vfs_node_t *new_dir_node, const char *new_name, size_t new_len)
+{
+	if (!VFS_S_ISDIR(old_dir_node->mode) || !VFS_S_ISDIR(new_dir_node->mode))
+		return -ENOTDIR;
+	if (old_len == 0 || old_len > VFS_NAME_MAX || new_len == 0 ||
+		new_len > VFS_NAME_MAX)
+		return -ENAMETOOLONG;
+	if ((old_len == 1 && old_name[0] == '.') ||
+		(old_len == 2 && old_name[0] == '.' && old_name[1] == '.') ||
+		(new_len == 1 && new_name[0] == '.') ||
+		(new_len == 2 && new_name[0] == '.' && new_name[1] == '.'))
+		return -EINVAL;
+
+	ext2_node_t *old_dir = old_dir_node->private_data;
+	ext2_node_t *new_dir = new_dir_node->private_data;
+	if (old_dir->fs != new_dir->fs)
+		return -EXDEV;
+
+	vfs_node_t *source_vnode = NULL;
+	int r = ext2_lookup(old_dir_node, old_name, old_len, &source_vnode);
+	if (r != 0)
+		return r;
+	ext2_node_t *source = source_vnode->private_data;
+
+	if (old_dir_node == new_dir_node && old_len == new_len &&
+		memcmp(old_name, new_name, old_len) == 0) {
+		vfs_node_release(source_vnode);
+		return 0;
+	}
+
+	if (VFS_S_ISDIR(source_vnode->mode) &&
+		is_ancestor_dir(source, new_dir)) {
+		vfs_node_release(source_vnode);
+		return -EINVAL;
+	}
+
+	vfs_node_t *target_vnode = NULL;
+	r = ext2_lookup(new_dir_node, new_name, new_len, &target_vnode);
+	if (r == 0) {
+		ext2_node_t *target = target_vnode->private_data;
+		if (target_vnode->ino == source_vnode->ino) {
+			vfs_node_release(target_vnode);
+			vfs_node_release(source_vnode);
+			return 0;
+		}
+		if (VFS_S_ISDIR(source_vnode->mode) != VFS_S_ISDIR(target_vnode->mode)) {
+			r = VFS_S_ISDIR(source_vnode->mode) ? -ENOTDIR : -EISDIR;
+			vfs_node_release(target_vnode);
+			vfs_node_release(source_vnode);
+			return r;
+		}
+		if (VFS_S_ISDIR(target_vnode->mode)) {
+			r = dir_is_empty(target);
+			if (r < 0) {
+				vfs_node_release(target_vnode);
+				vfs_node_release(source_vnode);
+				return r;
+			}
+			if (!r) {
+				vfs_node_release(target_vnode);
+				vfs_node_release(source_vnode);
+				return -ENOTEMPTY;
+			}
+			target->inode.links_count = 0;
+			target_vnode->nlink = 0;
+			r = write_inode(target->fs, target->ino, &target->inode);
+			if (r != 0) {
+				vfs_node_release(target_vnode);
+				vfs_node_release(source_vnode);
+				return r;
+			}
+			if (new_dir != old_dir) {
+				if (new_dir->inode.links_count == 0) {
+					vfs_node_release(target_vnode);
+					vfs_node_release(source_vnode);
+					return -EINVAL;
+				}
+				new_dir->inode.links_count--;
+				new_dir_node->nlink = new_dir->inode.links_count;
+				r = write_inode(new_dir->fs, new_dir->ino, &new_dir->inode);
+				if (r != 0) {
+					vfs_node_release(target_vnode);
+					vfs_node_release(source_vnode);
+					return r;
+				}
+			}
+		} else {
+			if (target->inode.links_count > 0)
+				target->inode.links_count--;
+			target_vnode->nlink = target->inode.links_count;
+			r = write_inode(target->fs, target->ino, &target->inode);
+			if (r != 0) {
+				vfs_node_release(target_vnode);
+				vfs_node_release(source_vnode);
+				return r;
+			}
+		}
+
+		r = remove_dirent(new_dir, new_name, new_len);
+		vfs_node_release(target_vnode);
+		if (r != 0) {
+			vfs_node_release(source_vnode);
+			return r;
+		}
+	} else if (r != -ENOENT) {
+		vfs_node_release(source_vnode);
+		return r;
+	}
+
+	r = add_dirent(new_dir, new_name, new_len, source->ino,
+				   file_type_for_mode(source_vnode->mode));
+	if (r != 0) {
+		vfs_node_release(source_vnode);
+		return r;
+	}
+
+	r = remove_dirent(old_dir, old_name, old_len);
+	if (r != 0) {
+		remove_dirent(new_dir, new_name, new_len);
+		vfs_node_release(source_vnode);
+		return r;
+	}
+
+	if (VFS_S_ISDIR(source_vnode->mode) && old_dir != new_dir) {
+		r = replace_dirent_ino(source, "..", 2, new_dir->ino, 2);
+		if (r != 0) {
+			vfs_node_release(source_vnode);
+			return r;
+		}
+		if (old_dir->inode.links_count == 0) {
+			vfs_node_release(source_vnode);
+			return -EINVAL;
+		}
+		old_dir->inode.links_count--;
+		old_dir_node->nlink = old_dir->inode.links_count;
+		r = write_inode(old_dir->fs, old_dir->ino, &old_dir->inode);
+		if (r != 0) {
+			vfs_node_release(source_vnode);
+			return r;
+		}
+		new_dir->inode.links_count++;
+		new_dir_node->nlink = new_dir->inode.links_count;
+		r = write_inode(new_dir->fs, new_dir->ino, &new_dir->inode);
+		if (r != 0) {
+			vfs_node_release(source_vnode);
+			return r;
+		}
+	}
+
+	vfs_node_release(source_vnode);
+	return 0;
 }
 
 static void ext2_release(vfs_node_t *vnode)

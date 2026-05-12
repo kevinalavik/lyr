@@ -81,6 +81,13 @@ static inline long lyr_unlink(const char *path)
 	return lyr_syscall3(SYS_UNLINK, (long)path, 0, 0);
 }
 
+static inline long lyr_renameat(int olddirfd, const char *old_path,
+								int newdirfd, const char *new_path)
+{
+	return lyr_syscall4(SYS_RENAMEAT, olddirfd, (long)old_path, newdirfd,
+						(long)new_path);
+}
+
 static inline long lyr_chroot(const char *path)
 {
 	return lyr_syscall3(SYS_CHROOT, (long)path, 0, 0);

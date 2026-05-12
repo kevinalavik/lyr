@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sh.h>
 #include <sys/wait.h>
+#include <lyr/input.h>
 
 static void set_status_env(int status)
 {
@@ -67,7 +68,8 @@ static char **argv_from_range(sh_command_t *cmd, size_t first, size_t end)
 	return argv;
 }
 
-static int parse_pipeline(sh_command_t *cmd, size_t *bounds, size_t *stage_count)
+static int parse_pipeline(sh_command_t *cmd, size_t *bounds,
+						  size_t *stage_count)
 {
 	size_t stage = 0;
 	size_t start = 0;
@@ -155,6 +157,14 @@ static int run_external(sh_shell_t *sh, char **argv)
 		status = 128 + WTERMSIG(status);
 	else
 		status = 126;
+
+	if (interactive) {
+		lyr_kbd_t kbd;
+		if (lyr_kbd_open(&kbd) == 0) {
+			lyr_kbd_flush(&kbd);
+			lyr_kbd_close(&kbd);
+		}
+	}
 
 	if (interactive && shell_pgrp > 0)
 		(void)tcsetpgrp(STDIN_FILENO, shell_pgrp);
@@ -267,7 +277,7 @@ static int run_pipeline(sh_shell_t *sh, sh_command_t *cmd)
 
 		if (pid == 0)
 			run_pipeline_stage(sh, cmd, bounds[i * 2], bounds[i * 2 + 1], in_fd,
-							  out_fd, pgid, interactive);
+							   out_fd, pgid, interactive);
 
 		if (pgid == 0)
 			pgid = pid;
@@ -318,6 +328,13 @@ int sh_execute(sh_shell_t *sh, sh_command_t *cmd)
 {
 	if (cmd->words.n == 0)
 		return 0;
+
+	int expand_status = sh_expand_globs(cmd);
+	if (expand_status != 0) {
+		sh->last_status = 1;
+		set_status_env(1);
+		return 1;
+	}
 
 	for (size_t i = 0; i < cmd->words.n; i++) {
 		if (strcmp(cmd->words.v[i], "|") == 0) {

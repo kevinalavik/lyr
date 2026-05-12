@@ -43,6 +43,7 @@
 #define SYS_FD_CLOEXEC 1
 #define SYS_O_CLOEXEC 02000000u
 #define SYS_O_NONBLOCK SOCK_NONBLOCK
+#define SYS_AT_FDCWD (-100)
 
 #define EXEC_ARG_MAX 32
 #define EXEC_STR_MAX 256
@@ -1307,6 +1308,24 @@ static long sys_unlink_handler(interrupt_frame_t *frame)
 		return r;
 
 	return vfs_unlink(path, syscall_current_cred());
+}
+
+static long sys_renameat_handler(interrupt_frame_t *frame)
+{
+	if ((int)frame->rdi != SYS_AT_FDCWD || (int)frame->rdx != SYS_AT_FDCWD)
+		return -ENOSYS;
+
+	char old_path[SYS_PATH_MAX];
+	char new_path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rsi, old_path, sizeof(old_path));
+	if (r != 0)
+		return r;
+
+	r = syscall_copy_user_path_abs(frame->r10, new_path, sizeof(new_path));
+	if (r != 0)
+		return r;
+
+	return vfs_rename(old_path, new_path, syscall_current_cred());
 }
 
 static long sys_chmod_handler(interrupt_frame_t *frame)
@@ -3039,6 +3058,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_MKDIR] = sys_mkdir_handler,
 	[SYS_RMDIR] = sys_rmdir_handler,
 	[SYS_UNLINK] = sys_unlink_handler,
+	[SYS_RENAMEAT] = sys_renameat_handler,
 	[SYS_CHROOT] = sys_chroot_handler,
 	[SYS_MOUNT] = sys_mount_handler,
 	[SYS_CHANGE_ROOT] = sys_change_root_handler,

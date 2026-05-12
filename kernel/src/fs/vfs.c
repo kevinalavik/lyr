@@ -667,6 +667,95 @@ int vfs_rmdir(const char *path, const vfs_cred_t *cred)
 	return _unlink_common(path, cred, 1);
 }
 
+int vfs_rename(const char *old_path, const char *new_path, const vfs_cred_t *cred)
+{
+	cred = _cred_or_root(cred);
+	log_debug("vfs", "rename old=%s new=%s uid=%u",
+			  old_path ? old_path : "(null)", new_path ? new_path : "(null)",
+			  cred->uid);
+	if (!old_path || !new_path)
+		return -EINVAL;
+	if (!strcmp(old_path, new_path))
+		return 0;
+
+	vfs_node_t *old_parent = NULL;
+	vfs_node_t *new_parent = NULL;
+	vfs_node_t *source = NULL;
+	vfs_node_t *target = NULL;
+	char old_name[VFS_NAME_MAX + 1];
+	char new_name[VFS_NAME_MAX + 1];
+	size_t old_len = 0;
+	size_t new_len = 0;
+
+	int r = _resolve_parent(old_path, cred, &old_parent, old_name, &old_len);
+	if (r != 0)
+		return r;
+
+	r = _resolve_parent(new_path, cred, &new_parent, new_name, &new_len);
+	if (r != 0) {
+		vfs_node_release(old_parent);
+		return r;
+	}
+
+	r = vfs_access(old_parent, cred, VFS_W_OK | VFS_X_OK);
+	if (r == 0)
+		r = vfs_access(new_parent, cred, VFS_W_OK | VFS_X_OK);
+	if (r != 0)
+		goto done;
+
+	if (!old_parent->ops || !old_parent->ops->lookup) {
+		r = -ENOSYS;
+		goto done;
+	}
+
+	r = old_parent->ops->lookup(old_parent, old_name, old_len, &source);
+	if (r != 0)
+		goto done;
+
+	if ((old_parent->mode & VFS_S_ISVTX) && cred->uid != 0 &&
+		cred->uid != old_parent->uid && cred->uid != source->uid) {
+		r = -EPERM;
+		goto done;
+	}
+
+	if (old_parent->ops != new_parent->ops) {
+		r = -EXDEV;
+		goto done;
+	}
+
+	if (!old_parent->ops->rename) {
+		r = -ENOSYS;
+		goto done;
+	}
+
+	if (new_parent->ops && new_parent->ops->lookup) {
+		r = new_parent->ops->lookup(new_parent, new_name, new_len, &target);
+		if (r == 0) {
+			if (target == source) {
+				r = 0;
+				goto done;
+			}
+			if ((new_parent->mode & VFS_S_ISVTX) && cred->uid != 0 &&
+				cred->uid != new_parent->uid && cred->uid != target->uid) {
+				r = -EPERM;
+				goto done;
+			}
+		} else if (r != -ENOENT) {
+			goto done;
+		}
+	}
+
+	r = old_parent->ops->rename(old_parent, old_name, old_len, new_parent,
+								new_name, new_len);
+
+done:
+	vfs_node_release(target);
+	vfs_node_release(source);
+	vfs_node_release(new_parent);
+	vfs_node_release(old_parent);
+	return r;
+}
+
 int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
 {
 	cred = _cred_or_root(cred);

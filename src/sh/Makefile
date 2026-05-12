@@ -15,6 +15,7 @@ OBJ_DIR := obj
 PROJECT_OBJ := $(patsubst %.c,$(OBJ_DIR)/%.c.o,$(PROJECT_SRC))
 
 CFLAGS := -g -O2 -pipe -Wall -Wextra -Werror -std=gnu11
+CFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
 CFLAGS += -I include
 
 LDFLAGS :=

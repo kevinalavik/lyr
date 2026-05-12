@@ -32,6 +32,11 @@ typedef struct sh_command_list {
 	size_t cap;
 } sh_command_list_t;
 
+#define SH_NOEXPAND_BEGIN '\001'
+#define SH_NOEXPAND_END '\002'
+#define SH_NOGLOB_BEGIN '\003'
+#define SH_NOGLOB_END '\004'
+
 void *sh_xmalloc(size_t size);
 void *sh_xrealloc(void *ptr, size_t size);
 char *sh_xstrdup(const char *s);
@@ -54,6 +59,8 @@ char *sh_read_line(FILE *fp);
 void sh_restore_terminal(void);
 char *sh_expand_vars(const char *input);
 char *sh_expand_prompt(const char *ps1);
+char *sh_unquote_word(const char *input);
+int sh_expand_globs(sh_command_t *cmd);
 int sh_parse_line(const char *line, sh_command_list_t *out, char **err);
 
 int sh_builtin_run(sh_shell_t *sh, int argc, char **argv, int *handled);

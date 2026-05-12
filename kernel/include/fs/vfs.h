@@ -102,6 +102,8 @@ struct vfs_ops {
 				 const vfs_cred_t *cred, vfs_node_t **out);
 	int (*unlink)(vfs_node_t *dir, const char *name, size_t len);
 	int (*rmdir)(vfs_node_t *dir, const char *name, size_t len);
+	int (*rename)(vfs_node_t *old_dir, const char *old_name, size_t old_len,
+				  vfs_node_t *new_dir, const char *new_name, size_t new_len);
 	int (*read)(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 				size_t *done);
 	int (*write)(vfs_node_t *node, uint64_t off, const void *buf, size_t len,
@@ -164,6 +166,7 @@ int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off);
 int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);
 int vfs_unlink(const char *path, const vfs_cred_t *cred);
 int vfs_rmdir(const char *path, const vfs_cred_t *cred);
+int vfs_rename(const char *old_path, const char *new_path, const vfs_cred_t *cred);
 int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);
 int vfs_chown(const char *path, vfs_uid_t uid, vfs_gid_t gid,
 			  const vfs_cred_t *cred);

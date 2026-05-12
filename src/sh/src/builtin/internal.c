@@ -55,7 +55,7 @@ int sh_builtin_help(void)
 	puts("  printf FMT ...  formatted output");
 	puts("  pwd             print current directory");
 	puts("  read NAME       read one line into variable");
-	puts("  rm [-f] FILE... remove files");
+	puts("  rm [-frR] FILE... remove files or directories");
 	puts("  rmdir DIR...    remove empty directories");
 	puts("  set [NAME=V]    print or set variables");
 	puts("  source FILE     run script in this shell");

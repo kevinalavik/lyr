@@ -69,6 +69,7 @@ enum {
 	SYS_GETPGID,
 	SYS_SETPGID,
 	SYS_SETSID,
+	SYS_RENAMEAT,
 };
 
 #ifdef LYR_KERNEL

@@ -402,10 +402,16 @@ static int console_ioctl(void *ctx, unsigned long request, void *arg)
 
 	case LYR_TCSETS:
 	case LYR_TCSETSW:
+		if (!CONSOLE_USER_ARG_OK(sizeof(tty->termios), 0))
+			return arg ? -EFAULT : -EINVAL;
+		memcpy(&tty->termios, arg, sizeof(tty->termios));
+		return 0;
+
 	case LYR_TCSETSF:
 		if (!CONSOLE_USER_ARG_OK(sizeof(tty->termios), 0))
 			return arg ? -EFAULT : -EINVAL;
 		memcpy(&tty->termios, arg, sizeof(tty->termios));
+		console_input_flush(tty);
 		return 0;
 
 	case LYR_TIOCGWINSZ:

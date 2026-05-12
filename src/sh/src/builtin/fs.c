@@ -632,17 +632,78 @@ int sh_builtin_touch(int argc, char **argv)
 	return status;
 }
 
+static int rm_remove_path(const char *path, int recursive, int force)
+{
+	struct stat st;
+
+	if (lstat(path, &st) != 0) {
+		if (force && errno == ENOENT)
+			return 0;
+		return -1;
+	}
+
+	if (S_ISDIR(st.st_mode)) {
+		if (!recursive) {
+			errno = EISDIR;
+			return -1;
+		}
+
+		DIR *dir = opendir(path);
+		if (!dir)
+			return -1;
+
+		int status = 0;
+		for (;;) {
+			struct dirent *ent = readdir(dir);
+			if (!ent)
+				break;
+			if ((strcmp(ent->d_name, ".") == 0) ||
+				(strcmp(ent->d_name, "..") == 0))
+				continue;
+
+			char *child = sh_path_join(path, ent->d_name);
+			if (rm_remove_path(child, recursive, force) != 0)
+				status = -1;
+			free(child);
+		}
+
+		closedir(dir);
+		if (status != 0)
+			return -1;
+		return rmdir(path);
+	}
+
+	return unlink(path);
+}
+
 int sh_builtin_rm(int argc, char **argv)
 {
 	int force = 0;
+	int recursive = 0;
 	int status = 0;
 	int saw_path = 0;
 
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--help") == 0) {
-			puts("usage: rm [-f] [file...]");
+			puts("usage: rm [-f] [-rR] [file...]");
 			puts("  -f    ignore missing files");
+			puts("  -r    remove directories and their contents recursively");
+			puts("  -R    same as -r");
 			return 0;
+		}
+
+		if (strcmp(argv[i], "--") == 0) {
+			i++;
+			for (; i < argc; i++) {
+				saw_path = 1;
+				if (rm_remove_path(argv[i], recursive, force) != 0) {
+					if (force && errno == ENOENT)
+						continue;
+					fprintf(stderr, "rm: %s: %s\n", argv[i], strerror(errno));
+					status = 1;
+				}
+			}
+			break;
 		}
 
 		if (argv[i][0] == '-' && argv[i][1]) {
@@ -651,9 +712,13 @@ int sh_builtin_rm(int argc, char **argv)
 				case 'f':
 					force = 1;
 					break;
+				case 'r':
+				case 'R':
+					recursive = 1;
+					break;
 				default:
 					fprintf(stderr, "rm: invalid option -- '%c'\n", argv[i][j]);
-					fprintf(stderr, "usage: rm [-f] [file...]\n");
+					fprintf(stderr, "usage: rm [-f] [-rR] [file...]\n");
 					return 2;
 				}
 			}
@@ -663,7 +728,7 @@ int sh_builtin_rm(int argc, char **argv)
 
 		saw_path = 1;
 
-		if (unlink(argv[i]) != 0) {
+		if (rm_remove_path(argv[i], recursive, force) != 0) {
 			if (force && errno == ENOENT)
 				continue;
 

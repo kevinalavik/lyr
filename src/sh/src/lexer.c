@@ -3,9 +3,6 @@
 #include <string.h>
 #include <sh.h>
 
-#define SH_NOEXPAND_BEGIN '\001'
-#define SH_NOEXPAND_END '\002'
-
 static void sb_add(char **buf, size_t *len, size_t *cap, char c)
 {
 	if (*len + 1 >= *cap) {
@@ -20,7 +17,9 @@ static void sb_add(char **buf, size_t *len, size_t *cap, char c)
 static void sb_start_word(char **buf, size_t *len, size_t *cap)
 {
 	if (!*buf) {
-		sb_add(buf, len, cap, '\0');
+		*cap = 64;
+		*buf = sh_xmalloc(*cap);
+		(*buf)[0] = '\0';
 		*len = 0;
 	}
 }
@@ -115,8 +114,10 @@ int sh_parse_line(const char *line, sh_command_list_t *out, char **err)
 
 			if (!sq) {
 				sb_add(&word, &wlen, &wcap, SH_NOEXPAND_BEGIN);
+				sb_add(&word, &wlen, &wcap, SH_NOGLOB_BEGIN);
 				sq = 1;
 			} else {
+				sb_add(&word, &wlen, &wcap, SH_NOGLOB_END);
 				sb_add(&word, &wlen, &wcap, SH_NOEXPAND_END);
 				sq = 0;
 			}
@@ -126,7 +127,14 @@ int sh_parse_line(const char *line, sh_command_list_t *out, char **err)
 
 		if (c == '"' && !sq) {
 			sb_start_word(&word, &wlen, &wcap);
-			dq = !dq;
+
+			if (!dq) {
+				sb_add(&word, &wlen, &wcap, SH_NOGLOB_BEGIN);
+				dq = 1;
+			} else {
+				sb_add(&word, &wlen, &wcap, SH_NOGLOB_END);
+				dq = 0;
+			}
 			continue;
 		}
 

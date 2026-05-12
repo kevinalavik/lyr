@@ -153,7 +153,7 @@ static const uint8_t sc2_normal[SC2_SIZE] = {
 	/* 0x5E */ 0,
 	/* 0x5F */ 0,
 	/* 0x60 */ 0,
-	/* 0x61 */ 0,
+	/* 0x61 */ LYR_KEY_102ND,
 	/* 0x62 */ 0,
 	/* 0x63 */ 0,
 	/* 0x64 */ 0,

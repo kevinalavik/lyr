@@ -90,6 +90,7 @@
 #define LYR_KEY_KPDOT 83
 #define LYR_KEY_F11 87
 #define LYR_KEY_F12 88
+#define LYR_KEY_102ND 86
 #define LYR_KEY_KPENTER 96
 #define LYR_KEY_RIGHTCTRL 97
 #define LYR_KEY_KPSLASH 98

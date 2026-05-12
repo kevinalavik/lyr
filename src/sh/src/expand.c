@@ -6,9 +6,6 @@
 #include <unistd.h>
 #include <sh.h>
 
-#define SH_NOEXPAND_BEGIN '\001'
-#define SH_NOEXPAND_END '\002'
-
 static void append_char(char **out, size_t *len, size_t *cap, char c)
 {
 	if (*len + 1 >= *cap) {

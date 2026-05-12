@@ -28,6 +28,8 @@ static int tmpfs_mkdir(vfs_node_t *dir, const char *name, size_t len,
 					   vfs_node_t **out);
 static int tmpfs_unlink(vfs_node_t *dir, const char *name, size_t len);
 static int tmpfs_rmdir(vfs_node_t *dir, const char *name, size_t len);
+static int tmpfs_rename(vfs_node_t *old_dir, const char *old_name, size_t old_len,
+						vfs_node_t *new_dir, const char *new_name, size_t new_len);
 static int tmpfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 					  size_t *done);
 static int tmpfs_write(vfs_node_t *node, uint64_t off, const void *buf,
@@ -44,6 +46,7 @@ static const vfs_ops_t tmpfs_ops = {
 	.mkdir = tmpfs_mkdir,
 	.unlink = tmpfs_unlink,
 	.rmdir = tmpfs_rmdir,
+	.rename = tmpfs_rename,
 	.read = tmpfs_read,
 	.write = tmpfs_write,
 	.readdir = tmpfs_readdir,
@@ -271,6 +274,61 @@ static int tmpfs_rmdir(vfs_node_t *dir_node, const char *name, size_t len)
 	_unlink_child(dir, child);
 	child->vnode.nlink = 0;
 	vfs_node_release(&child->vnode);
+	return 0;
+}
+
+static int tmpfs_rename(vfs_node_t *old_dir_node, const char *old_name, size_t old_len,
+						vfs_node_t *new_dir_node, const char *new_name, size_t new_len)
+{
+	if (!VFS_S_ISDIR(old_dir_node->mode) || !VFS_S_ISDIR(new_dir_node->mode))
+		return -ENOTDIR;
+	if (new_len == 0 || new_len > VFS_NAME_MAX)
+		return new_len == 0 ? -EINVAL : -ENAMETOOLONG;
+
+	tmpfs_node_t *old_dir = _to_tmpfs(old_dir_node);
+	tmpfs_node_t *new_dir = _to_tmpfs(new_dir_node);
+	tmpfs_node_t *old_root = old_dir;
+	tmpfs_node_t *new_root = new_dir;
+	while (old_root->parent != old_root)
+		old_root = old_root->parent;
+	while (new_root->parent != new_root)
+		new_root = new_root->parent;
+	if (old_root != new_root)
+		return -EXDEV;
+
+	tmpfs_node_t *child = _find_child(old_dir, old_name, old_len);
+	if (!child)
+		return -ENOENT;
+
+	if (old_dir == new_dir && _name_eq(child, new_name, new_len))
+		return 0;
+
+	if (VFS_S_ISDIR(child->vnode.mode)) {
+		for (tmpfs_node_t *cur = new_dir; cur; cur = cur->parent) {
+			if (cur == child)
+				return -EINVAL;
+			if (cur == cur->parent)
+				break;
+		}
+	}
+
+	tmpfs_node_t *target = _find_child(new_dir, new_name, new_len);
+	if (target) {
+		if (target == child)
+			return 0;
+		if (VFS_S_ISDIR(child->vnode.mode) != VFS_S_ISDIR(target->vnode.mode))
+			return VFS_S_ISDIR(child->vnode.mode) ? -ENOTDIR : -EISDIR;
+		if (VFS_S_ISDIR(target->vnode.mode) && target->children)
+			return -ENOTEMPTY;
+		_unlink_child(new_dir, target);
+		target->vnode.nlink = 0;
+		vfs_node_release(&target->vnode);
+	}
+
+	_unlink_child(old_dir, child);
+	memcpy(child->name, new_name, new_len);
+	child->name[new_len] = '\0';
+	_insert_child(new_dir, child);
 	return 0;
 }
 
