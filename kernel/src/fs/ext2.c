@@ -123,6 +123,8 @@ static int ext2_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
 					 size_t *done);
 static int ext2_write(vfs_node_t *node, uint64_t off, const void *buf,
 					  size_t len, size_t *done);
+static int ext2_open(vfs_file_t *file);
+static int ext2_close(vfs_file_t *file);
 static int ext2_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 static int ext2_truncate(vfs_node_t *node, uint64_t size);
 static void ext2_release(vfs_node_t *node);
@@ -138,6 +140,8 @@ static const vfs_ops_t ext2_ops = {
 	.rename = ext2_rename,
 	.read = ext2_read,
 	.write = ext2_write,
+	.open = ext2_open,
+	.close = ext2_close,
 	.readdir = ext2_readdir,
 	.truncate = ext2_truncate,
 	.release = ext2_release,
@@ -683,6 +687,34 @@ static int ext2_write(vfs_node_t *vnode, uint64_t off, const void *buf,
 	kfree(blk);
 	if (done)
 		*done = copied;
+	return 0;
+}
+
+static int ext2_open(vfs_file_t *file)
+{
+	if (!file || !file->node)
+		return -EBADF;
+
+	/*
+	 * ext2 does not currently need per-open state.  The hook still matters
+	 * because the VFS may call filesystem-specific open() before handing the
+	 * descriptor to userspace; returning success here makes regular files and
+	 * directories explicitly openable on ext2 instead of falling through to a
+	 * missing filesystem operation.
+	 */
+	if (VFS_S_ISREG(file->node->mode) || VFS_S_ISDIR(file->node->mode))
+		return 0;
+
+	return -ENOSYS;
+}
+
+static int ext2_close(vfs_file_t *file)
+{
+	if (!file || !file->node)
+		return -EBADF;
+
+	/* No per-file ext2 state is allocated by ext2_open(). */
+	file->private_data = NULL;
 	return 0;
 }
 

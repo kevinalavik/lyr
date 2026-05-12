@@ -22,6 +22,7 @@ typedef struct {
 } __attribute__((packed)) gdt_t;
 
 void gdt_init();
+void gdt_init_cpu(uint32_t cpu_index);
 void gdt_tss_init(uint64_t rsp0);
 void gdt_tss_init_cpu(uint32_t cpu_index, uint64_t rsp0);
 void gdt_set_kernel_stack(uint64_t rsp0);

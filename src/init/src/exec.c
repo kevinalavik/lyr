@@ -627,6 +627,30 @@ static int execute_command(struct runtime *rt, const struct command *cmd)
 		return run_program(rt, &argv[1]);
 	}
 
+	if (strcmp(argv[0], "sleep") == 0) {
+		char *end;
+		unsigned long secs;
+
+		if (cmd->argc != 2) {
+			fprintf(stderr, "init: line %d: sleep usage: sleep <seconds>\n",
+					cmd->line);
+			return -1;
+		}
+
+		errno = 0;
+		secs = strtoul(argv[1], &end, 10);
+		if (errno != 0 || !end || *end != '\0') {
+			fprintf(stderr, "init: line %d: invalid sleep value: %s\n",
+					cmd->line, argv[1]);
+			return -1;
+		}
+
+		while (sleep((unsigned int)secs) != 0)
+			;
+
+		return 0;
+	}
+
 	if (strcmp(argv[0], "spawn") == 0 || strcmp(argv[0], "start") == 0) {
 		if (cmd->argc < 2) {
 			fprintf(stderr,

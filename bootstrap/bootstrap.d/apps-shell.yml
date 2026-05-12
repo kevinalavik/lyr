@@ -2,6 +2,15 @@ sources:
   - name: sh
     subdir: sources
 
+  - name: bash
+    subdir: sources
+    version: '5.3'
+    url: 'https://ftp.sunet.se/mirror/gnu.org/gnu/bash/bash-5.3.tar.gz'
+    format: 'tar.gz'
+    extract_path: 'bash-5.3'
+    checksum: 'sha256:0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba'
+    patch-path-strip: 1
+
 packages:
   - name: sh
     labels: [ x86_64 ]
@@ -28,3 +37,31 @@ packages:
           - 'TOOLCHAIN_PREFIX=x86_64-lyr-'
           - 'DESTDIR=@SYSROOT_DIR@'
           - 'PREFIX=/'
+
+  - name: bash
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: bash
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--without-bash-malloc'
+          - '--disable-nls'
+          - '--disable-loadable-builtins'
+        environ:
+          ac_cv_func_wcswidth: 'no'
+          bash_cv_getcwd_malloc: 'yes'
+
+    build:
+      - args: ['make', '-j@PARALLELISM@']
+      - args: ['make', 'DESTDIR=@THIS_COLLECT_DIR@', 'install']
+      - args: ['ln', '-sf', 'bash', '@THIS_COLLECT_DIR@/usr/bin/sh']

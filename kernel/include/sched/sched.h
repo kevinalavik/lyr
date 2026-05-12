@@ -76,9 +76,22 @@ typedef struct pcb {
 	uint32_t fd_flags[SCHED_FILE_MAX];
 	sched_sigaction_t sigactions[SCHED_NSIG + 1];
 	uint64_t pending_signals;
+	/* job-control state (protected by sched_lock) */
+	bool
+		stopped; /* process is currently stopped by SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU */
+	int stop_signal; /* which signal caused the stop */
+	bool stop_reported; /* WIFSTOPPED status already returned to waitpid */
+	bool continued; /* process resumed via SIGCONT since last waitpid */
+	/* Bumped under sched_lock whenever the child's wait-state changes so
+	 * that a parent sleeping in waitpid() wakes on the next scheduler tick. */
+	atomic_uint child_event;
 	struct pcb *next;
 } pcb_t;
 
+/* POSIX waitpid() option flags */
+#define SCHED_WNOHANG 1
+#define SCHED_WUNTRACED 2
+#define SCHED_WCONTINUED 8
 
 typedef struct sched_process_info {
 	pid_t pid;
@@ -125,6 +138,7 @@ void sched_init(void);
 int sched_is_initialized(void);
 
 pcb_t *sched_process_create(const char *name, vas_t *vas);
+void sched_process_discard(pcb_t *process);
 tcb_t *sched_create_thread(pcb_t *process, const char *name,
 						   thread_entry_t entry, void *arg);
 tcb_t *sched_create_thread_on_cpu(pcb_t *process, const char *name,
@@ -143,7 +157,8 @@ int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 					   int *status_out);
 int sched_process_signal(pcb_t *sender, pid_t pid, int signal);
 int sched_process_signal_group(pid_t pgid, int signal);
-int sched_signal_action(pcb_t *process, int signal, const sched_sigaction_t *act,
+int sched_signal_action(pcb_t *process, int signal,
+						const sched_sigaction_t *act,
 						sched_sigaction_t *oldact);
 int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
 						  uint64_t *oldset);
@@ -151,8 +166,7 @@ int sched_signal_is_pending(tcb_t *thread);
 interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame);
 interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame);
 interrupt_frame_t *sched_handle_user_exception(interrupt_frame_t *frame,
-											   int signal,
-											   const char *reason);
+											   int signal, const char *reason);
 int sched_process_getpgid(pcb_t *caller, pid_t pid, pid_t *pgid_out);
 int sched_process_setpgid(pcb_t *caller, pid_t pid, pid_t pgid);
 int sched_process_setsid(pcb_t *caller, pid_t *sid_out);

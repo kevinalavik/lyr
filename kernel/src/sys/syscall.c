@@ -684,8 +684,8 @@ static long sys_write_handler(interrupt_frame_t *frame)
 		} else if (vfs_pipe_is(file)) {
 			r = vfs_pipe_write(file, kbuf, chunk, &done);
 			if (r == -EPIPE) {
-				(void)sched_process_signal(thread->process, thread->process->pid,
-									   SYS_SIGPIPE);
+				(void)sched_process_signal(thread->process,
+										   thread->process->pid, SYS_SIGPIPE);
 			}
 		} else {
 			r = vfs_write(file, kbuf, chunk, &done);
@@ -976,6 +976,40 @@ static long sys_stat_handler(interrupt_frame_t *frame)
 
 	if (r != 0)
 		return r;
+
+	return syscall_copy_stat_out(frame->rsi, &st);
+}
+
+static long sys_fstat_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	int fd = (int)frame->rdi;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return -EBADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+
+	if (!file || !file->node)
+		return -EBADF;
+
+	vfs_node_t *node = file->node;
+	vfs_stat_t st;
+	memset(&st, 0, sizeof(st));
+
+	st.dev = node->dev;
+	st.ino = node->ino;
+	st.mode = node->mode;
+	st.uid = node->uid;
+	st.gid = node->gid;
+	st.size = node->size;
+	st.nlink = node->nlink;
+	st.blksize = 4096;
+	st.blocks = (node->size + 511) / 512;
 
 	return syscall_copy_stat_out(frame->rsi, &st);
 }
@@ -1533,8 +1567,6 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	if (old_vas)
 		vas_destroy(old_vas);
 
-	process_setup_fds(thread->process);
-
 	memset(frame, 0, sizeof(*frame));
 	frame->rip = image.entry;
 	frame->cs = USER_CS;
@@ -1644,12 +1676,11 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 
 	if (shared) {
 		vfs_node_t *node = vfs_file_node(file);
-		if (!node || !node->ops ||
-			(!node->ops->mmap && !node->ops->get_page))
+		if (!node || !node->ops || (!node->ops->mmap && !node->ops->get_page))
 			return -ENOSYS;
 
-		uint64_t mapped =
-			vfs_mmap(file, thread->process->vas, addr, offset, length, vmm_flags);
+		uint64_t mapped = vfs_mmap(file, thread->process->vas, addr, offset,
+								   length, vmm_flags);
 
 		if (!mapped)
 			return -ENOMEM;
@@ -1714,10 +1745,29 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 	if (status_user && !syscall_user_range_write_ok(status_user, sizeof(int)))
 		return -EFAULT;
 
+	/* Map Linux WNOHANG/WUNTRACED/WCONTINUED to our internal flags */
+	int kern_opts = 0;
+	if (options & 1)
+		kern_opts |= SCHED_WNOHANG;
+	if (options & 2)
+		kern_opts |= SCHED_WUNTRACED;
+	if (options & 8)
+		kern_opts |= SCHED_WCONTINUED;
+	/* Reject unknown bits */
+	if (options & ~(1 | 2 | 8))
+		return -EINVAL;
+
 	for (;;) {
 		pid_t waited = 0;
 		int status = 0;
-		int r = sched_process_wait(process, pid, options, &waited, &status);
+
+		/* Snapshot child_event before the poll so we can detect
+		 * new events that arrive between the poll returning -EAGAIN
+		 * and us going to sleep. */
+		unsigned ev_before =
+			atomic_load_explicit(&process->child_event, memory_order_acquire);
+
+		int r = sched_process_wait(process, pid, kern_opts, &waited, &status);
 
 		if (r == 0) {
 			if (status_user && waited != 0) {
@@ -1725,29 +1775,47 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 				if (r != 0)
 					return r;
 			}
-
 			return waited;
 		}
 
-		if (r == -EAGAIN) {
-			r = syscall_interrupted();
-			if (r != 0)
-				return r;
+		if (r == -ECHILD)
+			return r;
 
-			time_timeout_t timeout;
-			int tr = time_timeout_after_ms(-1, &timeout);
+		if (r != -EAGAIN)
+			return r;
 
-			if (tr != 0)
-				return tr;
-
-			time_sleep_until_interrupt_or_timeout(&timeout);
-			r = syscall_interrupted();
-			if (r != 0)
-				return r;
-			continue;
+		/* WNOHANG: return 0 immediately */
+		if (kern_opts & SCHED_WNOHANG) {
+			if (status_user) {
+				int zero = 0;
+				syscall_copy_to_user(status_user, &zero, sizeof(zero));
+			}
+			return 0;
 		}
 
-		return r;
+		/* Check for a non-SIGCHLD signal that should interrupt us */
+		if (syscall_interrupted())
+			return -EINTR;
+
+		/* Sleep until a child changes state.  We use a short finite
+		 * timeout so that events posted between the poll and sleep are
+		 * not missed; the child_event counter is the authoritative
+		 * wakeup source. */
+		time_timeout_t timeout;
+		time_timeout_after_ms(50, &timeout);
+		time_sleep_until_interrupt_or_timeout(&timeout);
+
+		/* Woken by timer or interrupt: check for a real signal first */
+		if (syscall_interrupted())
+			return -EINTR;
+
+		/* If child_event didn't advance and timeout didn't fire yet,
+		 * keep waiting; otherwise loop back and re-poll. */
+		unsigned ev_after =
+			atomic_load_explicit(&process->child_event, memory_order_acquire);
+		(void)ev_before;
+		(void)ev_after;
+		/* Always loop: sched_process_wait is cheap */
 	}
 }
 
@@ -1786,6 +1854,7 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 			for (int j = 0; j < SCHED_FILE_MAX; j++)
 				syscall_close_file_slot(&child->files[j]);
 
+			sched_process_discard(child);
 			return -ENOMEM;
 		}
 
@@ -1798,6 +1867,7 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 		for (int i = 0; i < SCHED_FILE_MAX; i++)
 			syscall_close_file_slot(&child->files[i]);
 
+		sched_process_discard(child);
 		return -ENOMEM;
 	}
 
@@ -2637,7 +2707,8 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 				kfree(readfds);
 				return -ENOMEM;
 			}
-			if (syscall_copy_from_user(writefds, writefds_ptr, set_bytes) != 0) {
+			if (syscall_copy_from_user(writefds, writefds_ptr, set_bytes) !=
+				0) {
 				kfree(writefds);
 				kfree(readfds);
 				return -EFAULT;
@@ -2651,7 +2722,8 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 				kfree(readfds);
 				return -ENOMEM;
 			}
-			if (syscall_copy_from_user(exceptfds, exceptfds_ptr, set_bytes) != 0) {
+			if (syscall_copy_from_user(exceptfds, exceptfds_ptr, set_bytes) !=
+				0) {
 				kfree(exceptfds);
 				kfree(writefds);
 				kfree(readfds);
@@ -2726,15 +2798,14 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 					continue;
 
 				if (readfds && (fds[i].revents &
-									(LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLHUP |
-									 LYR_POLLERR | LYR_POLLNVAL))) {
+								(LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLHUP |
+								 LYR_POLLERR | LYR_POLLNVAL))) {
 					sys_pselect_set_add(readfds, i);
 				}
 
-				if (writefds &&
-					(fds[i].revents &
-					 (LYR_POLLOUT | LYR_POLLWRNORM | LYR_POLLHUP | LYR_POLLERR |
-					  LYR_POLLNVAL))) {
+				if (writefds && (fds[i].revents &
+								 (LYR_POLLOUT | LYR_POLLWRNORM | LYR_POLLHUP |
+								  LYR_POLLERR | LYR_POLLNVAL))) {
 					sys_pselect_set_add(writefds, i);
 				}
 
@@ -2855,6 +2926,100 @@ static long sys_getegid_handler(interrupt_frame_t *frame)
 		return -EBADF;
 
 	return (long)process->egid;
+}
+
+static long sys_getresuid_handler(interrupt_frame_t *frame)
+{
+	pcb_t *process = syscall_current_process();
+
+	if (!process)
+		return -EBADF;
+
+	if (frame->rdi) {
+		int r = syscall_copy_to_user(frame->rdi, &process->ruid,
+									 sizeof(process->ruid));
+		if (r != 0)
+			return r;
+	}
+
+	if (frame->rsi) {
+		int r = syscall_copy_to_user(frame->rsi, &process->euid,
+									 sizeof(process->euid));
+		if (r != 0)
+			return r;
+	}
+
+	if (frame->rdx) {
+		int r = syscall_copy_to_user(frame->rdx, &process->suid,
+									 sizeof(process->suid));
+		if (r != 0)
+			return r;
+	}
+
+	return 0;
+}
+
+static long sys_getresgid_handler(interrupt_frame_t *frame)
+{
+	pcb_t *process = syscall_current_process();
+
+	if (!process)
+		return -EBADF;
+
+	if (frame->rdi) {
+		int r = syscall_copy_to_user(frame->rdi, &process->rgid,
+									 sizeof(process->rgid));
+		if (r != 0)
+			return r;
+	}
+
+	if (frame->rsi) {
+		int r = syscall_copy_to_user(frame->rsi, &process->egid,
+									 sizeof(process->egid));
+		if (r != 0)
+			return r;
+	}
+
+	if (frame->rdx) {
+		int r = syscall_copy_to_user(frame->rdx, &process->sgid,
+									 sizeof(process->sgid));
+		if (r != 0)
+			return r;
+	}
+
+	return 0;
+}
+
+static long sys_getgroups_handler(interrupt_frame_t *frame)
+{
+	pcb_t *process = syscall_current_process();
+	size_t size = (size_t)frame->rdi;
+	size_t count;
+
+	if (!process)
+		return -EBADF;
+
+	count = process->cred.group_count;
+	if (count > VFS_SUPP_GROUP_MAX)
+		count = VFS_SUPP_GROUP_MAX;
+
+	if (size == 0)
+		return (long)count;
+
+	if (size < count)
+		return -EINVAL;
+
+	if (!frame->rsi && count)
+		return -EFAULT;
+
+	if (count) {
+		int r = syscall_copy_to_user(frame->rsi, process->cred.groups,
+									 count * sizeof(process->cred.groups[0]));
+		if (r != 0)
+			return r;
+	}
+
+	return (long)count;
 }
 
 static long sys_setuid_handler(interrupt_frame_t *frame)
@@ -3043,6 +3208,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_OPEN] = sys_open_handler,
 	[SYS_CLOSE] = sys_close_handler,
 	[SYS_STAT] = sys_stat_handler,
+	[SYS_FSTAT] = sys_fstat_handler,
 	[SYS_LSEEK] = sys_lseek_handler,
 	[SYS_ACCESS] = sys_access_handler,
 	[SYS_GETDENTS] = sys_getdents_handler,
@@ -3101,6 +3267,9 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_GETEUID] = sys_geteuid_handler,
 	[SYS_GETGID] = sys_getgid_handler,
 	[SYS_GETEGID] = sys_getegid_handler,
+	[SYS_GETRESUID] = sys_getresuid_handler,
+	[SYS_GETRESGID] = sys_getresgid_handler,
+	[SYS_GETGROUPS] = sys_getgroups_handler,
 	[SYS_SETUID] = sys_setuid_handler,
 	[SYS_SETEUID] = sys_seteuid_handler,
 	[SYS_SETGID] = sys_setgid_handler,

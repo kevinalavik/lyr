@@ -99,7 +99,6 @@ static void name_set(char *dst, size_t dst_len, const char *src)
 	dst[i] = '\0';
 }
 
-
 static void process_refresh_cred(pcb_t *process)
 {
 	if (!process)
@@ -385,17 +384,6 @@ static void process_unlink_locked(pcb_t *process)
 	}
 }
 
-static int waitpid_match(pid_t wanted, const pcb_t *child)
-{
-	if (!child)
-		return 0;
-
-	if (wanted == -1)
-		return 1;
-
-	return wanted > 0 && child->pid == wanted;
-}
-
 typedef enum process_exit_action {
 	PROCESS_EXIT_NONE,
 	PROCESS_EXIT_ZOMBIE,
@@ -472,7 +460,6 @@ static process_exit_action_t process_remove_thread(tcb_t *thread, int status)
 	return action;
 }
 
-
 static void process_reparent_children(pid_t old_parent, pid_t new_parent)
 {
 	if (old_parent <= 0)
@@ -499,7 +486,6 @@ static void process_note_zombie(pcb_t *process)
 	log_trace("sched", "process pid=%d (%s) became zombie", process->pid,
 			  process->name);
 }
-
 
 static uint64_t signal_mask_valid(uint64_t mask)
 {
@@ -530,6 +516,9 @@ static void process_notify_parent_signal(pid_t parent_pid, int signal)
 			continue;
 
 		parent->pending_signals |= SCHED_SIGNAL_BIT(signal);
+		/* Wake any waitpid() sleeping on this parent */
+		atomic_fetch_add_explicit(&parent->child_event, 1,
+								  memory_order_release);
 		log_trace("sched", "queued signal=%d for parent pid=%d", signal,
 				  parent->pid);
 		break;
@@ -619,8 +608,8 @@ static int process_has_interrupting_signal_locked(const pcb_t *process,
 }
 
 static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
-							   interrupt_frame_t *frame, int status,
-							   const char *how);
+								 interrupt_frame_t *frame, int status,
+								 const char *how);
 
 static void switch_to_thread(cpu_local_t *cpu, tcb_t *next)
 {
@@ -644,11 +633,10 @@ static interrupt_frame_t *schedule_locked(cpu_local_t *cpu,
 	if (prev && prev->state == TCB_RUNNING)
 		prev->rsp = (uint64_t)frame;
 
-	if (prev && !prev->is_idle && prev->state == TCB_RUNNING &&
-		prev->process &&
+	if (prev && !prev->is_idle && prev->state == TCB_RUNNING && prev->process &&
 		atomic_load_explicit(&prev->process->dying, memory_order_acquire))
 		thread_finish_locked(cpu, prev, frame, prev->process->exit_status,
-						   " via signal");
+							 " via signal");
 
 	if (enqueue_current && prev && !prev->is_idle &&
 		prev->state == TCB_RUNNING) {
@@ -664,7 +652,7 @@ static interrupt_frame_t *schedule_locked(cpu_local_t *cpu,
 		if (next->process &&
 			atomic_load_explicit(&next->process->dying, memory_order_acquire)) {
 			thread_finish_locked(cpu, next, NULL, next->process->exit_status,
-							   " via signal");
+								 " via signal");
 			next = NULL;
 			continue;
 		}
@@ -736,8 +724,7 @@ void process_setup_fds(pcb_t *process)
 		r = vfs_open("/dev/null", VFS_O_RDONLY, 0, sched_process_cred(process),
 					 &process->files[0]);
 	if (r != 0) {
-		log_err("sched",
-				"failed to open stdin for process %s status=%s(%d)",
+		log_err("sched", "failed to open stdin for process %s status=%s(%d)",
 				process->name, errno_name(r), r);
 		atomic_store_explicit(&process->dying, true, memory_order_release);
 		return;
@@ -746,10 +733,8 @@ void process_setup_fds(pcb_t *process)
 	r = vfs_open("/dev/stdout", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[1]);
 	if (r != 0) {
-		log_err(
-			"sched",
-			"failed to open stdout for process %s status=%s(%d)",
-			process->name, errno_name(r), r);
+		log_err("sched", "failed to open stdout for process %s status=%s(%d)",
+				process->name, errno_name(r), r);
 		vfs_close(process->files[0]);
 		process->files[0] = NULL;
 		atomic_store_explicit(&process->dying, true, memory_order_release);
@@ -759,10 +744,8 @@ void process_setup_fds(pcb_t *process)
 	r = vfs_open("/dev/stderr", VFS_O_WRONLY, 0, sched_process_cred(process),
 				 &process->files[2]);
 	if (r != 0) {
-		log_err(
-			"sched",
-			"failed to open stderr for process %s status=%s(%d)",
-			process->name, errno_name(r), r);
+		log_err("sched", "failed to open stderr for process %s status=%s(%d)",
+				process->name, errno_name(r), r);
 		vfs_close(process->files[0]);
 		vfs_close(process->files[1]);
 		process->files[0] = NULL;
@@ -799,7 +782,12 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 	spinlock_init(&process->lock);
 	atomic_init(&process->thread_count, 0);
 	atomic_init(&process->dying, false);
+	atomic_init(&process->child_event, 0);
 	process->zombie = false;
+	process->stopped = false;
+	process->stop_signal = 0;
+	process->stop_reported = false;
+	process->continued = false;
 	process->exit_status = 0;
 	process->ruid = 0;
 	process->rgid = 0;
@@ -862,6 +850,36 @@ static void process_destroy(pcb_t *process)
 	log_debug("sched", "destroyed process pid=%d name=%s", pid, name);
 }
 
+void sched_process_discard(pcb_t *process)
+{
+	if (!process)
+		return;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+	process_unlink_locked(process);
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	pid_t pid = process->pid;
+	char name[sizeof(process->name)];
+	name_set(name, sizeof(name), process->name);
+
+	if (process->owns_vas && process->vas)
+		vas_destroy(process->vas);
+
+	for (size_t i = 0; i < SCHED_FILE_MAX; i++) {
+		if (!process->files[i])
+			continue;
+		vfs_close(process->files[i]);
+		process->files[i] = NULL;
+	}
+
+	id_free(&pid_pool, pid);
+	kfree(process);
+	log_debug("sched", "discarded process pid=%d name=%s", pid, name);
+}
+
 static void thread_queue_reap(cpu_local_t *cpu, tcb_t *thread)
 {
 	spinlock_acquire(&cpu->reap_lock);
@@ -921,8 +939,8 @@ static void sched_reap_current_cpu(void)
 }
 
 static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
-							   interrupt_frame_t *frame, int status,
-							   const char *how)
+								 interrupt_frame_t *frame, int status,
+								 const char *how)
 {
 	if (!cpu || !thread || thread->state == TCB_ZOMBIE)
 		return;
@@ -945,8 +963,9 @@ static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
 	process_exit_action_t action = process_remove_thread(thread, status);
 	if (action != PROCESS_EXIT_NONE)
 		process_reparent_children(exited_pid, new_parent);
-	if (action == PROCESS_EXIT_ZOMBIE)
+	if (action == PROCESS_EXIT_ZOMBIE) {
 		process_notify_parent_signal(parent_pid, SCHED_SIGCHLD);
+	}
 	thread->reap_process = action == PROCESS_EXIT_REAP;
 	atomic_fetch_sub_explicit(&cpu->sched_load, 1, memory_order_release);
 	thread_queue_reap(cpu, thread);
@@ -959,11 +978,11 @@ static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
 }
 
 static void thread_finish_current_locked(cpu_local_t *cpu,
-									 interrupt_frame_t *frame, int status,
-									 const char *how)
+										 interrupt_frame_t *frame, int status,
+										 const char *how)
 {
 	thread_finish_locked(cpu, cpu ? cpu->current_thread : NULL, frame, status,
-					  how);
+						 how);
 }
 
 static void thread_bootstrap(tcb_t *thread)
@@ -1189,9 +1208,8 @@ tcb_t *sched_create_user_thread(pcb_t *process, const char *name, uint64_t rip,
 	return thread;
 }
 
-
 tcb_t *sched_fork_thread(pcb_t *process, const char *name,
-                         interrupt_frame_t *parent_frame)
+						 interrupt_frame_t *parent_frame)
 {
 	if (!sched_is_initialized() || !process || !parent_frame ||
 		atomic_load_explicit(&process->dying, memory_order_acquire))
@@ -1224,9 +1242,11 @@ tcb_t *sched_fork_thread(pcb_t *process, const char *name,
 	spinlock_release(&cpu->runq_lock);
 	irq_restore(flags);
 
-	log_trace("sched", "forked user tid=%d pid=%d (%s) on cpu%u rip=0x%llx rsp=0x%llx load=%u",
-			  thread->tid, process->pid, thread->name, cpu->cpu_index,
-			  child_frame->rip, child_frame->rsp, atomic_load(&cpu->sched_load));
+	log_trace(
+		"sched",
+		"forked user tid=%d pid=%d (%s) on cpu%u rip=0x%llx rsp=0x%llx load=%u",
+		thread->tid, process->pid, thread->name, cpu->cpu_index,
+		child_frame->rip, child_frame->rsp, atomic_load(&cpu->sched_load));
 	return thread;
 }
 
@@ -1236,8 +1256,8 @@ tcb_t *sched_current(void)
 	return cpu ? cpu->current_thread : NULL;
 }
 
-
-static void process_copy_info_locked(const pcb_t *process, sched_process_info_t *out)
+static void process_copy_info_locked(const pcb_t *process,
+									 sched_process_info_t *out)
 {
 	memset(out, 0, sizeof(*out));
 	out->pid = process->pid;
@@ -1254,8 +1274,8 @@ static void process_copy_info_locked(const pcb_t *process, sched_process_info_t 
 	 */
 	out->supervised = !out->kernel && process->ppid > 0;
 	out->exit_status = process->exit_status;
-	out->thread_count = atomic_load_explicit(&process->thread_count,
-										   memory_order_acquire);
+	out->thread_count =
+		atomic_load_explicit(&process->thread_count, memory_order_acquire);
 	out->ruid = process->ruid;
 	out->euid = process->euid;
 	out->rgid = process->rgid;
@@ -1489,13 +1509,50 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 
 		if (signal == SCHED_SIGKILL) {
 			process_terminate_by_signal_locked(target, signal);
+		} else if (signal == SCHED_SIGSTOP || /* 19 */
+				   signal == 20 /* SIGTSTP */ || signal == 21 /* SIGTTIN */ ||
+				   signal == 22 /* SIGTTOU */) {
+			/* Stop the process and record state */
+			target->stopped = true;
+			target->stop_signal = signal;
+			target->stop_reported = false;
+			target->continued = false;
+			target->pending_signals |= SCHED_SIGNAL_BIT(signal);
+			/* Notify parent so waitpid() wakes */
+			for (pcb_t *parent = process_list; parent; parent = parent->next) {
+				if (parent->pid == target->ppid) {
+					atomic_fetch_add_explicit(&parent->child_event, 1,
+											  memory_order_release);
+					parent->pending_signals |= SCHED_SIGNAL_BIT(SCHED_SIGCHLD);
+					break;
+				}
+			}
+		} else if (signal == 18 /* SIGCONT */) {
+			/* Resume a stopped process */
+			if (target->stopped) {
+				target->stopped = false;
+				target->continued = true;
+				target->stop_reported = false;
+				for (pcb_t *parent = process_list; parent;
+					 parent = parent->next) {
+					if (parent->pid == target->ppid) {
+						atomic_fetch_add_explicit(&parent->child_event, 1,
+												  memory_order_release);
+						parent->pending_signals |=
+							SCHED_SIGNAL_BIT(SCHED_SIGCHLD);
+						break;
+					}
+				}
+			}
+			target->pending_signals |= SCHED_SIGNAL_BIT(signal);
+			(void)process_any_thread_can_take_locked(target, signal);
 		} else {
 			target->pending_signals |= SCHED_SIGNAL_BIT(signal);
 			(void)process_any_thread_can_take_locked(target, signal);
 		}
 
-		log_trace("sched", "pid=%d signalled by pid=%d signal=%d",
-				  target->pid, sender->pid, signal);
+		log_trace("sched", "pid=%d signalled by pid=%d signal=%d", target->pid,
+				  sender->pid, signal);
 
 		if (pid > 0)
 			break;
@@ -1533,9 +1590,8 @@ int sched_process_signal_group(pid_t pgid, int signal)
 	return delivered ? 0 : -ESRCH;
 }
 
-
-int sched_signal_action(pcb_t *process, int signal, const sched_sigaction_t *act,
-						sched_sigaction_t *oldact)
+int sched_signal_action(pcb_t *process, int signal,
+						const sched_sigaction_t *act, sched_sigaction_t *oldact)
 {
 	if (!process || !signal_valid(signal))
 		return -EINVAL;
@@ -1574,17 +1630,17 @@ int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
 	uint64_t mask = signal_mask_valid(*set);
 
 	switch (how) {
-		case SCHED_SIG_BLOCK:
-			thread->signal_mask |= mask;
-			break;
-		case SCHED_SIG_UNBLOCK:
-			thread->signal_mask &= ~mask;
-			break;
-		case SCHED_SIG_SETMASK:
-			thread->signal_mask = mask;
-			break;
-		default:
-			return -EINVAL;
+	case SCHED_SIG_BLOCK:
+		thread->signal_mask |= mask;
+		break;
+	case SCHED_SIG_UNBLOCK:
+		thread->signal_mask &= ~mask;
+		break;
+	case SCHED_SIG_SETMASK:
+		thread->signal_mask = mask;
+		break;
+	default:
+		return -EINVAL;
 	}
 
 	thread->signal_mask &= ~SCHED_UNBLOCKABLE_MASK;
@@ -1625,7 +1681,7 @@ interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame)
 			return frame;
 		spinlock_acquire(&cpu->runq_lock);
 		thread_finish_current_locked(cpu, frame, process->exit_status,
-								 " via signal");
+									 " via signal");
 		interrupt_frame_t *next = schedule_locked(cpu, frame, false);
 		spinlock_release(&cpu->runq_lock);
 		return next;
@@ -1672,14 +1728,15 @@ interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame)
 			return frame;
 		spinlock_acquire(&cpu->runq_lock);
 		thread_finish_current_locked(cpu, frame, process->exit_status,
-								 " via signal");
+									 " via signal");
 		interrupt_frame_t *next = schedule_locked(cpu, frame, false);
 		spinlock_release(&cpu->runq_lock);
 		return next;
 	}
 
 	uint64_t old_mask = thread->signal_mask;
-	thread->signal_mask |= signal_mask_valid(action.mask) | SCHED_SIGNAL_BIT(signal);
+	thread->signal_mask |=
+		signal_mask_valid(action.mask) | SCHED_SIGNAL_BIT(signal);
 	thread->signal_mask &= ~SCHED_UNBLOCKABLE_MASK;
 
 	spinlock_release(&sched_lock);
@@ -1710,6 +1767,12 @@ interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame)
 	return frame;
 }
 
+static int signal_frame_range_ok(uint64_t sp)
+{
+	return sp < VAS_USER_END &&
+		   sizeof(user_signal_frame_t) <= VAS_USER_END - sp;
+}
+
 interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame)
 {
 	if (!frame)
@@ -1719,14 +1782,31 @@ interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame)
 	if (!thread)
 		return frame;
 
-	uint64_t sp = frame->rsp;
-	if (sp >= VAS_USER_END || sp + sizeof(user_signal_frame_t) > VAS_USER_END) {
-		frame->rax = (uint64_t)(int64_t)-EINVAL;
-		return frame;
+	/*
+	 * The signal trampoline is entered by returning from the user handler.
+	 * We placed the restorer address at the first word of user_signal_frame_t,
+	 * so the handler's RET consumes that word before the restorer performs the
+	 * sigreturn syscall.  Therefore the syscall-time user RSP usually points
+	 * one word past the start of our signal frame.  Accept the old layout too
+	 * so manually-invoked restorers or older user code keep working.
+	 */
+	uint64_t candidates[2] = { frame->rsp, frame->rsp - sizeof(uint64_t) };
+	user_signal_frame_t *sf = NULL;
+
+	for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		uint64_t sp = candidates[i];
+		if (!signal_frame_range_ok(sp))
+			continue;
+
+		user_signal_frame_t *cand =
+			(user_signal_frame_t *)(uintptr_t)sp;
+		if (cand->magic == SCHED_SIGFRAME_MAGIC) {
+			sf = cand;
+			break;
+		}
 	}
 
-	user_signal_frame_t *sf = (user_signal_frame_t *)(uintptr_t)sp;
-	if (sf->magic != SCHED_SIGFRAME_MAGIC) {
+	if (!sf) {
 		frame->rax = (uint64_t)(int64_t)-EINVAL;
 		return frame;
 	}
@@ -1738,8 +1818,7 @@ interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame)
 }
 
 interrupt_frame_t *sched_handle_user_exception(interrupt_frame_t *frame,
-											   int signal,
-											   const char *reason)
+											   int signal, const char *reason)
 {
 	if (!sched_is_initialized() || !frame || (frame->cs & 3) != 3)
 		return NULL;
@@ -1752,27 +1831,28 @@ interrupt_frame_t *sched_handle_user_exception(interrupt_frame_t *frame,
 
 	uint64_t fault_addr = frame->vector == 14 ? frame->cr2 : 0;
 	if (frame->vector == 14) {
-		const char *access = (frame->err & 16) ? "exec" :
-							 ((frame->err & 2) ? "write" : "read");
+		const char *access =
+			(frame->err & 16) ? "exec" : ((frame->err & 2) ? "write" : "read");
 		vad_t *vad = process->vas ? vas_find(process->vas, fault_addr) : NULL;
-		const char *code = (!vad || !(frame->err & 1)) ? "SEGV_MAPERR"
-													   : "SEGV_ACCERR";
+		const char *code =
+			(!vad || !(frame->err & 1)) ? "SEGV_MAPERR" : "SEGV_ACCERR";
 
-		log_err("trap",
-				"%s[%d]: segfault at %016llx ip %016llx sp %016llx %s error %llx (%s)",
-				process->name, process->pid, fault_addr, frame->rip, frame->rsp,
-				access, frame->err, code);
+		log_err(
+			"trap",
+			"%s[%d]: segfault at %016llx ip %016llx sp %016llx %s error %llx (%s)",
+			process->name, process->pid, fault_addr, frame->rip, frame->rsp,
+			access, frame->err, code);
 	} else {
 		log_err("trap",
 				"%s[%d]: trap %s signal %d ip %016llx sp %016llx error %llx",
-				process->name, process->pid, reason ? reason : "exception", signal,
-				frame->rip, frame->rsp, frame->err);
+				process->name, process->pid, reason ? reason : "exception",
+				signal, frame->rip, frame->rsp, frame->err);
 	}
 
 	uint64_t flags = irq_save();
 	spinlock_acquire(&sched_lock);
-	process_terminate_by_signal_locked(process,
-									   signal_valid(signal) ? signal : SCHED_SIGABRT);
+	process_terminate_by_signal_locked(
+		process, signal_valid(signal) ? signal : SCHED_SIGABRT);
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
 
@@ -1790,49 +1870,129 @@ int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,
 	if (!parent || !pid_out || !status_out)
 		return -EINVAL;
 
-	/* Only WNOHANG is meaningful until job control exists. */
-	if (options & ~1)
+	/* Reject unknown option bits (WNOHANG=1, WUNTRACED=2, WCONTINUED=8) */
+	if (options & ~(SCHED_WNOHANG | SCHED_WUNTRACED | SCHED_WCONTINUED))
 		return -EINVAL;
 
-	if (pid == 0 || pid < -1)
-		return -ENOSYS;
+	/* pid==0 means "same process group as caller" */
+	pid_t match_pgid = 0;
+	if (pid == 0)
+		match_pgid = parent->pgid;
+
+	/* Snapshot child_event before scanning so we can detect new events */
+	unsigned ev_before =
+		atomic_load_explicit(&parent->child_event, memory_order_acquire);
 
 	pcb_t *zombie = NULL;
+	pcb_t *stopped = NULL;
+	pcb_t *continued = NULL;
 	bool have_child = false;
-	uint64_t flags = irq_save();
 
+	uint64_t flags = irq_save();
 	spinlock_acquire(&sched_lock);
+
 	for (pcb_t *child = process_list; child; child = child->next) {
-		if (child->ppid != parent->pid || !waitpid_match(pid, child))
+		/* Match: specific pid, any child (-1), same pgid (0 or <-1) */
+		int match;
+		if (pid > 0)
+			match = (child->pid == pid);
+		else if (pid == -1)
+			match = 1;
+		else /* pid==0 or pid<-1 */
+			match = (child->pgid == (pid == 0 ? match_pgid : -pid));
+
+		if (!match)
+			continue;
+		if (child->ppid != parent->pid)
 			continue;
 
 		have_child = true;
-		if (child->zombie) {
+
+		if (child->zombie && !zombie) {
 			zombie = child;
 			process_unlink_locked(child);
-			break;
+			break; /* zombie takes priority */
+		}
+
+		if (!stopped && (options & SCHED_WUNTRACED) && child->stopped &&
+			!child->stop_reported) {
+			stopped = child;
+		}
+
+		if (!continued && (options & SCHED_WCONTINUED) && child->continued) {
+			continued = child;
 		}
 	}
+
 	spinlock_release(&sched_lock);
 	irq_restore(flags);
 
 	if (!have_child)
 		return -ECHILD;
 
-	if (!zombie) {
-		if (options & 1) {
-			*pid_out = 0;
-			*status_out = 0;
-			return 0;
+	/* --- Zombie (exited) child ------------------------------------------ */
+	if (zombie) {
+		*pid_out = zombie->pid;
+		/* POSIX: normal exit  → (exit_code & 0xff) << 8
+		 *        killed        → signal & 0x7f  (low byte, no 0x80 set here
+		 *                        since we store 128+sig in exit_status and
+		 *                        process_kill_status encodes it that way) */
+		int raw = zombie->exit_status;
+		if (raw >= 128) {
+			/* killed by signal: encode as signal number in low 7 bits */
+			*status_out = (raw - 128) & 0x7f;
+		} else {
+			/* normal exit */
+			*status_out = (raw & 0xff) << 8;
 		}
+		process_destroy(zombie);
+		return 0;
+	}
 
+	/* --- Stopped child (WUNTRACED) --------------------------------------- */
+	if (stopped) {
+		flags = irq_save();
+		spinlock_acquire(&sched_lock);
+		stopped->stop_reported = true;
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+
+		*pid_out = stopped->pid;
+		/* WIFSTOPPED: (stopsig << 8) | 0x7f */
+		*status_out = ((stopped->stop_signal & 0xff) << 8) | 0x7f;
+		return 0;
+	}
+
+	/* --- Continued child (WCONTINUED) ------------------------------------ */
+	if (continued) {
+		flags = irq_save();
+		spinlock_acquire(&sched_lock);
+		continued->continued = false;
+		spinlock_release(&sched_lock);
+		irq_restore(flags);
+
+		*pid_out = continued->pid;
+		/* WIFCONTINUED: 0xffff */
+		*status_out = 0xffff;
+		return 0;
+	}
+
+	/* --- Nothing waitable yet -------------------------------------------- */
+	if (options & SCHED_WNOHANG) {
+		*pid_out = 0;
+		*status_out = 0;
+		return 0;
+	}
+
+	/* Check whether a new child_event arrived while we were scanning */
+	unsigned ev_after =
+		atomic_load_explicit(&parent->child_event, memory_order_acquire);
+	if (ev_after != ev_before) {
+		/* A state change happened; tell caller to retry immediately */
 		return -EAGAIN;
 	}
 
-	*pid_out = zombie->pid;
-	*status_out = (zombie->exit_status & 0xff) << 8;
-	process_destroy(zombie);
-	return 0;
+	return -EAGAIN; /* block and retry */
 }
 
 const char *sched_process_cwd(const pcb_t *process)

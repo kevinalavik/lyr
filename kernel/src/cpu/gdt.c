@@ -40,28 +40,32 @@ Access Byte
 		(uint8_t)((((limit) >> 16) & 0x0F) | ((flags) & 0xF0)),    \
 		(uint8_t)(((base) >> 24) & 0xFF) })
 
-gdt_t gdt = { .entries = {
-				  _ENTRY(0, 0, 0, 0),
+static const gdt_t gdt_template = { .entries = {
+										_ENTRY(0, 0, 0, 0),
 
-				  /* kernel */
-				  _ENTRY(0, 0xFFFF, GDT_KERNEL_CODE,
-						 GDT_FLAG_GRAN_4K | GDT_FLAG_64BIT),
+										/* kernel */
+										_ENTRY(0, 0xFFFF, GDT_KERNEL_CODE,
+											   GDT_FLAG_GRAN_4K |
+												   GDT_FLAG_64BIT),
 
-				  _ENTRY(0, 0xFFFF, GDT_KERNEL_DATA, GDT_FLAG_GRAN_4K),
+										_ENTRY(0, 0xFFFF, GDT_KERNEL_DATA,
+											   GDT_FLAG_GRAN_4K),
 
-				  /* user */
-				  _ENTRY(0, 0xFFFF, GDT_USER_CODE,
-						 GDT_FLAG_GRAN_4K | GDT_FLAG_64BIT),
+										/* user */
+										_ENTRY(0, 0xFFFF, GDT_USER_CODE,
+											   GDT_FLAG_GRAN_4K |
+												   GDT_FLAG_64BIT),
 
-				  _ENTRY(0, 0xFFFF, GDT_USER_DATA, GDT_FLAG_GRAN_4K),
+										_ENTRY(0, 0xFFFF, GDT_USER_DATA,
+											   GDT_FLAG_GRAN_4K),
 
-				  /* TSS, filled by gdt_tss_init(). */
-				  _ENTRY(0, 0, 0, 0),
-				  _ENTRY(0, 0, 0, 0),
-			  } };
+										/* TSS, filled per CPU. */
+										_ENTRY(0, 0, 0, 0),
+										_ENTRY(0, 0, 0, 0),
+									} };
 
-gdtr_t gdtr = { .limit = sizeof(gdt.entries) - 1,
-				.base = (uint64_t)&gdt.entries };
+static gdt_t cpu_gdt[MAX_CPUS];
+static gdtr_t cpu_gdtr[MAX_CPUS];
 
 typedef struct {
 	uint32_t reserved0;
@@ -75,8 +79,11 @@ typedef struct {
 
 static tss_t cpu_tss[MAX_CPUS];
 
-static void gdt_set_tss_descriptor(tss_t *tss)
+static void gdt_set_tss_descriptor(uint32_t cpu_index, tss_t *tss)
 {
+	if (cpu_index >= MAX_CPUS)
+		cpu_index = 0;
+
 	uint64_t base = (uint64_t)tss;
 	uint64_t limit = sizeof(*tss) - 1;
 	uint64_t low = 0;
@@ -88,13 +95,25 @@ static void gdt_set_tss_descriptor(tss_t *tss)
 	low |= ((limit >> 16) & 0x0F) << 48;
 	low |= ((base >> 24) & 0xFF) << 56;
 
-	uint64_t *raw = (uint64_t *)gdt.entries;
+	uint64_t *raw = (uint64_t *)cpu_gdt[cpu_index].entries;
 	raw[5] = low;
 	raw[6] = base >> 32;
 }
 
 void gdt_init()
 {
+	gdt_init_cpu(0);
+}
+
+void gdt_init_cpu(uint32_t cpu_index)
+{
+	if (cpu_index >= MAX_CPUS)
+		cpu_index = 0;
+
+	memcpy(&cpu_gdt[cpu_index], &gdt_template, sizeof(gdt_template));
+	cpu_gdtr[cpu_index].limit = sizeof(cpu_gdt[cpu_index].entries) - 1;
+	cpu_gdtr[cpu_index].base = (uint64_t)&cpu_gdt[cpu_index].entries;
+
 	__asm__ volatile("lgdt %[g]\n"
 					 "pushq $0x08\n"
 					 "lea 1f(%%rip), %%rax\n"
@@ -108,7 +127,7 @@ void gdt_init()
 					 "mov %%ax, %%fs\n"
 					 "mov %%ax, %%gs\n"
 					 :
-					 : [g] "m"(gdtr)
+					 : [g] "m"(cpu_gdtr[cpu_index])
 					 : "rax", "memory");
 }
 
@@ -122,7 +141,7 @@ void gdt_tss_init_cpu(uint32_t cpu_index, uint64_t rsp0)
 	tss->rsp[0] = rsp0;
 	tss->iopb = sizeof(*tss);
 	cpu_locals[cpu_index].syscall_rsp0 = rsp0;
-	gdt_set_tss_descriptor(tss);
+	gdt_set_tss_descriptor(cpu_index, tss);
 
 	__asm__ volatile("ltr %%ax" ::"a"((uint16_t)0x28) : "memory");
 }

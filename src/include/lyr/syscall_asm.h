@@ -11,6 +11,17 @@ static inline long lyr_syscall3(long n, long a0, long a1, long a2)
 	return ret;
 }
 
+static inline long lyr_syscall4(long n, long a0, long a1, long a2, long a3)
+{
+	register long r_a3 asm("r10") = a3;
+	long ret;
+	__asm__ volatile("syscall"
+					 : "=a"(ret)
+					 : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(r_a3)
+					 : "rcx", "r11", "memory");
+	return ret;
+}
+
 static inline long lyr_syscall5(long n, long a0, long a1, long a2, long a3,
 								long a4)
 {

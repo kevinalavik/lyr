@@ -459,6 +459,16 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 	file->flags = flags;
 	file->offset = (flags & VFS_O_APPEND) ? node->size : 0;
 	file->cred = *cred;
+
+	if (node->ops && node->ops->open) {
+		r = node->ops->open(file);
+		if (r != 0) {
+			vfs_node_release(node);
+			kfree(file);
+			return r;
+		}
+	}
+
 	*out = file;
 	log_trace("vfs", "open ok path=%s node=%p size=%llu", path, node,
 			  node->size);

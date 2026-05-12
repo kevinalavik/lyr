@@ -1,0 +1,28 @@
+--- a/support/config.sub
++++ b/support/config.sub
+@@ -2004,6 +2004,7 @@ case $os in
+ 	| emscripten* \
+ 	| emx* \
+ 	| es* \
++	| lyr* \
+ 	| fiwix* \
+ 	| freebsd* \
+ 	| fuchsia* \
+--- a/configure.ac
++++ b/configure.ac
+@@ -1229,5 +1229,6 @@ netbsd*|openbsd*)	LOCAL_CFLAGS="-DDEV_FD_STAT_BROKEN" ;;
+ freebsd*|midnightbsd*)	LOCAL_CFLAGS='-DHEREDOC_PIPESIZE=4096' ;;
+ *qnx[[67]]*)	LOCAL_LIBS="-lncurses" ;;
++lyr*)			LOCAL_CFLAGS='-DNEED_EXTERN_PC' ;;
+ *qnx*)		LOCAL_CFLAGS="-Dqnx -F -3s" LOCAL_LDFLAGS="-3s" LOCAL_LIBS="-lunix -lncurses" ;;
+ powerux*)	LOCAL_LIBS="-lgen" ;;
+ cygwin*|msys*)	LOCAL_CFLAGS=-DRECYCLES_PIDS ;;
+--- a/configure
++++ b/configure
+@@ -23155,5 +23155,6 @@ netbsd*|openbsd*)	LOCAL_CFLAGS="-DDEV_FD_STAT_BROKEN" ;;
+ freebsd*|midnightbsd*)	LOCAL_CFLAGS='-DHEREDOC_PIPESIZE=4096' ;;
+ *qnx[67]*)	LOCAL_LIBS="-lncurses" ;;
++lyr*)		LOCAL_CFLAGS='-DNEED_EXTERN_PC' ;;
+ *qnx*)		LOCAL_CFLAGS="-Dqnx -F -3s" LOCAL_LDFLAGS="-3s" LOCAL_LIBS="-lunix -lncurses" ;;
+ powerux*)	LOCAL_LIBS="-lgen" ;;
+ cygwin*|msys*)	LOCAL_CFLAGS=-DRECYCLES_PIDS ;;

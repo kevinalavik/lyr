@@ -173,9 +173,9 @@ interrupt_frame_t *isr_common_handler(interrupt_frame_t *frame)
 		return syscall_dispatch(frame);
 
 	if (frame->vector == APIC_TIMER_VECTOR) {
-		interrupt_frame_t *next = sched_tick(frame);
+		frame = sched_signal_deliver(frame);
 		apic_send_eoi();
-		return sched_signal_deliver(next);
+		return sched_tick(frame);
 	}
 
 	if (frame->vector < IRQ_BASE) {

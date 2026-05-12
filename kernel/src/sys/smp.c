@@ -56,7 +56,7 @@ cpu_local_t *get_cpu_local(void)
 
 static void init_cpu(cpu_local_t *cpu)
 {
-	gdt_init();
+	gdt_init_cpu(cpu->cpu_index);
 	cpu_enable_sse();
 	set_cpu_local(cpu);
 	gdt_tss_init_cpu(cpu->cpu_index, 0);

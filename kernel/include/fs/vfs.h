@@ -108,6 +108,7 @@ struct vfs_ops {
 				size_t *done);
 	int (*write)(vfs_node_t *node, uint64_t off, const void *buf, size_t len,
 				 size_t *done);
+	int (*open)(vfs_file_t *file);
 	int (*ioctl)(vfs_file_t *file, unsigned long request, void *arg);
 	int (*poll)(vfs_file_t *file, int events);
 	int (*close)(vfs_file_t *file);
