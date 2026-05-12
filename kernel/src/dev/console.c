@@ -215,7 +215,8 @@ static void console_input_backspace(console_tty_t *tty)
 		in->head = prev;
 		in->count--;
 
-		if (!utf8_is_continuation(old) || in->count == 0 || in->tail == in->head)
+		if (!utf8_is_continuation(old) || in->count == 0 ||
+			in->tail == in->head)
 			break;
 
 		prev = in->head ? in->head - 1 : CONSOLE_INPUT_SIZE - 1;
@@ -354,7 +355,7 @@ static int console_poll(void *ctx, int events)
 
 	if (events & LYR_POLL_READ_MASK) {
 		if ((tty->termios.c_lflag & LYR_ICANON) ? tty->input.lines > 0 :
-													 tty->input.count > 0)
+												  tty->input.count > 0)
 			revents |= LYR_POLLIN | LYR_POLLRDNORM;
 	}
 	if (events & LYR_POLL_WRITE_MASK)
@@ -387,11 +388,11 @@ static int console_ioctl(void *ctx, unsigned long request, void *arg)
 	tcb_t *thread = sched_current();
 	pcb_t *process = thread ? thread->process : NULL;
 
-#define CONSOLE_USER_ARG_OK(size, write)                                      \
-	((arg) && (!process || !process->vas ||                                     \
-			  (uint64_t)(uintptr_t)(arg) >= VAS_USER_END ||                     \
-			  vas_user_access_ok(process->vas,                                  \
-								 (uint64_t)(uintptr_t)(arg), (size), (write)) == 0))
+#define CONSOLE_USER_ARG_OK(size, write)                                    \
+	((arg) && (!process || !process->vas ||                                 \
+			   (uint64_t)(uintptr_t)(arg) >= VAS_USER_END ||                \
+			   vas_user_access_ok(process->vas, (uint64_t)(uintptr_t)(arg), \
+								  (size), (write)) == 0))
 
 	switch (request) {
 	case LYR_TCGETS:
@@ -490,8 +491,9 @@ int console_init(void)
 		char path[32];
 		memcpy(path, "/dev/", 5);
 		memcpy(path + 5, consoles[i].name, strlen(consoles[i].name) + 1);
-		int r = devfs_register_chr_poll(path, 0666, console_read, console_write,
-										console_ioctl, console_poll, &consoles[i]);
+		int r =
+			devfs_register_chr_poll(path, 0666, console_read, console_write,
+									console_ioctl, console_poll, &consoles[i]);
 		if (r != 0 && r != -EEXIST)
 			return r;
 	}

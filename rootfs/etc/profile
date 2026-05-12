@@ -1,26 +1,11 @@
-# Begin /etc/profile
-# Written for Beyond Linux From Scratch
-# by James Robertson <jameswrobertson@earthlink.net>
-# modifications by Dagmar d'Surreal <rivyqntzne@pbzpnfg.arg>
-# Based on modifications for managarm by Dennis Bonke <admin@dennisbonke.com>
-# Modifications for lyr by Kevin Alavik <kevin@alavik.se>
-
-# System wide environment variables and startup programs.
-
-# System wide aliases and functions should go in /etc/bashrc.  Personal
-# environment variables and startup programs should go into
-# ~/.bash_profile.  Personal aliases and functions should go into
-# ~/.bashrc.
-
-# Set the initial path
 export PATH=/bin:/usr/bin:/usr/local/bin
-export EGL_PLATFORM=wayland
+export TERM=linux
+export LS_COLORS='di=01;34:ln=01;36:so=01;35:pi=33:ex=01;32:bd=01;33:cd=01;33:su=37;41:sg=30;43:tw=30;42:ow=34;42:st=37;44:*.tar=01;31:*.tgz=01;31:*.gz=01;31:*.zip=01;31:*.xz=01;31:*.7z=01;31:*.png=01;35:*.jpg=01;35:*.jpeg=01;35:*.gif=01;35:*.bmp=01;35:*.mp3=00;36:*.wav=00;36:*.mp4=00;35:*.mkv=00;35:*.txt=00'
 
 if [ $EUID -eq 0 ] ; then
         export PATH=/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin
 fi
 
-# Setup a red prompt for root and a green one for users.
 NORMAL="\[\e[0m\]"
 RED="\[\e[1;31m\]"
 GREEN="\[\e[1;32m\]"
@@ -32,4 +17,6 @@ fi
 
 unset RED GREEN NORMAL
 
-# End /etc/profile
+alias ls='ls --color'
+alias grep='grep --color'
+alias dir="dir --color"

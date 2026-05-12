@@ -45,8 +45,11 @@
 #define SYS_O_NONBLOCK SOCK_NONBLOCK
 #define SYS_AT_FDCWD (-100)
 
-#define EXEC_ARG_MAX 32
-#define EXEC_STR_MAX 256
+#define EXEC_ARG_MAX 4096
+#define EXEC_ENV_MAX 4096
+#define EXEC_STR_MAX 131072
+#define EXEC_ARG_BYTES (2 * 1024 * 1024)
+
 #define SYS_PATH_MAX 512
 
 #define SYS_POLL_NFDS_MAX 1024
@@ -334,34 +337,6 @@ static int syscall_copy_user_path_abs(uint64_t user, char *out, size_t out_len)
 		return r;
 
 	return syscall_normalize_path(raw, out, out_len);
-}
-
-static int syscall_copy_user_ptrs(uint64_t user, uint64_t *out, size_t cap,
-								  size_t *count_out)
-{
-	if (!out || !count_out)
-		return -EINVAL;
-
-	*count_out = 0;
-
-	if (!user)
-		return 0;
-
-	for (size_t i = 0; i < cap; i++) {
-		if (!syscall_user_range_ok(user + i * sizeof(uint64_t),
-								   sizeof(uint64_t)))
-			return -EINVAL;
-
-		uint64_t ptr = ((const uint64_t *)user)[i];
-
-		if (!ptr)
-			return 0;
-
-		out[i] = ptr;
-		*count_out = i + 1;
-	}
-
-	return -ENAMETOOLONG;
 }
 
 static uint32_t syscall_mmap_prot_to_vmm(int prot)
@@ -1450,6 +1425,169 @@ static const char *exec_comm_from_path(const char *path)
 	return base[0] ? base : path;
 }
 
+typedef struct exec_string_vec {
+	char **v;
+	size_t count;
+	size_t cap;
+} exec_string_vec_t;
+
+static void exec_string_vec_free(exec_string_vec_t *vec)
+{
+	if (!vec)
+		return;
+
+	if (vec->v) {
+		for (size_t i = 0; i < vec->count; i++)
+			kfree(vec->v[i]);
+
+		kfree(vec->v);
+	}
+
+	vec->v = NULL;
+	vec->count = 0;
+	vec->cap = 0;
+}
+
+static int exec_string_vec_init(exec_string_vec_t *vec, size_t max_count)
+{
+	if (!vec)
+		return -EINVAL;
+
+	memset(vec, 0, sizeof(*vec));
+	vec->v = kzalloc((max_count + 1) * sizeof(char *));
+
+	if (!vec->v)
+		return -ENOMEM;
+
+	vec->cap = max_count;
+	return 0;
+}
+
+static int exec_copy_user_cstr_dynamic(uint64_t user, char **out,
+									   size_t *bytes_used)
+{
+	if (!user || user >= VAS_USER_END || !out || !bytes_used)
+		return -EFAULT;
+
+	size_t cap = 64;
+	size_t len = 0;
+	char *buf = kmalloc(cap);
+
+	if (!buf)
+		return -ENOMEM;
+
+	for (;;) {
+		char c;
+
+		if (len >= EXEC_STR_MAX) {
+			kfree(buf);
+			return -E2BIG;
+		}
+
+		if (syscall_copy_from_user(&c, user + len, sizeof(c)) != 0) {
+			kfree(buf);
+			return -EFAULT;
+		}
+
+		if (len + 1 > cap) {
+			size_t new_cap = cap * 2;
+
+			if (new_cap < cap) {
+				kfree(buf);
+				return -EOVERFLOW;
+			}
+
+			if (new_cap > EXEC_STR_MAX + 1)
+				new_cap = EXEC_STR_MAX + 1;
+
+			char *new_buf = krealloc(buf, new_cap);
+
+			if (!new_buf) {
+				kfree(buf);
+				return -ENOMEM;
+			}
+
+			buf = new_buf;
+			cap = new_cap;
+		}
+
+		buf[len++] = c;
+
+		if (c == '\0')
+			break;
+	}
+
+	if (len > EXEC_ARG_BYTES - *bytes_used) {
+		kfree(buf);
+		return -E2BIG;
+	}
+
+	*bytes_used += len;
+
+	char *shrunk = krealloc(buf, len);
+	if (shrunk)
+		buf = shrunk;
+
+	*out = buf;
+	return 0;
+}
+
+static int exec_copy_user_vector(uint64_t user_vec, size_t max_count,
+								 exec_string_vec_t *out, size_t *bytes_used)
+{
+	if (!out || !bytes_used)
+		return -EINVAL;
+
+	int r = exec_string_vec_init(out, max_count);
+
+	if (r != 0)
+		return r;
+
+	if (!user_vec)
+		return 0;
+
+	for (size_t i = 0; i <= max_count; i++) {
+		uint64_t user_str = 0;
+
+		if (!syscall_user_range_ok(user_vec + i * sizeof(uint64_t),
+								   sizeof(uint64_t))) {
+			exec_string_vec_free(out);
+			return -EFAULT;
+		}
+
+		r = syscall_copy_from_user(&user_str, user_vec + i * sizeof(uint64_t),
+								   sizeof(uint64_t));
+
+		if (r != 0) {
+			exec_string_vec_free(out);
+			return r;
+		}
+
+		if (!user_str) {
+			out->v[out->count] = NULL;
+			return 0;
+		}
+
+		if (i >= max_count) {
+			exec_string_vec_free(out);
+			return -E2BIG;
+		}
+
+		r = exec_copy_user_cstr_dynamic(user_str, &out->v[out->count],
+										bytes_used);
+
+		if (r != 0) {
+			exec_string_vec_free(out);
+			return r;
+		}
+
+		out->count++;
+	}
+
+	exec_string_vec_free(out);
+	return -E2BIG;
+}
+
 static long sys_execve_handler(interrupt_frame_t *frame)
 {
 	tcb_t *thread = sched_current();
@@ -1463,62 +1601,41 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	if (r != 0)
 		return r;
 
-	uint64_t argv_ptrs[EXEC_ARG_MAX + 1];
-	uint64_t env_ptrs[EXEC_ARG_MAX + 1];
-	char arg_bufs[EXEC_ARG_MAX][EXEC_STR_MAX];
-	char env_bufs[EXEC_ARG_MAX][EXEC_STR_MAX];
-	size_t argc = 0;
-	size_t envc = 0;
+	size_t exec_arg_bytes = 0;
 
-	r = syscall_copy_user_ptrs(frame->rsi, argv_ptrs, EXEC_ARG_MAX + 1, &argc);
+	exec_string_vec_t argv;
+	exec_string_vec_t envp;
 
-	if (r != 0)
-		return r;
+	memset(&argv, 0, sizeof(argv));
+	memset(&envp, 0, sizeof(envp));
 
-	if (argc > EXEC_ARG_MAX)
-		return -ENAMETOOLONG;
-
-	r = syscall_copy_user_ptrs(frame->rdx, env_ptrs, EXEC_ARG_MAX + 1, &envc);
+	r = exec_copy_user_vector(frame->rsi, EXEC_ARG_MAX, &argv, &exec_arg_bytes);
 
 	if (r != 0)
 		return r;
 
-	if (envc > EXEC_ARG_MAX)
-		return -ENAMETOOLONG;
+	r = exec_copy_user_vector(frame->rdx, EXEC_ENV_MAX, &envp, &exec_arg_bytes);
 
-	char *argv[EXEC_ARG_MAX];
-	char *envp[EXEC_ARG_MAX];
-
-	for (size_t i = 0; i < argc; i++) {
-		r = syscall_copy_user_string(argv_ptrs[i], arg_bufs[i],
-									 sizeof(arg_bufs[i]));
-
-		if (r != 0)
-			return r;
-
-		argv[i] = arg_bufs[i];
-	}
-
-	for (size_t i = 0; i < envc; i++) {
-		r = syscall_copy_user_string(env_ptrs[i], env_bufs[i],
-									 sizeof(env_bufs[i]));
-
-		if (r != 0)
-			return r;
-
-		envp[i] = env_bufs[i];
+	if (r != 0) {
+		exec_string_vec_free(&argv);
+		return r;
 	}
 
 	vas_t *new_vas = vas_create(NULL);
 
-	if (!new_vas)
+	if (!new_vas) {
+		exec_string_vec_free(&envp);
+		exec_string_vec_free(&argv);
 		return -ENOMEM;
+	}
 
 	elf_user_image_t image;
 	r = elf_load_user_executable(new_vas, path, &image);
 
 	if (r != 0) {
 		vas_destroy(new_vas);
+		exec_string_vec_free(&envp);
+		exec_string_vec_free(&argv);
 		return r;
 	}
 
@@ -1532,18 +1649,26 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 					 VMM_PRESENT | VMM_WRITABLE | VMM_USER | VMM_NX |
 						 VAD_FIXED) != stack_map_base) {
 		vas_destroy(new_vas);
+		exec_string_vec_free(&envp);
+		exec_string_vec_free(&argv);
 		return -ENOMEM;
 	}
 
 	uint64_t user_rsp = 0;
+
 	r = elf_build_initial_stack(
-		new_vas, stack_top, path, (const char *const *)argv, argc,
-		(const char *const *)envp, envc, &image, &user_rsp);
+		new_vas, stack_top, path, (const char *const *)argv.v, argv.count,
+		(const char *const *)envp.v, envp.count, &image, &user_rsp);
 
 	if (r != 0) {
 		vas_destroy(new_vas);
+		exec_string_vec_free(&envp);
+		exec_string_vec_free(&argv);
 		return r;
 	}
+
+	exec_string_vec_free(&envp);
+	exec_string_vec_free(&argv);
 
 	log_debug(
 		"execve",
@@ -1554,10 +1679,13 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	const char *comm = exec_comm_from_path(path);
 
 	vas_t *old_vas = thread->process->vas;
+
 	thread->process->vas = new_vas;
 	thread->process->pml4 = new_vas->pml4;
+
 	sched_process_set_name(thread->process, comm);
 	sched_thread_set_name(thread, comm);
+
 	thread->fs_base = 0;
 	thread->user_entry_rsp = user_rsp;
 
@@ -1568,6 +1696,7 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 		vas_destroy(old_vas);
 
 	memset(frame, 0, sizeof(*frame));
+
 	frame->rip = image.entry;
 	frame->cs = USER_CS;
 	frame->rflags = 0x202;

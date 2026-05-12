@@ -10,6 +10,49 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <lyr/input.h>
+#include <errno.h>
+
+#define KBD_CONFIG_FILE "/etc/kbd"
+
+static int load_default_keyboard_layout(void)
+{
+	int fd;
+	char buf[64] = { 0 };
+	ssize_t n;
+	char path[LYR_KBD_MAP_PATH_MAX];
+	lyr_kbd_t kbd;
+
+	fd = open(KBD_CONFIG_FILE, O_RDONLY);
+	if (fd < 0)
+		return -1;
+
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return -1;
+
+	buf[n] = '\0';
+	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ')) {
+		buf[--n] = '\0';
+	}
+	if (n == 0)
+		return -1;
+
+	snprintf(path, sizeof(path), "/share/kbd/%s", buf);
+
+	if (lyr_kbd_open(&kbd) < 0)
+		return -1;
+
+	if (lyr_kbd_set_layout(&kbd, path) < 0) {
+		lyr_kbd_close(&kbd);
+		return -1;
+	}
+
+	lyr_kbd_close(&kbd);
+	return 0;
+}
+
 static int bind_tty(const char *path)
 {
 	if (!path || !path[0])
@@ -68,6 +111,8 @@ int main(int argc, char **argv)
 	}
 
 	login_logging_setup();
+
+	load_default_keyboard_layout();
 
 	for (;;) {
 		banner_print_issue();

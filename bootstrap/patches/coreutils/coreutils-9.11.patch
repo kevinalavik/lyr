@@ -1,0 +1,132 @@
+--- a/build-aux/config.sub	2025-07-22 11:24:32.000000000 +0200
++++ build-aux/config.sub	2026-05-12 23:49:24.560122091 +0200
+@@ -2011,6 +2011,7 @@
+ 	| emx* \
+ 	| es* \
+ 	| fiwix* \
++	| lyr* \
+ 	| freebsd* \
+ 	| fuchsia* \
+ 	| genix* \
+--- a/lib/mountlist.c	2026-03-01 19:44:23.000000000 +0100
++++ lib/mountlist.c	2026-05-12 23:49:35.794966875 +0200
+@@ -129,6 +129,73 @@
+ # if !HAVE_ENDMNTENT            /* Android <= 4.4 */
+ #  define endmntent(fp) fclose (fp)
+ # endif
++# ifdef __lyr__
++static FILE *
++lyr_setmntent (const char *mount_file, const char *mode)
++{
++  return fopen (mount_file, mode);
++}
++
++static int
++lyr_endmntent (FILE *fp)
++{
++  if (fp)
++    fclose (fp);
++  return 1;
++}
++
++static struct mntent *
++lyr_getmntent (FILE *fp)
++{
++  static struct mntent m;
++  static char line[1024];
++  char *cp;
++
++  while (fgets (line, sizeof (line), fp) != NULL)
++    {
++      if (line[0] == '#' || line[0] == '\n')
++        continue;
++
++      cp = strchr (line, ' ');
++      if (!cp)
++        continue;
++      *cp++ = '\0';
++
++      m.mnt_fsname = line;
++
++      while (*cp == ' ')
++        cp++;
++      cp = strchr (cp, ' ');
++      if (!cp)
++        continue;
++      *cp++ = '\0';
++
++      m.mnt_dir = cp;
++
++      cp = strchr (cp, ' ');
++      if (!cp)
++        continue;
++      *cp++ = '\0';
++
++      m.mnt_type = cp;
++
++      while (*cp && *cp != ' ')
++        cp++;
++      if (*cp)
++        *cp++ = '\0';
++
++      m.mnt_opts = cp;
++
++      return &m;
++    }
++  return NULL;
++}
++
++#  define setmntent lyr_setmntent
++#  define endmntent lyr_endmntent
++#  define getmntent lyr_getmntent
++#  define MOUNTED "/proc/mounts"
++# endif
+ #endif
+ 
+ #if defined _WIN32 && !defined __CYGWIN__
+@@ -1245,7 +1312,26 @@
+ #endif
+ 
+ #if MOUNTED_NOT_PORTED
++# ifdef __lyr__
++#  define MOUNTED_GETMNTENT1 1
++#  define HAVE_SETMNTENT 1
++#  define HAVE_ENDMNTENT 1
++#  ifndef _MNTTAB_H
++struct mntent {
++    char *mnt_fsname;
++    char *mnt_dir;
++    char *mnt_type;
++    char *mnt_opts;
++    int mnt_freq;
++    int mnt_passno;
++};
++#   define MNTOPT_RO "ro"
++#   define MNTOPT_RW "rw"
++# endif
++# endif
++# ifndef __lyr__
+ # error "Please port gnulib mountlist.c to your platform!"
++# endif
+ #endif
+ 
+   *mtail = NULL;
+--- a/lib/getlocalename_l-unsafe.c	2026-04-05 13:27:04.000000000 +0200
++++ lib/getlocalename_l-unsafe.c	2026-05-12 23:49:42.558998473 +0200
+@@ -656,10 +656,14 @@
+       struct __locale_t {
+         size_t mb_cur_max;
+       };
+-      const char *name = ((struct __locale_t *) locale)->mb_cur_max == 4 ? "C.UTF-8" : "C";
++const char *name = ((struct __locale_t *) locale)->mb_cur_max == 4 ? "C.UTF-8" : "C";
+       return (struct string_with_storage) { name, STORAGE_INDEFINITE };
+ #else
+- #error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."
++# ifdef __lyr__
++      return (struct string_with_storage) { "C", STORAGE_INDEFINITE };
++# else
++  #error "Please port gnulib getlocalename_l-unsafe.c to your platform! Report this to bug-gnulib."
++# endif
+ #endif
+     }
+   else

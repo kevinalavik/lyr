@@ -4,6 +4,7 @@ imports:
   - file: bootstrap.d/apps-test.yml
   - file: bootstrap.d/apps-sys.yml
   - file: bootstrap.d/apps-shell.yml
+  - file: bootstrap.d/apps-misc.yml
   - file: bootstrap.d/games-fps.yml
 general:
   patch_author: Kevin Alavik and contributors

@@ -1,0 +1,37 @@
+sources:
+  - name: coreutils
+    subdir: sources
+    version: '9.11'
+    url: 'https://ftp.sunet.se/mirror/gnu.org/gnu/coreutils/coreutils-9.11.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'coreutils-9.11'
+    checksum: 'sha256:394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3'
+    patch-path-strip: 1
+
+packages:
+  - name: coreutils
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: coreutils
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-no-install-program=kill,uptime,mount,df,stat,du,locale'
+          - '--enable-cross-guesses=risky'
+          - '--with-included-regex'
+        environ:
+          CFLAGS: '-Wno-error'
+          gl_cv_func_getcwd_null: 'yes'
+          gl_cv_func_getcwd_abort_bug: 'no'
+          gl_cv_func_getlocalename_l_unsafe: 'yes'
+    build:
+      - args: ['make', '-j@PARALLELISM@']
+      - args: ['make', 'DESTDIR=@THIS_COLLECT_DIR@', 'install']
