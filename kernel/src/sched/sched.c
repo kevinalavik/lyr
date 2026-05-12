@@ -23,7 +23,14 @@
 #define SCHED_SIGTERM 15
 #define SCHED_SIGINT 2
 #define SCHED_SIGQUIT 3
+#define SCHED_SIGILL 4
+#define SCHED_SIGTRAP 5
+#define SCHED_SIGABRT 6
+#define SCHED_SIGBUS 7
+#define SCHED_SIGFPE 8
 #define SCHED_SIGKILL 9
+#define SCHED_SIGSEGV 11
+#define SCHED_SIGCHLD 17
 #define SCHED_SIGSTOP 19
 #define SCHED_SIG_DFL 0ULL
 #define SCHED_SIG_IGN 1ULL
@@ -415,6 +422,7 @@ static bool process_add_thread(pcb_t *process, tcb_t *thread)
 static int process_is_kernel_owned(const pcb_t *process);
 static int process_kill_status(int signal);
 static void process_terminate_by_signal_locked(pcb_t *process, int signal);
+static void process_notify_parent_signal(pid_t parent_pid, int signal);
 
 static process_exit_action_t process_remove_thread(tcb_t *thread, int status)
 {
@@ -506,7 +514,29 @@ static int signal_valid(int signal)
 
 static int signal_default_ignored(int signal)
 {
-	return signal == 17 /* SIGCHLD */ || signal == 18 /* SIGCONT */;
+	return signal == SCHED_SIGCHLD || signal == 18 /* SIGCONT */;
+}
+
+static void process_notify_parent_signal(pid_t parent_pid, int signal)
+{
+	if (parent_pid <= 0 || !signal_valid(signal))
+		return;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	for (pcb_t *parent = process_list; parent; parent = parent->next) {
+		if (parent->pid != parent_pid || process_is_kernel_owned(parent))
+			continue;
+
+		parent->pending_signals |= SCHED_SIGNAL_BIT(signal);
+		log_trace("sched", "queued signal=%d for parent pid=%d", signal,
+				  parent->pid);
+		break;
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
 }
 
 static void process_terminate_by_signal_locked(pcb_t *process, int signal)
@@ -905,6 +935,7 @@ static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
 	thread->state = TCB_ZOMBIE;
 	pcb_t *process = thread->process;
 	pid_t exited_pid = process ? process->pid : -1;
+	pid_t parent_pid = process ? process->ppid : 0;
 	/*
 	 * Unix-like orphan handling: when a userspace process exits, its living
 	 * children become children of init (PID 1).  Kernel/internal tasks and
@@ -914,6 +945,8 @@ static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
 	process_exit_action_t action = process_remove_thread(thread, status);
 	if (action != PROCESS_EXIT_NONE)
 		process_reparent_children(exited_pid, new_parent);
+	if (action == PROCESS_EXIT_ZOMBIE)
+		process_notify_parent_signal(parent_pid, SCHED_SIGCHLD);
 	thread->reap_process = action == PROCESS_EXIT_REAP;
 	atomic_fetch_sub_explicit(&cpu->sched_load, 1, memory_order_release);
 	thread_queue_reap(cpu, thread);
@@ -1702,6 +1735,53 @@ interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame)
 	thread->signal_mask = signal_mask_valid(sf->old_mask);
 	*frame = saved;
 	return frame;
+}
+
+interrupt_frame_t *sched_handle_user_exception(interrupt_frame_t *frame,
+											   int signal,
+											   const char *reason)
+{
+	if (!sched_is_initialized() || !frame || (frame->cs & 3) != 3)
+		return NULL;
+
+	tcb_t *thread = sched_current();
+	pcb_t *process = thread ? thread->process : NULL;
+	cpu_local_t *cpu = get_cpu_local();
+	if (!thread || !process || !cpu || process_is_kernel_owned(process))
+		return NULL;
+
+	uint64_t fault_addr = frame->vector == 14 ? frame->cr2 : 0;
+	if (frame->vector == 14) {
+		const char *access = (frame->err & 16) ? "exec" :
+							 ((frame->err & 2) ? "write" : "read");
+		vad_t *vad = process->vas ? vas_find(process->vas, fault_addr) : NULL;
+		const char *code = (!vad || !(frame->err & 1)) ? "SEGV_MAPERR"
+													   : "SEGV_ACCERR";
+
+		log_err("trap",
+				"%s[%d]: segfault at %016llx ip %016llx sp %016llx %s error %llx (%s)",
+				process->name, process->pid, fault_addr, frame->rip, frame->rsp,
+				access, frame->err, code);
+	} else {
+		log_err("trap",
+				"%s[%d]: trap %s signal %d ip %016llx sp %016llx error %llx",
+				process->name, process->pid, reason ? reason : "exception", signal,
+				frame->rip, frame->rsp, frame->err);
+	}
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+	process_terminate_by_signal_locked(process,
+									   signal_valid(signal) ? signal : SCHED_SIGABRT);
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	spinlock_acquire(&cpu->runq_lock);
+	thread_finish_current_locked(cpu, frame, process->exit_status,
+								 " via exception");
+	interrupt_frame_t *next = schedule_locked(cpu, frame, false);
+	spinlock_release(&cpu->runq_lock);
+	return next;
 }
 
 int sched_process_wait(pcb_t *parent, pid_t pid, int options, pid_t *pid_out,

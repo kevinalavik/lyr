@@ -1,5 +1,6 @@
 #include <dev/console.h>
 #include <dev/uart.h>
+#include <errno.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
 #include <lib/lyrterm.h>
@@ -294,6 +295,13 @@ static int console_read(void *ctx, uint64_t off, void *buf, size_t len,
 	if (len == 0)
 		return 0;
 
+	tcb_t *thread = sched_current();
+	if (thread && thread->process && thread->process->vas &&
+		(uint64_t)(uintptr_t)buf < VAS_USER_END &&
+		vas_user_access_ok(thread->process->vas, (uint64_t)(uintptr_t)buf, len,
+						   1) != 0)
+		return -EFAULT;
+
 	int wr = console_wait_input(tty);
 	if (wr != 0)
 		return wr;
@@ -376,37 +384,47 @@ static int console_get_winsize(lyr_winsize_t *ws)
 static int console_ioctl(void *ctx, unsigned long request, void *arg)
 {
 	console_tty_t *tty = console_ctx_to_tty(ctx);
+	tcb_t *thread = sched_current();
+	pcb_t *process = thread ? thread->process : NULL;
+
+#define CONSOLE_USER_ARG_OK(size, write)                                      \
+	((arg) && (!process || !process->vas ||                                     \
+			  (uint64_t)(uintptr_t)(arg) >= VAS_USER_END ||                     \
+			  vas_user_access_ok(process->vas,                                  \
+								 (uint64_t)(uintptr_t)(arg), (size), (write)) == 0))
 
 	switch (request) {
 	case LYR_TCGETS:
-		if (!arg)
-			return -EINVAL;
+		if (!CONSOLE_USER_ARG_OK(sizeof(tty->termios), 1))
+			return arg ? -EFAULT : -EINVAL;
 		memcpy(arg, &tty->termios, sizeof(tty->termios));
 		return 0;
 
 	case LYR_TCSETS:
 	case LYR_TCSETSW:
 	case LYR_TCSETSF:
-		if (!arg)
-			return -EINVAL;
+		if (!CONSOLE_USER_ARG_OK(sizeof(tty->termios), 0))
+			return arg ? -EFAULT : -EINVAL;
 		memcpy(&tty->termios, arg, sizeof(tty->termios));
 		return 0;
 
 	case LYR_TIOCGWINSZ:
+		if (!CONSOLE_USER_ARG_OK(sizeof(lyr_winsize_t), 1))
+			return arg ? -EFAULT : -EINVAL;
 		return console_get_winsize((lyr_winsize_t *)arg);
 
 	case LYR_TIOCSWINSZ:
 		return arg ? 0 : -EINVAL;
 
 	case LYR_TIOCGNAME:
-		if (!arg)
-			return -EINVAL;
+		if (!CONSOLE_USER_ARG_OK(strlen(tty->name) + 1, 1))
+			return arg ? -EFAULT : -EINVAL;
 		memcpy(arg, tty->name, strlen(tty->name) + 1);
 		return 0;
 
 	case LYR_TIOCGPGRP:
-		if (!arg)
-			return -EINVAL;
+		if (!CONSOLE_USER_ARG_OK(sizeof(pid_t), 1))
+			return arg ? -EFAULT : -EINVAL;
 		*(pid_t *)arg = tty->foreground_pgrp;
 		return 0;
 
@@ -436,6 +454,8 @@ static int console_ioctl(void *ctx, unsigned long request, void *arg)
 	default:
 		return -ENOTTY;
 	}
+
+#undef CONSOLE_USER_ARG_OK
 }
 
 int console_switch_tty(unsigned index)

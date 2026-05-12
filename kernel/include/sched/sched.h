@@ -150,6 +150,9 @@ int sched_signal_procmask(tcb_t *thread, int how, const uint64_t *set,
 int sched_signal_is_pending(tcb_t *thread);
 interrupt_frame_t *sched_signal_deliver(interrupt_frame_t *frame);
 interrupt_frame_t *sched_signal_return(interrupt_frame_t *frame);
+interrupt_frame_t *sched_handle_user_exception(interrupt_frame_t *frame,
+											   int signal,
+											   const char *reason);
 int sched_process_getpgid(pcb_t *caller, pid_t pid, pid_t *pgid_out);
 int sched_process_setpgid(pcb_t *caller, pid_t pid, pid_t pgid);
 int sched_process_setsid(pcb_t *caller, pid_t *sid_out);

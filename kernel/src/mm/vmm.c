@@ -402,6 +402,31 @@ vad_t *vas_find(vas_t *vas, uint64_t addr)
 	return NULL;
 }
 
+int vas_range_mapped(vas_t *vas, uint64_t start, size_t length)
+{
+	assert(vas);
+	if (!length)
+		return 0;
+
+	start = ALIGN_DOWN(start, PAGE_SIZE);
+	length = ALIGN_UP(length, PAGE_SIZE);
+	uint64_t end = start + length;
+	if (end < start)
+		return 0;
+
+	uint64_t pos = start;
+	for (vad_t *v = vas->list_head; v && pos < end; v = v->next) {
+		if (v->end <= pos)
+			continue;
+		if (v->start > pos)
+			return 0;
+		if (v->end > pos)
+			pos = v->end;
+	}
+
+	return pos >= end;
+}
+
 void vas_switch(vas_t *vas)
 {
 	assert(vas && vas->pml4);
@@ -418,6 +443,83 @@ vas_t *vas_adopt(ptable_t *existing_pml4)
 	vas->list_head = NULL;
 	vas->user_start = VAS_USER_START;
 	return vas;
+}
+
+int vas_handle_page_fault(vas_t *vas, uint64_t addr, uint64_t err)
+{
+	if (!vas)
+		return -1;
+
+	uint64_t va = ALIGN_DOWN(addr, PAGE_SIZE);
+	vad_t *vad = vas_find(vas, va);
+	if (!vad)
+		return -1;
+
+	if (!(err & 0x2) || !(err & 0x1))
+		return -1;
+	if (!(vad->flags & VMM_WRITABLE) || (vad->flags & VAD_SHARED))
+		return -1;
+
+	uint64_t phys = get_phys(vas->pml4, va);
+	if (!phys)
+		return -1;
+
+	page_t *old_page = pfndb_phys_to_page(ALIGN_DOWN(phys, PAGE_SIZE));
+	if (!old_page || !page_is_cow(old_page))
+		return -1;
+
+	uint64_t prot = vad->flags & VAD_PROT_MASK;
+	if (!page_is_shared(old_page)) {
+		page_ref(old_page);
+		unmap_page(vas->pml4, va);
+		page_clear_cow(old_page);
+		map_page(vas->pml4, va, old_page, prot);
+		page_unref(old_page);
+		return 0;
+	}
+
+	page_t *new_page = palloc_page();
+	if (!new_page)
+		return -1;
+
+	uint64_t new_phys = pfndb_page_to_phys(new_page);
+	memcpy(PHYS_TO_VIRT(new_phys), PHYS_TO_VIRT(ALIGN_DOWN(phys, PAGE_SIZE)),
+		   PAGE_SIZE);
+
+	unmap_page(vas->pml4, va);
+	map_page(vas->pml4, va, new_page, prot);
+	page_unref(new_page);
+	return 0;
+}
+
+int vas_user_access_ok(vas_t *vas, uint64_t addr, size_t len, int write)
+{
+	if (!vas)
+		return -1;
+	if (addr < VAS_USER_START || addr >= VAS_USER_END)
+		return -1;
+	if (len > VAS_USER_END - addr)
+		return -1;
+	if (len == 0)
+		return 0;
+
+	uint64_t start = ALIGN_DOWN(addr, PAGE_SIZE);
+	uint64_t end = ALIGN_UP(addr + len, PAGE_SIZE);
+
+	for (uint64_t va = start; va < end; va += PAGE_SIZE) {
+		uint64_t flags = get_mapping_flags(vas->pml4, va);
+		if (!(flags & VMM_PRESENT))
+			return -1;
+		if (write && !(flags & VMM_WRITABLE)) {
+			if (vas_handle_page_fault(vas, va, 0x3) != 0)
+				return -1;
+			flags = get_mapping_flags(vas->pml4, va);
+			if (!(flags & VMM_PRESENT) || !(flags & VMM_WRITABLE))
+				return -1;
+		}
+	}
+
+	return 0;
 }
 
 
@@ -450,17 +552,28 @@ vas_t *vas_clone(vas_t *src)
 			if (!src_phys)
 				continue;
 
-			page_t *page = palloc_page();
-			if (!page) {
-				vas_destroy(dst);
-				return NULL;
+			uint64_t src_page_phys = ALIGN_DOWN(src_phys, PAGE_SIZE);
+			page_t *page = pfndb_phys_to_page(src_page_phys);
+			uint64_t map_flags = prot;
+
+			if (page) {
+				if ((prot & VMM_WRITABLE) && !(v->flags & VAD_SHARED)) {
+					uint64_t cow_flags = prot & ~VMM_WRITABLE;
+
+					page_ref(page);
+					unmap_page(src->pml4, va);
+					map_page(src->pml4, va, page, cow_flags);
+					page_unref(page);
+					page_mark_cow(page);
+
+					map_flags = cow_flags;
+				}
+
+				map_page(dst->pml4, va, page, map_flags);
+				continue;
 			}
-			uint64_t dst_phys = pfndb_page_to_phys(page);
-			memcpy(PHYS_TO_VIRT(dst_phys),
-				   PHYS_TO_VIRT(src_phys & ~(uint64_t)(PAGE_SIZE - 1)),
-				   PAGE_SIZE);
-			map_page(dst->pml4, va, page, prot);
-			page_unref(page);
+
+			map_page_phys(dst->pml4, va, src_page_phys, map_flags);
 		}
 	}
 

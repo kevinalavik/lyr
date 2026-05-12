@@ -58,6 +58,13 @@ static int fbdev_ioctl(void *ctx, unsigned long request, void *arg)
 	if (!arg)
 		return -EINVAL;
 
+	tcb_t *thread = sched_current();
+	if (thread && thread->process && thread->process->vas &&
+		(uint64_t)(uintptr_t)arg < VAS_USER_END &&
+		vas_user_access_ok(thread->process->vas, (uint64_t)(uintptr_t)arg,
+						   sizeof(lyr_fb_info_t), 1) != 0)
+		return -EFAULT;
+
 	lyrterm_framebuffer_info_t info;
 	int r = lyrterm_get_framebuffer_info(&info);
 	if (r != 0)

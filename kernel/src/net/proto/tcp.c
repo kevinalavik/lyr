@@ -1,11 +1,13 @@
 #include "../stack.h"
 #include <debug/log.h>
 #include <dev/pit.h>
+#include <errno.h>
 #include <fs/vfs.h>
 #include <lib/nanoprintf.h>
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <net/net.h>
+#include <sched/sched.h>
 
 #define TCP_RST 0x04
 
@@ -67,6 +69,12 @@ static const net_ipv4_protocol_ops_t tcp_ipv4_protocol = {
 	.receive = tcp_ipv4_receive,
 	.ctx = NULL,
 };
+
+static int tcp_interrupted(void)
+{
+	tcb_t *thread = sched_current();
+	return (thread && sched_signal_is_pending(thread)) ? -EINTR : 0;
+}
 
 static size_t tcp_recv_window_full(const tcp_conn_t *conn)
 {
@@ -647,7 +655,18 @@ int net_tcp_connect_ip(netdev_t *dev, uint32_t dst_ip, uint16_t port,
 	/* Spin-poll until the SYN-ACK arrives and the 3-way handshake
 	 * completes, or we time out. net_poll_until drives the NIC rx path. */
 	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
-	net_poll_until(dev, until, &conn->connected);
+	while (!conn->connected && !conn->error && pit_get_ticks() < until) {
+		if (tcp_interrupted() != 0) {
+			tcp_conn_remove(conn);
+			if (conn->rx_buf)
+				kfree(conn->rx_buf);
+			kfree(conn);
+			return -EINTR;
+		}
+
+		net_poll_all();
+		__asm__ volatile("pause" ::: "memory");
+	}
 
 	if (conn->error) {
 		log_debug("tcp", "connect: reset by peer");
@@ -735,6 +754,8 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 
 	while (!conn->rx_len && !conn->closed && !conn->error &&
 		   pit_get_ticks() < until) {
+		if (tcp_interrupted() != 0)
+			return -EINTR;
 		net_poll_all();
 	}
 

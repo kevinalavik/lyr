@@ -251,6 +251,19 @@ uint64_t get_phys(ptable_t *pt, uint64_t virt)
 	return (*pte & PAGE_FRAME_MASK) + (virt & (PAGE_SIZE - 1));
 }
 
+uint64_t get_mapping_flags(ptable_t *pt, uint64_t virt)
+{
+	assert(pt != NULL);
+
+	uint64_t *pml4 = (uint64_t *)PHYS_TO_VIRT((uint64_t)pt);
+	uint64_t *pte = _leaf_entry(pml4, ALIGN_DOWN(virt, PAGE_SIZE), 0);
+
+	if (!pte || !(*pte & VMM_PRESENT))
+		return 0;
+
+	return *pte & ~PAGE_FRAME_MASK;
+}
+
 ptable_t *ptable_create(void)
 {
 	page_t *page = palloc_page();

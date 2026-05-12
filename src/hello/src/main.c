@@ -78,5 +78,7 @@ int main(void)
 
 	free(buf);
 	close(fd);
+
+	*(uint64_t *)0xdeadbeef = 0x123456789abcdef0; // opa
 	return 0;
 }

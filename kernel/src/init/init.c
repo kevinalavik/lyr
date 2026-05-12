@@ -10,6 +10,7 @@
 
 #define INIT_STACK_TOP 0x00007ffffff000ULL
 #define INIT_STACK_SIZE (16 * PAGE_SIZE)
+#define INIT_STACK_GUARD_SIZE PAGE_SIZE
 
 int init_spawn(const char *path)
 {
@@ -29,11 +30,12 @@ int init_spawn(const char *path)
 		return r;
 	}
 
-	uint64_t stack_base = INIT_STACK_TOP - INIT_STACK_SIZE;
-	uint64_t stack = vas_map_anon(vas, stack_base, INIT_STACK_SIZE,
+	uint64_t stack_base = INIT_STACK_TOP - (INIT_STACK_SIZE + INIT_STACK_GUARD_SIZE);
+	uint64_t stack_map_base = stack_base + INIT_STACK_GUARD_SIZE;
+	uint64_t stack = vas_map_anon(vas, stack_map_base, INIT_STACK_SIZE,
 								  VMM_PRESENT | VMM_WRITABLE | VMM_USER |
 									  VMM_NX | VAD_FIXED);
-	if (stack != stack_base) {
+	if (stack != stack_map_base) {
 		log_err("init", "failed to map userspace stack for %s", path);
 		vas_destroy(vas);
 		return -ENOMEM;

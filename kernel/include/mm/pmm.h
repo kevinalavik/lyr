@@ -16,6 +16,8 @@ void page_unref(page_t *page);
 
 void page_share(page_t *page);
 void page_unshare(page_t *page);
+void page_mark_cow(page_t *page);
+void page_clear_cow(page_t *page);
 
 uint64_t pmm_free_pages(void);
 uint64_t pmm_total_pages(void);

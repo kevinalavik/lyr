@@ -7,6 +7,7 @@
 #include <sys/apic.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
+#include <mm/vmm.h>
 
 #define IDT_TRAP 0xF
 #define IDT_INTERRUPT 0xE
@@ -47,6 +48,39 @@ static const char *_exception_str[32] = {
 	"Security",
 	"Reserved",
 };
+
+#define SCHED_SIGILL 4
+#define SCHED_SIGTRAP 5
+#define SCHED_SIGBUS 7
+#define SCHED_SIGFPE 8
+#define SCHED_SIGSEGV 11
+
+static int exception_signal(uint64_t vector)
+{
+	switch (vector) {
+		case 0:
+		case 16:
+		case 19:
+			return SCHED_SIGFPE;
+		case 1:
+		case 3:
+			return SCHED_SIGTRAP;
+		case 6:
+			return SCHED_SIGILL;
+		case 10:
+		case 11:
+		case 12:
+		case 13:
+		case 14:
+		case 17:
+		case 21:
+			return SCHED_SIGSEGV;
+		case 18:
+			return SCHED_SIGBUS;
+		default:
+			return SCHED_SIGILL;
+	}
+}
 
 __attribute__((aligned(16))) idt_entry_t idt[256];
 idtr_t idtr = {
@@ -145,6 +179,22 @@ interrupt_frame_t *isr_common_handler(interrupt_frame_t *frame)
 	}
 
 	if (frame->vector < IRQ_BASE) {
+		if ((frame->cs & 3) == 3) {
+			tcb_t *thread = sched_current();
+			pcb_t *process = thread ? thread->process : NULL;
+
+			if (frame->vector == 14 && process && process->vas &&
+				vas_handle_page_fault(process->vas, frame->cr2, frame->err) == 0) {
+				return frame;
+			}
+
+			interrupt_frame_t *next = sched_handle_user_exception(
+				frame, exception_signal(frame->vector),
+				_exception_str[frame->vector]);
+			if (next)
+				return next;
+		}
+
 		kpanic(frame, "%s", _exception_str[frame->vector]);
 	}
 

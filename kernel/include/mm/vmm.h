@@ -46,6 +46,9 @@ uint64_t vas_map_file(vas_t *vas, uint64_t hint, struct vfs_node *file,
 int vas_unmap(vas_t *vas, uint64_t start, size_t length);
 int vas_protect(vas_t *vas, uint64_t start, size_t length, uint64_t new_prot);
 vad_t *vas_find(vas_t *vas, uint64_t addr);
+int vas_range_mapped(vas_t *vas, uint64_t start, size_t length);
+int vas_handle_page_fault(vas_t *vas, uint64_t addr, uint64_t err);
+int vas_user_access_ok(vas_t *vas, uint64_t addr, size_t len, int write);
 
 void vas_switch(vas_t *vas);
 vas_t *vas_adopt(ptable_t *existing_pml4);

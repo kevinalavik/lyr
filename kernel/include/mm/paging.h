@@ -29,6 +29,7 @@ void map_mmio(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t npages);
 void unmap_page(ptable_t *pt, uint64_t virt);
 
 uint64_t get_phys(ptable_t *pt, uint64_t virt);
+uint64_t get_mapping_flags(ptable_t *pt, uint64_t virt);
 ptable_t *ptable_create(void);
 void ptable_destroy(ptable_t *pt);
 void ptable_free_empty(ptable_t *pt, uint64_t virt);

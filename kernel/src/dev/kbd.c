@@ -4,6 +4,8 @@
 #include <fs/vfs.h>
 #include <lib/string.h>
 #include <mm/heap.h>
+#include <mm/vmm.h>
+#include <sched/sched.h>
 #include <sys/poll.h>
 
 #define KBD_EVENT_RING_SIZE 256u /* must be power of two */
@@ -493,11 +495,23 @@ static inline void ring_flush(void)
 static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 {
 	(void)ctx;
+	tcb_t *thread = sched_current();
+	pcb_t *process = thread ? thread->process : NULL;
 
 	switch (request) {
 	case LYR_KBDIOCSMAP:
 		if (!arg)
 			return -EINVAL;
+		if (process && process->vas &&
+			(uint64_t)(uintptr_t)arg < VAS_USER_END) {
+			char path[LYR_KBD_MAP_PATH_MAX];
+			if (vas_user_access_ok(process->vas, (uint64_t)(uintptr_t)arg,
+								   sizeof(path), 0) != 0)
+				return -EFAULT;
+			memcpy(path, arg, sizeof(path));
+			path[sizeof(path) - 1] = '\0';
+			return kbd_load_keymap_file(path);
+		}
 		return kbd_load_keymap_file((const char *)arg);
 
 	case LYR_KBDIOCGMAP:
@@ -505,6 +519,11 @@ static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 			return -EINVAL;
 		if (kbd_current_map[0] == '\0')
 			return -EINVAL;
+		if (process && process->vas &&
+			(uint64_t)(uintptr_t)arg < VAS_USER_END &&
+			vas_user_access_ok(process->vas, (uint64_t)(uintptr_t)arg,
+							   LYR_KBD_MAP_PATH_MAX, 1) != 0)
+			return -EFAULT;
 		memcpy(arg, kbd_current_map, LYR_KBD_MAP_PATH_MAX);
 		return 0;
 

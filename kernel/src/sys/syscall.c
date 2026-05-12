@@ -49,6 +49,17 @@
 #define SYS_PATH_MAX 512
 
 #define SYS_POLL_NFDS_MAX 1024
+#define SYS_USER_STACK_GUARD_SIZE PAGE_SIZE
+#define SYS_USER_STACK_SIZE (16 * PAGE_SIZE)
+
+#define SYS_PROT_READ 0x1
+#define SYS_PROT_WRITE 0x2
+#define SYS_PROT_EXEC 0x4
+
+#define SYS_MAP_SHARED 0x01
+#define SYS_MAP_PRIVATE 0x02
+#define SYS_MAP_FIXED 0x10
+#define SYS_MAP_ANONYMOUS 0x20
 
 #define SYS_SIGTERM 15
 #define SYS_SIGPIPE 13
@@ -154,7 +165,49 @@ static int syscall_user_range_ok(uint64_t addr, size_t len)
 	if (addr >= VAS_USER_END)
 		return 0;
 
-	return len <= VAS_USER_END - addr;
+	if (len > VAS_USER_END - addr)
+		return 0;
+
+	pcb_t *process = syscall_current_process();
+	if (!process || !process->vas)
+		return 0;
+
+	return vas_user_access_ok(process->vas, addr, len, 0) == 0;
+}
+
+static int syscall_user_range_write_ok(uint64_t addr, size_t len)
+{
+	if (addr >= VAS_USER_END)
+		return 0;
+
+	if (len > VAS_USER_END - addr)
+		return 0;
+
+	pcb_t *process = syscall_current_process();
+	if (!process || !process->vas)
+		return 0;
+
+	return vas_user_access_ok(process->vas, addr, len, 1) == 0;
+}
+
+static int syscall_copy_from_user(void *dst, uint64_t user, size_t len)
+{
+	if (len == 0)
+		return 0;
+	if (!dst || !syscall_user_range_ok(user, len))
+		return -EFAULT;
+	memcpy(dst, (const void *)(uintptr_t)user, len);
+	return 0;
+}
+
+static int syscall_copy_to_user(uint64_t user, const void *src, size_t len)
+{
+	if (len == 0)
+		return 0;
+	if (!src || !syscall_user_range_write_ok(user, len))
+		return -EFAULT;
+	memcpy((void *)(uintptr_t)user, src, len);
+	return 0;
 }
 
 static int syscall_copy_user_string(uint64_t user, char *out, size_t out_len)
@@ -163,10 +216,9 @@ static int syscall_copy_user_string(uint64_t user, char *out, size_t out_len)
 		return -EINVAL;
 
 	for (size_t i = 0; i < out_len; i++) {
-		if (user + i >= VAS_USER_END)
-			return -EINVAL;
-
-		char c = ((const char *)user)[i];
+		char c;
+		if (syscall_copy_from_user(&c, user + i, sizeof(c)) != 0)
+			return -EFAULT;
 		out[i] = c;
 
 		if (c == '\0')
@@ -175,6 +227,12 @@ static int syscall_copy_user_string(uint64_t user, char *out, size_t out_len)
 
 	out[out_len - 1] = '\0';
 	return -ENAMETOOLONG;
+}
+
+static int syscall_interrupted(void)
+{
+	tcb_t *thread = sched_current();
+	return (thread && sched_signal_is_pending(thread)) ? -EINTR : 0;
 }
 
 static int syscall_normalize_path(const char *input, char *out, size_t out_len)
@@ -483,12 +541,12 @@ static int syscall_copy_timespec_timeout(uint64_t user_ts,
 	if (!user_ts)
 		return time_timeout_after_ms(-1, timeout);
 
-	if (!syscall_user_range_ok(user_ts, sizeof(syscall_timespec_t)))
-		return -EINVAL;
+	syscall_timespec_t ts;
+	int r = syscall_copy_from_user(&ts, user_ts, sizeof(ts));
+	if (r != 0)
+		return r;
 
-	int64_t sec = *(int64_t *)user_ts;
-	long nsec = *(long *)(user_ts + 8);
-	int r = time_timeout_after_timespec(sec, nsec, timeout);
+	r = time_timeout_after_timespec(ts.tv_sec, ts.tv_nsec, timeout);
 
 	return r == 0 ? 0 : r;
 }
@@ -505,36 +563,69 @@ static long sys_read_handler(interrupt_frame_t *frame)
 		return -EBADF;
 
 	int fd = (int)frame->rdi;
-	void *buf = (void *)frame->rsi;
+	uint64_t user_buf = frame->rsi;
 	size_t len = (size_t)frame->rdx;
 
-	if (fd < 0 || fd >= SCHED_FILE_MAX || !buf ||
-		!syscall_user_range_ok((uint64_t)buf, len))
+	if (fd < 0 || fd >= SCHED_FILE_MAX || !user_buf)
 		return -EINVAL;
+	if (len && !syscall_user_range_write_ok(user_buf, len))
+		return -EFAULT;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
 		return -EBADF;
 
-	if (file->private_data)
-		return net_recv((socket_t *)file->private_data, buf, len, 0);
+	if (len == 0)
+		return 0;
 
-	if (vfs_pipe_is(file)) {
+	size_t total = 0;
+	size_t chunk_cap = len < PAGE_SIZE ? len : PAGE_SIZE;
+	char *kbuf = kmalloc(chunk_cap);
+	if (!kbuf)
+		return -ENOMEM;
+
+	while (total < len) {
+		size_t chunk = len - total;
+		if (chunk > chunk_cap)
+			chunk = chunk_cap;
+
 		size_t done = 0;
-		int r = vfs_pipe_read(file, buf, len, &done);
-		if (r != 0)
-			return r;
-		return (long)done;
+		int r;
+		if (file->private_data)
+			r = net_recv((socket_t *)file->private_data, kbuf, chunk, 0);
+		else if (vfs_pipe_is(file))
+			r = vfs_pipe_read(file, kbuf, chunk, &done);
+		else
+			r = vfs_read(file, kbuf, chunk, &done);
+
+		if (file->private_data) {
+			if (r < 0) {
+				kfree(kbuf);
+				return total ? (long)total : r;
+			}
+			done = (size_t)r;
+			r = 0;
+		}
+
+		if (r != 0) {
+			kfree(kbuf);
+			return total ? (long)total : r;
+		}
+		if (done == 0)
+			break;
+		if (syscall_copy_to_user(user_buf + total, kbuf, done) != 0) {
+			kfree(kbuf);
+			return total ? (long)total : -EFAULT;
+		}
+
+		total += done;
+		if (done < chunk)
+			break;
 	}
 
-	size_t done = 0;
-	int r = vfs_read(file, buf, len, &done);
-
-	if (r != 0)
-		return r;
-
-	return (long)done;
+	kfree(kbuf);
+	return (long)total;
 }
 
 static long sys_write_handler(interrupt_frame_t *frame)
@@ -545,45 +636,73 @@ static long sys_write_handler(interrupt_frame_t *frame)
 		return -EBADF;
 
 	int fd = (int)frame->rdi;
-	const char *buf = (const char *)frame->rsi;
+	uint64_t user_buf = frame->rsi;
 	size_t len = (size_t)frame->rdx;
 
 	if (fd < 0 || fd >= SCHED_FILE_MAX)
 		return -EBADF;
 
-	if (len && (!buf || !syscall_user_range_ok((uint64_t)buf, len)))
-		return -EINVAL;
+	if (len && (!user_buf || !syscall_user_range_ok(user_buf, len)))
+		return -EFAULT;
 
 	vfs_file_t *file = thread->process->files[fd];
 
 	if (!file)
 		return -EBADF;
 
-	if (file->private_data)
-		return net_send((socket_t *)file->private_data, buf, len, 0);
-
-	if (!buf)
+	if (!user_buf)
 		return -EINVAL;
+	if (len == 0)
+		return 0;
 
-	if (vfs_pipe_is(file)) {
-		size_t done = 0;
-		int r = vfs_pipe_write(file, buf, len, &done);
-		if (r == -EPIPE) {
-			(void)sched_process_signal(thread->process, thread->process->pid,
-									   SYS_SIGPIPE);
+	size_t total = 0;
+	size_t chunk_cap = len < PAGE_SIZE ? len : PAGE_SIZE;
+	char *kbuf = kmalloc(chunk_cap);
+	if (!kbuf)
+		return -ENOMEM;
+
+	while (total < len) {
+		size_t chunk = len - total;
+		if (chunk > chunk_cap)
+			chunk = chunk_cap;
+		if (syscall_copy_from_user(kbuf, user_buf + total, chunk) != 0) {
+			kfree(kbuf);
+			return total ? (long)total : -EFAULT;
 		}
-		if (r != 0)
-			return r;
-		return (long)done;
+
+		size_t done = 0;
+		int r;
+		if (file->private_data) {
+			r = net_send((socket_t *)file->private_data, kbuf, chunk, 0);
+			if (r < 0) {
+				kfree(kbuf);
+				return total ? (long)total : r;
+			}
+			done = (size_t)r;
+			r = 0;
+		} else if (vfs_pipe_is(file)) {
+			r = vfs_pipe_write(file, kbuf, chunk, &done);
+			if (r == -EPIPE) {
+				(void)sched_process_signal(thread->process, thread->process->pid,
+									   SYS_SIGPIPE);
+			}
+		} else {
+			r = vfs_write(file, kbuf, chunk, &done);
+		}
+
+		if (r != 0) {
+			kfree(kbuf);
+			return total ? (long)total : r;
+		}
+		if (done == 0)
+			break;
+		total += done;
+		if (done < chunk)
+			break;
 	}
 
-	size_t done = 0;
-	int r = vfs_write(file, buf, len, &done);
-
-	if (r != 0)
-		return r;
-
-	return (long)done;
+	kfree(kbuf);
+	return (long)total;
 }
 
 static long sys_open_handler(interrupt_frame_t *frame)
@@ -1351,12 +1470,14 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 	}
 
 	uint64_t stack_top = 0x00007ffffff000ULL;
-	uint64_t stack_size = 16 * PAGE_SIZE;
-	uint64_t stack_base = stack_top - stack_size;
+	uint64_t stack_size = SYS_USER_STACK_SIZE;
+	uint64_t stack_guard = SYS_USER_STACK_GUARD_SIZE;
+	uint64_t stack_base = stack_top - (stack_size + stack_guard);
+	uint64_t stack_map_base = stack_base + stack_guard;
 
-	if (vas_map_anon(new_vas, stack_base, stack_size,
+	if (vas_map_anon(new_vas, stack_map_base, stack_size,
 					 VMM_PRESENT | VMM_WRITABLE | VMM_USER | VMM_NX |
-						 VAD_FIXED) != stack_base) {
+						 VAD_FIXED) != stack_map_base) {
 		vas_destroy(new_vas);
 		return -ENOMEM;
 	}
@@ -1427,11 +1548,8 @@ static long sys_arch_prctl_handler(interrupt_frame_t *frame)
 		return 0;
 
 	case ARCH_GET_FS:
-		if (!syscall_user_range_ok(frame->rsi, sizeof(uint64_t)))
-			return -EINVAL;
-
-		*(uint64_t *)frame->rsi = thread->fs_base;
-		return 0;
+		return syscall_copy_to_user(frame->rsi, &thread->fs_base,
+									sizeof(thread->fs_base));
 
 	default:
 		return -ENOSYS;
@@ -1451,9 +1569,10 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 	int flags = (int)frame->r10;
 	int fd = (int)frame->r8;
 	uint64_t offset = frame->r9;
-	int shared = (flags & 0x01) != 0;
-	int private = (flags & 0x02) != 0;
-	int anonymous = (flags & 0x20) != 0;
+	int shared = (flags & SYS_MAP_SHARED) != 0;
+	int private = (flags & SYS_MAP_PRIVATE) != 0;
+	int anonymous = (flags & SYS_MAP_ANONYMOUS) != 0;
+	int fixed = (flags & SYS_MAP_FIXED) != 0;
 	vfs_file_t *file = NULL;
 
 	if (!length)
@@ -1462,10 +1581,12 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 		return -EINVAL;
 	if ((offset & (PAGE_SIZE - 1)) != 0)
 		return -EINVAL;
+	if (fixed && (addr & (PAGE_SIZE - 1)) != 0)
+		return -EINVAL;
 
 	uint64_t vmm_flags = syscall_mmap_prot_to_vmm(prot);
 
-	if (flags & 0x10)
+	if (fixed)
 		vmm_flags |= VAD_FIXED;
 	if (shared)
 		vmm_flags |= VAD_SHARED;
@@ -1482,12 +1603,15 @@ static long sys_mmap_handler(interrupt_frame_t *frame)
 			if (accmode == VFS_O_WRONLY)
 				return -EACCES;
 		} else {
-			if ((prot & 0x1) && accmode == VFS_O_WRONLY)
+			if ((prot & SYS_PROT_READ) && accmode == VFS_O_WRONLY)
 				return -EACCES;
-			if ((prot & 0x2) && accmode == VFS_O_RDONLY)
+			if ((prot & SYS_PROT_WRITE) && accmode == VFS_O_RDONLY)
 				return -EACCES;
 		}
 	}
+
+	if (fixed)
+		vas_unmap(thread->process->vas, addr, length);
 
 	if (anonymous) {
 		uint64_t mapped =
@@ -1546,6 +1670,9 @@ static long sys_mprotect_handler(interrupt_frame_t *frame)
 	if (!thread || !thread->process || !thread->process->vas)
 		return -EBADF;
 
+	if (!vas_range_mapped(thread->process->vas, frame->rdi, (size_t)frame->rsi))
+		return -ENOMEM;
+
 	return vas_protect(thread->process->vas, frame->rdi, (size_t)frame->rsi,
 					   syscall_mmap_prot_to_vmm((int)frame->rdx));
 }
@@ -1565,8 +1692,8 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 	if (!process)
 		return -EBADF;
 
-	if (status_user && !syscall_user_range_ok(status_user, sizeof(int)))
-		return -EINVAL;
+	if (status_user && !syscall_user_range_write_ok(status_user, sizeof(int)))
+		return -EFAULT;
 
 	for (;;) {
 		pid_t waited = 0;
@@ -1574,13 +1701,20 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 		int r = sched_process_wait(process, pid, options, &waited, &status);
 
 		if (r == 0) {
-			if (status_user && waited != 0)
-				*(int *)status_user = status;
+			if (status_user && waited != 0) {
+				r = syscall_copy_to_user(status_user, &status, sizeof(status));
+				if (r != 0)
+					return r;
+			}
 
 			return waited;
 		}
 
 		if (r == -EAGAIN) {
+			r = syscall_interrupted();
+			if (r != 0)
+				return r;
+
 			time_timeout_t timeout;
 			int tr = time_timeout_after_ms(-1, &timeout);
 
@@ -1588,6 +1722,9 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 				return tr;
 
 			time_sleep_until_interrupt_or_timeout(&timeout);
+			r = syscall_interrupted();
+			if (r != 0)
+				return r;
 			continue;
 		}
 
@@ -1708,7 +1845,7 @@ static long sys_clock_get_handler(interrupt_frame_t *frame)
 	int clock_id = (int)frame->rdi;
 	uint64_t user_ts = frame->rsi;
 
-	if (!user_ts || !syscall_user_range_ok(user_ts, sizeof(syscall_timespec_t)))
+	if (!user_ts)
 		return -EINVAL;
 
 	int64_t sec = 0;
@@ -1726,8 +1863,7 @@ static long sys_clock_get_handler(interrupt_frame_t *frame)
 		.tv_nsec = nsec,
 	};
 
-	memcpy((void *)user_ts, &ts, sizeof(ts));
-	return 0;
+	return syscall_copy_to_user(user_ts, &ts, sizeof(ts));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2361,7 +2497,7 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 
 	if (nfds &&
 		!syscall_user_range_ok(user_fds, nfds * sizeof(struct lyr_pollfd)))
-		return -EINVAL;
+		return -EFAULT;
 
 	struct lyr_pollfd *fds = NULL;
 
@@ -2371,7 +2507,10 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 		if (!fds)
 			return -ENOMEM;
 
-		memcpy(fds, (void *)user_fds, nfds * sizeof(*fds));
+		if (syscall_copy_from_user(fds, user_fds, nfds * sizeof(*fds)) != 0) {
+			kfree(fds);
+			return -EFAULT;
+		}
 	}
 
 	time_timeout_t timeout;
@@ -2394,10 +2533,16 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 			break;
 
 		time_sleep_until_interrupt_or_timeout(&timeout);
+		if (syscall_interrupted() != 0) {
+			ret = -EINTR;
+			break;
+		}
 	}
 
-	if (nfds && ret >= 0)
-		memcpy((void *)user_fds, fds, nfds * sizeof(*fds));
+	if (nfds && ret >= 0) {
+		if (syscall_copy_to_user(user_fds, fds, nfds * sizeof(*fds)) != 0)
+			ret = -EFAULT;
+	}
 
 	if (fds)
 		kfree(fds);
@@ -2405,14 +2550,14 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 	return ret;
 }
 
-static int sys_pselect_set_has(uint64_t set, int fd)
+static int sys_pselect_set_has(const uint8_t *set, int fd)
 {
-	return ((uint8_t *)set)[fd / 8] & (uint8_t)(1u << (fd % 8));
+	return set[fd / 8] & (uint8_t)(1u << (fd % 8));
 }
 
-static void sys_pselect_set_add(uint64_t set, int fd)
+static void sys_pselect_set_add(uint8_t *set, int fd)
 {
-	((uint8_t *)set)[fd / 8] |= (uint8_t)(1u << (fd % 8));
+	set[fd / 8] |= (uint8_t)(1u << (fd % 8));
 }
 
 static long sys_pselect_handler(interrupt_frame_t *frame)
@@ -2432,13 +2577,13 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 	size_t set_bytes = ((size_t)nfds + 7) / 8;
 
 	if (readfds_ptr && !syscall_user_range_ok(readfds_ptr, set_bytes))
-		return -EINVAL;
+		return -EFAULT;
 
 	if (writefds_ptr && !syscall_user_range_ok(writefds_ptr, set_bytes))
-		return -EINVAL;
+		return -EFAULT;
 
 	if (exceptfds_ptr && !syscall_user_range_ok(exceptfds_ptr, set_bytes))
-		return -EINVAL;
+		return -EFAULT;
 
 	time_timeout_t timeout;
 	int tr = syscall_copy_timespec_timeout(timeout_ptr, &timeout);
@@ -2452,29 +2597,76 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 		return -EBADF;
 
 	struct lyr_pollfd *fds = NULL;
+	uint8_t *readfds = NULL;
+	uint8_t *writefds = NULL;
+	uint8_t *exceptfds = NULL;
+
+	if (set_bytes) {
+		if (readfds_ptr) {
+			readfds = kzalloc(set_bytes);
+			if (!readfds)
+				return -ENOMEM;
+			if (syscall_copy_from_user(readfds, readfds_ptr, set_bytes) != 0) {
+				kfree(readfds);
+				return -EFAULT;
+			}
+		}
+
+		if (writefds_ptr) {
+			writefds = kzalloc(set_bytes);
+			if (!writefds) {
+				kfree(readfds);
+				return -ENOMEM;
+			}
+			if (syscall_copy_from_user(writefds, writefds_ptr, set_bytes) != 0) {
+				kfree(writefds);
+				kfree(readfds);
+				return -EFAULT;
+			}
+		}
+
+		if (exceptfds_ptr) {
+			exceptfds = kzalloc(set_bytes);
+			if (!exceptfds) {
+				kfree(writefds);
+				kfree(readfds);
+				return -ENOMEM;
+			}
+			if (syscall_copy_from_user(exceptfds, exceptfds_ptr, set_bytes) != 0) {
+				kfree(exceptfds);
+				kfree(writefds);
+				kfree(readfds);
+				return -EFAULT;
+			}
+		}
+	}
 
 	if (nfds > 0) {
 		fds = kzalloc((size_t)nfds * sizeof(*fds));
 
-		if (!fds)
+		if (!fds) {
+			kfree(exceptfds);
+			kfree(writefds);
+			kfree(readfds);
 			return -ENOMEM;
+		}
 
 		for (int i = 0; i < nfds; i++) {
 			fds[i].fd = -1;
 			fds[i].events = 0;
 			fds[i].revents = 0;
 
-			if (readfds_ptr && sys_pselect_set_has(readfds_ptr, i)) {
+			if (readfds && sys_pselect_set_has(readfds, i)) {
 				fds[i].fd = i;
 				fds[i].events |= LYR_POLLIN | LYR_POLLRDNORM;
 			}
 
-			if (writefds_ptr && sys_pselect_set_has(writefds_ptr, i)) {
+			if (writefds && sys_pselect_set_has(writefds, i)) {
 				fds[i].fd = i;
 				fds[i].events |= LYR_POLLOUT | LYR_POLLWRNORM;
 			}
 
-			if (exceptfds_ptr && sys_pselect_set_has(exceptfds_ptr, i)) {
+			if (exceptfds && sys_pselect_set_has(exceptfds, i)) {
 				fds[i].fd = i;
 				fds[i].events |= LYR_POLLPRI | LYR_POLLRDBAND;
 			}
@@ -2493,47 +2685,67 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 			break;
 
 		time_sleep_until_interrupt_or_timeout(&timeout);
+		if (syscall_interrupted() != 0) {
+			ready = -EINTR;
+			break;
+		}
 	}
 
 	if (ready >= 0) {
-		if (readfds_ptr)
-			memset((void *)readfds_ptr, 0, set_bytes);
+		if (readfds)
+			memset(readfds, 0, set_bytes);
 
-		if (writefds_ptr)
-			memset((void *)writefds_ptr, 0, set_bytes);
+		if (writefds)
+			memset(writefds, 0, set_bytes);
 
-		if (exceptfds_ptr)
-			memset((void *)exceptfds_ptr, 0, set_bytes);
+		if (exceptfds)
+			memset(exceptfds, 0, set_bytes);
 
 		if (fds) {
 			for (int i = 0; i < nfds; i++) {
 				if (fds[i].fd < 0 || !fds[i].revents)
 					continue;
 
-				if (readfds_ptr && (fds[i].revents &
+				if (readfds && (fds[i].revents &
 									(LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLHUP |
 									 LYR_POLLERR | LYR_POLLNVAL))) {
-					sys_pselect_set_add(readfds_ptr, i);
+					sys_pselect_set_add(readfds, i);
 				}
 
-				if (writefds_ptr &&
+				if (writefds &&
 					(fds[i].revents &
 					 (LYR_POLLOUT | LYR_POLLWRNORM | LYR_POLLHUP | LYR_POLLERR |
 					  LYR_POLLNVAL))) {
-					sys_pselect_set_add(writefds_ptr, i);
+					sys_pselect_set_add(writefds, i);
 				}
 
-				if (exceptfds_ptr &&
+				if (exceptfds &&
 					(fds[i].revents & (LYR_POLLPRI | LYR_POLLRDBAND |
 									   LYR_POLLERR | LYR_POLLNVAL))) {
-					sys_pselect_set_add(exceptfds_ptr, i);
+					sys_pselect_set_add(exceptfds, i);
 				}
 			}
 		}
+
+		if (readfds_ptr &&
+			syscall_copy_to_user(readfds_ptr, readfds, set_bytes) != 0)
+			ready = -EFAULT;
+		if (ready >= 0 && writefds_ptr &&
+			syscall_copy_to_user(writefds_ptr, writefds, set_bytes) != 0)
+			ready = -EFAULT;
+		if (ready >= 0 && exceptfds_ptr &&
+			syscall_copy_to_user(exceptfds_ptr, exceptfds, set_bytes) != 0)
+			ready = -EFAULT;
 	}
 
 	if (fds)
 		kfree(fds);
+	if (exceptfds)
+		kfree(exceptfds);
+	if (writefds)
+		kfree(writefds);
+	if (readfds)
+		kfree(readfds);
 
 	return ready;
 }
@@ -2703,14 +2915,14 @@ static long sys_sigaction_handler(interrupt_frame_t *frame)
 	sched_sigaction_t *oldp = old_user ? &oldact : NULL;
 
 	if (act_user) {
-		if (!syscall_user_range_ok(act_user, sizeof(syscall_sigaction_t)))
-			return -EINVAL;
-
-		syscall_sigaction_t *u = (syscall_sigaction_t *)(uintptr_t)act_user;
-		act.handler = u->handler;
-		act.flags = u->flags;
-		act.restorer = u->restorer;
-		act.mask = u->mask;
+		syscall_sigaction_t u;
+		int cr = syscall_copy_from_user(&u, act_user, sizeof(u));
+		if (cr != 0)
+			return cr;
+		act.handler = u.handler;
+		act.flags = u.flags;
+		act.restorer = u.restorer;
+		act.mask = u.mask;
 		actp = &act;
 	}
 
@@ -2719,14 +2931,15 @@ static long sys_sigaction_handler(interrupt_frame_t *frame)
 		return r;
 
 	if (old_user) {
-		if (!syscall_user_range_ok(old_user, sizeof(syscall_sigaction_t)))
-			return -EINVAL;
-
-		syscall_sigaction_t *u = (syscall_sigaction_t *)(uintptr_t)old_user;
-		u->handler = oldact.handler;
-		u->flags = oldact.flags;
-		u->restorer = oldact.restorer;
-		u->mask = oldact.mask;
+		syscall_sigaction_t u = {
+			.handler = oldact.handler,
+			.flags = oldact.flags,
+			.restorer = oldact.restorer,
+			.mask = oldact.mask,
+		};
+		r = syscall_copy_to_user(old_user, &u, sizeof(u));
+		if (r != 0)
+			return r;
 	}
 
 	return 0;
@@ -2747,9 +2960,9 @@ static long sys_sigprocmask_handler(interrupt_frame_t *frame)
 		return -EBADF;
 
 	if (set_user) {
-		if (!syscall_user_range_ok(set_user, sizeof(uint64_t)))
-			return -EINVAL;
-		set = *(uint64_t *)(uintptr_t)set_user;
+		int cr = syscall_copy_from_user(&set, set_user, sizeof(set));
+		if (cr != 0)
+			return cr;
 		setp = &set;
 	}
 
@@ -2758,9 +2971,9 @@ static long sys_sigprocmask_handler(interrupt_frame_t *frame)
 		return r;
 
 	if (old_user) {
-		if (!syscall_user_range_ok(old_user, sizeof(uint64_t)))
-			return -EINVAL;
-		*(uint64_t *)(uintptr_t)old_user = oldset;
+		r = syscall_copy_to_user(old_user, &oldset, sizeof(oldset));
+		if (r != 0)
+			return r;
 	}
 
 	return 0;
@@ -2791,8 +3004,12 @@ static long sys_nsleep_handler(interrupt_frame_t *frame)
 	if (r != 0)
 		return r;
 
-	while (!time_timeout_expired(&timeout))
+	while (!time_timeout_expired(&timeout)) {
 		time_sleep_until_interrupt_or_timeout(&timeout);
+		r = syscall_interrupted();
+		if (r != 0)
+			return r;
+	}
 
 	return 0;
 }

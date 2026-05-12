@@ -113,6 +113,12 @@ static const net_socket_domain_ops_t inet_socket_domain = {
 	.destroy = inet_socket_destroy,
 };
 
+static int socket_interrupted(void)
+{
+	tcb_t *thread = sched_current();
+	return (thread && sched_signal_is_pending(thread)) ? -EINTR : 0;
+}
+
 static const net_udp_handler_ops_t socket_udp_handler = {
 	.name = "socket",
 	.receive = socket_udp_receive,
@@ -655,6 +661,8 @@ int net_accept(socket_t *sock, socket_t **out, sockaddr_t *addr,
 		while (sock->backlog_count == 0) {
 			if (sock->flags & NET_SOCK_NONBLOCK)
 				return NET_SOCK_ERR_WOULDBLOCK;
+			if (socket_interrupted() != 0)
+				return -EINTR;
 
 			net_poll_all();
 		}
@@ -777,6 +785,8 @@ int net_connect(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
 
 		if (r != 0) {
 			log_debug("socket", "AF_INET connect failed r=%d", r);
+			if (r == -EINTR)
+				return r;
 			if (r == -ETIMEDOUT)
 				return NET_SOCK_ERR_TIMEDOUT;
 			return NET_SOCK_ERR_CONNREFUSED;
@@ -939,7 +949,12 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 			if (is->rx_len == 0) {
 				uint64_t until = pit_get_ticks() +
 					net_timeout_ticks(is->recv_timeout_ms);
-				net_poll_until(NULL, until, (int *)&is->readable);
+				while (!is->readable && pit_get_ticks() < until) {
+					if (socket_interrupted() != 0)
+						return -EINTR;
+					net_poll_all();
+					__asm__ volatile("pause" ::: "memory");
+				}
 			}
 			if (is->rx_len == 0)
 				return NET_SOCK_ERR_WOULDBLOCK;
@@ -978,6 +993,8 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 				net_tcp_recv(sock->inet_data->tcp_conn, sock->inet_data->rx_buf,
 							 SOCKET_BUF_SIZE, &done, 10000);
 
+			if (r == -EINTR)
+				return r;
 			if (r == -ETIMEDOUT)
 				return NET_SOCK_ERR_WOULDBLOCK;
 

@@ -308,6 +308,32 @@ void page_unshare(page_t *page)
 				   pfndb_page_to_phys(page), page->u2.sharecount);
 }
 
+void page_mark_cow(page_t *page)
+{
+	if (!page)
+		return;
+
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
+	_page_validate_used(page, "page_mark_cow");
+	page->flags |= PAGE_COW;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
+}
+
+void page_clear_cow(page_t *page)
+{
+	if (!page)
+		return;
+
+	uint64_t irq = pmm_irq_save();
+	spinlock_acquire(&pmm_lock);
+	_page_validate_used(page, "page_clear_cow");
+	page->flags &= ~PAGE_COW;
+	spinlock_release(&pmm_lock);
+	pmm_irq_restore(irq);
+}
+
 uint64_t pmm_free_pages(void)
 {
 	uint64_t irq = pmm_irq_save();
