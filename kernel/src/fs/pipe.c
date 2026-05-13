@@ -173,8 +173,10 @@ int vfs_pipe_create(vfs_file_t **read_end, vfs_file_t **write_end)
 
 	rf->node = &reader->node;
 	rf->flags = VFS_O_RDONLY;
+	rf->refs = 1;
 	wf->node = &writer->node;
 	wf->flags = VFS_O_WRONLY;
+	wf->refs = 1;
 
 	*read_end = rf;
 	*write_end = wf;
@@ -184,6 +186,26 @@ int vfs_pipe_create(vfs_file_t **read_end, vfs_file_t **write_end)
 int vfs_pipe_is(vfs_file_t *file)
 {
 	return file && file->node && file->node->ops == &pipe_ops;
+}
+
+int vfs_pipe_ref(vfs_file_t *file)
+{
+	pipe_endpoint_t *endpoint = pipe_endpoint_from_node(file ? file->node : NULL);
+	if (!endpoint || !endpoint->shared)
+		return -EBADF;
+
+	pipe_shared_t *shared = endpoint->shared;
+	spinlock_acquire(&shared->lock);
+	if (endpoint->side == PIPE_READER)
+		shared->readers++;
+	else if (endpoint->side == PIPE_WRITER)
+		shared->writers++;
+	else {
+		spinlock_release(&shared->lock);
+		return -EBADF;
+	}
+	spinlock_release(&shared->lock);
+	return 0;
 }
 
 int vfs_pipe_read(vfs_file_t *file, void *buf, size_t len, size_t *done)

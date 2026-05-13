@@ -141,6 +141,7 @@ struct vfs_file {
 	vfs_node_t *node;
 	uint32_t flags;
 	uint64_t offset;
+	uint32_t refs;
 	vfs_cred_t cred;
 	void *private_data;
 };
@@ -151,6 +152,7 @@ void vfs_node_init(vfs_node_t *node, const vfs_ops_t *ops, vfs_mode_t mode,
 				   vfs_uid_t uid, vfs_gid_t gid);
 void vfs_node_ref(vfs_node_t *node);
 void vfs_node_release(vfs_node_t *node);
+vfs_file_t *vfs_file_ref(vfs_file_t *file);
 
 void vfs_init(vfs_node_t *root);
 vfs_node_t *vfs_root(void);

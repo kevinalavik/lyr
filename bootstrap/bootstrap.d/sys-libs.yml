@@ -109,3 +109,13 @@ packages:
     build:
       - args: ['make', '-j@PARALLELISM@']
       - args: ['make', 'DESTDIR=@THIS_COLLECT_DIR@', 'install']
+      # As we build ncurses with wide character support, make some compatibility links
+      - args: |
+          for lib in ncurses form panel menu tinfo ; do
+              rm -vf                    @THIS_COLLECT_DIR@/usr/lib/lib${lib}.so
+              echo "INPUT(-l${lib}w)" > @THIS_COLLECT_DIR@/usr/lib/lib${lib}.so
+              ln -sfv ${lib}w.pc        @THIS_COLLECT_DIR@/usr/lib/pkgconfig/${lib}.pc
+          done
+          rm -vf                     @THIS_COLLECT_DIR@/usr/lib/libcursesw.so
+          echo "INPUT(-lncursesw)" > @THIS_COLLECT_DIR@/usr/lib/libcursesw.so
+          ln -sfv libncurses.so      @THIS_COLLECT_DIR@/usr/lib/libcurses.so

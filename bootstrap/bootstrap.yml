@@ -8,6 +8,7 @@ imports:
   - file: bootstrap.d/games-fps.yml
   - file: bootstrap.d/sys-libs.yml
   - file: bootstrap.d/apps-editors.yml
+  - file: bootstrap.d/lua-libs.yml
 general:
   patch_author: Kevin Alavik and contributors
   patch_email: kevin@alavik.se

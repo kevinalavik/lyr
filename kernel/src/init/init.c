@@ -9,7 +9,7 @@
 #include <sched/sched.h>
 
 #define INIT_STACK_TOP 0x00007ffffff000ULL
-#define INIT_STACK_SIZE (8 * 1024 * 1024ULL)
+#define INIT_STACK_SIZE (16 * 1024 * 1024ULL)
 #define INIT_STACK_GUARD_SIZE PAGE_SIZE
 
 int init_spawn(const char *path)
@@ -58,6 +58,8 @@ int init_spawn(const char *path)
 		vas_destroy(vas);
 		return -ENOMEM;
 	}
+
+	process->cred = vfs_root_cred;
 
 	tcb_t *thread =
 		sched_create_user_thread(process, "init", image.entry, user_rsp);

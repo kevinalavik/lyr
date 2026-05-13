@@ -1,0 +1,29 @@
+sources:
+  - name: lua-strict
+    subdir: sources
+    version: '1.4'
+    url: 'https://github.com/lua-stdlib/strict/archive/refs/tags/v1.4.tar.gz'
+    format: 'tar.gz'
+    extract_path: 'strict-1.4'
+    checksum: 'sha256:e338b349fcf10a96f85bf67fa8a8bcd2271e9a2dc2588354e3b253167d05d68c'
+    patch-path-strip: 1
+
+packages:
+  - name: lua-strict
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: lua-strict
+    pkgs_required:
+      - lua
+      - coreutils
+    build:
+      - args:
+          - 'mkdir'
+          - '-p'
+          - '@THIS_COLLECT_DIR@/usr/local/share/lua/5.5/'
+      - args:
+          - 'cp'
+          - '-r'
+          - '@THIS_SOURCE_DIR@/lib/std/strict'
+          - '@THIS_COLLECT_DIR@/usr/local/share/lua/5.5/'

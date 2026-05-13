@@ -54,7 +54,7 @@
 
 #define SYS_POLL_NFDS_MAX 1024
 #define SYS_USER_STACK_GUARD_SIZE PAGE_SIZE
-#define SYS_USER_STACK_SIZE (8 * 1024 * 1024ULL)
+#define SYS_USER_STACK_SIZE (16 * 1024 * 1024ULL)
 
 #define SYS_PROT_READ 0x1
 #define SYS_PROT_WRITE 0x2
@@ -428,8 +428,8 @@ static void syscall_uts_copy(char dst[SYS_UTSNAME_FIELD_LEN], const char *src)
 	dst[i] = '\0';
 }
 
-static void syscall_uts_copyf(char dst[SYS_UTSNAME_FIELD_LEN], const char *fmt,
-							  ...)
+__attribute__((unused)) static void
+syscall_uts_copyf(char dst[SYS_UTSNAME_FIELD_LEN], const char *fmt, ...)
 {
 	va_list args;
 
@@ -458,12 +458,21 @@ static vfs_file_t *syscall_dup_file(vfs_file_t *file)
 	if (!file)
 		return NULL;
 
+	/*
+	 * Pipes must preserve open-file-description lifetime across fork/dup.
+	 * If we clone the vfs_file for a pipe, closing one fd incorrectly drops
+	 * the reader/writer count even though another dup/forked fd is still open.
+	 */
+	if (vfs_pipe_is(file))
+		return vfs_file_ref(file);
+
 	vfs_file_t *dup = kzalloc(sizeof(*dup));
 
 	if (!dup)
 		return NULL;
 
 	*dup = *file;
+	dup->refs = 1;
 
 	if (dup->node)
 		vfs_node_ref(dup->node);
@@ -2098,11 +2107,10 @@ static long sys_uname_handler(interrupt_frame_t *frame)
 
 	syscall_utsname_t uts;
 	memset(&uts, 0, sizeof(uts));
-
-	syscall_uts_copy(uts.sysname, "lyrOS");
-	syscall_uts_copy(uts.nodename, "lyr");
-	syscall_uts_copy(uts.release, "1.0-alpha (mlibc)");
-	syscall_uts_copyf(uts.version, "lyr-%s", LYR_VERSION);
+	syscall_uts_copy(uts.sysname, "lyr");
+	syscall_uts_copy(uts.nodename, "localhost");
+	syscall_uts_copy(uts.release, LYR_VERSION);
+	syscall_uts_copy(uts.version, "lyrOS 1.0-alpha GNU/mlibc");
 
 #if defined(__x86_64__)
 	syscall_uts_copy(uts.machine, "x86_64");

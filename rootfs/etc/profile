@@ -1,25 +1,88 @@
-export PATH=/bin:/usr/bin:/usr/local/bin
+# /etc/profile
+#
+# System-wide environment for shells in lyrOS
+
+uid="${UID:-$(id -u)}"
+if [ "$uid" = "0" ] || [ "$USER" = "root" ]; then
+    PATH="/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin"
+else
+    PATH="/bin:/usr/bin:/usr/local/bin"
+fi
+unset uid
+
+export PATH
+export EDITOR="nano"
+export TERM="lyrterm"
+
 export LS_COLORS='di=01;34:ln=01;36:so=01;35:pi=33:ex=01;32:bd=01;33:cd=01;33:su=37;41:sg=30;43:tw=30;42:ow=34;42:st=37;44:*.tar=01;31:*.tgz=01;31:*.gz=01;31:*.zip=01;31:*.xz=01;31:*.7z=01;31:*.png=01;35:*.jpg=01;35:*.jpeg=01;35:*.gif=01;35:*.bmp=01;35:*.mp3=00;36:*.wav=00;36:*.mp4=00;35:*.mkv=00;35:*.txt=00'
 
-if [ $EUID -eq 0 ] ; then
-        export PATH=/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin
+case "$-" in
+    *i*) ;;
+    *) return 0 || exit 0 ;;
+esac
+
+
+alias ls='ls --color=auto'
+alias ll='ls -lh --color=auto'
+alias la='ls -lah --color=auto'
+alias grep='grep --color=auto'
+alias egrep='egrep --color=auto'
+alias fgrep='fgrep --color=auto'
+alias dir='dir --color=auto'
+
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+if [ -n "$BASH_VERSION" ]; then
+    export HISTSIZE=1000
+    export HISTFILESIZE=2000
+    export HISTCONTROL=ignoredups:erasedups
+    export HISTTIMEFORMAT='%F %T '
+
+    shopt -s histappend 
+    shopt -s checkwinsize
+
+    __set_prompt() {
+          local exit_code="$?"
+          local uid
+          local normal dim red green cyan yellow magenta
+          local user_color prompt_symbol status_part
+
+          normal="\[\e[0m\]"
+          dim="\[\e[2m\]"
+          red="\[\e[1;31m\]"
+          green="\[\e[1;32m\]"
+          cyan="\[\e[1;36m\]"
+          yellow="\[\e[1;33m\]"
+          magenta="\[\e[1;35m\]"
+
+          uid="${UID:-$(id -u)}"
+
+          if [ "$uid" = "0" ] || [ "$USER" = "root" ]; then
+              user_color="$red"
+              prompt_symbol="#"
+          else
+              user_color="$green"
+              prompt_symbol='$'
+          fi
+
+          if [ "$exit_code" = "0" ]; then
+              status_part="${green}0${normal}"
+          else
+              status_part="${red}${exit_code}${normal}"
+          fi
+
+          PS1="${dim}[${status_part}${dim}] ${user_color}\u${normal}${dim}@${normal}${cyan}\h${normal} ${magenta}\w${normal} ${yellow}${prompt_symbol}${normal} "
+      }
+
+    PROMPT_COMMAND="__set_prompt"
+
 fi
 
-NORMAL="\[\e[0m\]"
-RED="\[\e[1;31m\]"
-GREEN="\[\e[1;32m\]"
-if [[ $EUID == 0 ]] ; then
-  PS1="$RED\u@\h [ $NORMAL\w$RED ]# $NORMAL"
-else
-  PS1="$GREEN\u@\h [ $NORMAL\w$GREEN ]\$ $NORMAL"
+if [ -d /etc/profile.d ]; then
+    for profile_script in /etc/profile.d/*.sh; do
+        [ -r "$profile_script" ] && . "$profile_script"
+    done
+    unset profile_script
 fi
-
-unset RED GREEN NORMAL
-
-alias ls='ls --color'
-alias grep='grep --color'
-alias dir="dir --color"
-
-# export MLIBC_RTLD_DEBUG_VERBOSE=1
-export TERM=lyrterm
-export EDITOR=nano

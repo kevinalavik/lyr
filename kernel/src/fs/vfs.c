@@ -87,6 +87,13 @@ void vfs_node_release(vfs_node_t *node)
 		node->ops->release(node);
 }
 
+vfs_file_t *vfs_file_ref(vfs_file_t *file)
+{
+	if (file)
+		file->refs++;
+	return file;
+}
+
 void vfs_init(vfs_node_t *root)
 {
 	root_node = root;
@@ -503,6 +510,7 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 	file->node = node;
 	file->flags = flags;
 	file->offset = (flags & VFS_O_APPEND) ? node->size : 0;
+	file->refs = 1;
 	file->cred = *cred;
 
 	if (node->ops && node->ops->open) {
@@ -524,6 +532,11 @@ int vfs_close(vfs_file_t *file)
 {
 	if (!file)
 		return -EBADF;
+
+	if (file->refs > 1) {
+		file->refs--;
+		return 0;
+	}
 
 	int r = 0;
 	if (file->node && file->node->ops && file->node->ops->close)
