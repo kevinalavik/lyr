@@ -125,6 +125,16 @@ static int layout_symbol_set_token(layout_symbol_t *out, const char *s,
 		if (strcmp(s, syms[i].name) == 0)
 			return layout_symbol_set_byte(out, syms[i].val);
 
+	if (strncmp(s, "escape", 6) == 0 && s[6] != '\0') {
+		out->bytes[0] = 27;
+		size_t rest_len = strlen(s + 6);
+		if (rest_len >= KBD_MAP_BYTES_MAX - 1)
+			rest_len = KBD_MAP_BYTES_MAX - 1;
+		memcpy(out->bytes + 1, s + 6, rest_len);
+		out->len = (uint8_t)(1 + rest_len);
+		return 0;
+	}
+
 	/* Decimal Unicode codepoint (only for multi-digit numbers). */
 	if (s[0] >= '0' && s[0] <= '9' && s[1] != '\0') {
 		unsigned cp = 0;

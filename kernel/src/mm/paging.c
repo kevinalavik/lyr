@@ -168,14 +168,19 @@ void map_page(ptable_t *pt, uint64_t virt, page_t *page, uint64_t flags)
 	if (!pte)
 		kpanic(NULL, "paging: failed to allocate page-table page");
 
-	if (*pte & VMM_PRESENT)
-		kpanic(NULL, "paging: map_page on already-present PTE (virt=0x%llx)",
-			   virt);
+	if (*pte & VMM_PRESENT) {
+		uint64_t old_phys = *pte & PAGE_FRAME_MASK;
+		page_t *old_page = pfndb_phys_to_page(old_phys);
+		if (old_page) {
+			page_unshare(old_page);
+			page_unref(old_page);
+		}
+	}
 
 	*pte = phys | (flags & ~PAGE_FRAME_MASK) | VMM_PRESENT;
 
-	page_share(page); /* sharecount++, sets PAGE_SHARED if > 1 */
-	page_ref(page); /* refcount++ — this mapping owns a reference */
+	page_share(page);
+	page_ref(page);
 
 	asm volatile("invlpg (%0)" ::"r"(virt) : "memory");
 	spinlock_release(&paging_lock);
