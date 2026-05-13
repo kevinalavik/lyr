@@ -113,6 +113,8 @@ struct vfs_ops {
 	int (*ioctl)(vfs_file_t *file, unsigned long request, void *arg);
 	int (*poll)(vfs_file_t *file, int events);
 	int (*close)(vfs_file_t *file);
+	int (*fsync)(vfs_file_t *file);
+	int (*fadvise)(vfs_file_t *file, uint64_t offset, uint64_t len, int advice);
 	uint64_t (*mmap)(vfs_file_t *file, struct vas *vas, uint64_t hint,
 					 uint64_t offset, size_t length, uint64_t flags);
 	int (*readdir)(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
@@ -159,6 +161,8 @@ int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out);
 int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 			 const vfs_cred_t *cred, vfs_file_t **out);
 int vfs_close(vfs_file_t *file);
+int vfs_fsync(vfs_file_t *file);
+int vfs_fadvise(vfs_file_t *file, uint64_t offset, uint64_t len, int advice);
 int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done);
 int vfs_write(vfs_file_t *file, const void *buf, size_t len, size_t *done);
 int vfs_ioctl(vfs_file_t *file, unsigned long request, void *arg);

@@ -4,6 +4,14 @@
 #include <mm/vmm.h>
 #include <lib/string.h>
 
+#define VFS_FADV_NORMAL 0
+#define VFS_FADV_RANDOM 1
+#define VFS_FADV_SEQUENTIAL 2
+#define VFS_FADV_WILLNEED 3
+#define VFS_FADV_DONTNEED 4
+#define VFS_FADV_NOREUSE 5
+
+
 const vfs_cred_t vfs_root_cred = { .uid = 0, .gid = 0, .umask = 0022 };
 
 typedef struct vfs_mount {
@@ -524,6 +532,49 @@ int vfs_close(vfs_file_t *file)
 	vfs_node_release(file->node);
 	kfree(file);
 	return r;
+}
+
+int vfs_fsync(vfs_file_t *file)
+{
+	if (!file || !file->node)
+		return -EBADF;
+
+	if (VFS_S_ISFIFO(file->node->mode))
+		return -EINVAL;
+
+	if (!file->node->ops || !file->node->ops->fsync)
+		return 0;
+
+	return file->node->ops->fsync(file);
+}
+
+int vfs_fadvise(vfs_file_t *file, uint64_t offset, uint64_t len, int advice)
+{
+	if (!file || !file->node)
+		return -EBADF;
+
+	if ((int64_t)offset < 0 || (int64_t)len < 0)
+		return -EINVAL;
+
+	switch (advice) {
+	case VFS_FADV_NORMAL:
+	case VFS_FADV_RANDOM:
+	case VFS_FADV_SEQUENTIAL:
+	case VFS_FADV_WILLNEED:
+	case VFS_FADV_DONTNEED:
+	case VFS_FADV_NOREUSE:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (VFS_S_ISFIFO(file->node->mode))
+		return -ESPIPE;
+
+	if (!file->node->ops || !file->node->ops->fadvise)
+		return 0;
+
+	return file->node->ops->fadvise(file, offset, len, advice);
 }
 
 int vfs_read(vfs_file_t *file, void *buf, size_t len, size_t *done)

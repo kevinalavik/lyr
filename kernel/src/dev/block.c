@@ -106,6 +106,13 @@ static int part_write_blocks(block_device_t *dev, uint64_t lba, uint32_t count,
 									 buf);
 }
 
+static int part_flush(block_device_t *dev)
+{
+	if (!dev || !dev->parent)
+		return -EINVAL;
+	return block_flush(dev->parent);
+}
+
 static void block_register_partition(block_device_t *dev, unsigned number,
 									 uint64_t start, uint64_t count)
 {
@@ -123,6 +130,7 @@ static void block_register_partition(block_device_t *dev, unsigned number,
 	part.parent = dev;
 	part.read_blocks = part_read_blocks;
 	part.write_blocks = dev->write_blocks ? part_write_blocks : NULL;
+	part.flush = part_flush;
 	block_register(&part);
 }
 
@@ -357,4 +365,22 @@ block_device_t *block_find(const char *name)
 			return dev;
 	}
 	return NULL;
+}
+
+int block_flush(block_device_t *dev)
+{
+	if (!dev)
+		return -EINVAL;
+
+	if (dev->flush)
+		return dev->flush(dev);
+
+	if (dev->parent)
+		return block_flush(dev->parent);
+
+	/*
+	 * Drivers without a flush hook are treated as synchronous. The block layer
+	 * has no cache of its own, so there is nothing else to drain here.
+	 */
+	return 0;
 }

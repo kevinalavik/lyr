@@ -118,7 +118,7 @@ static int layout_symbol_set_token(layout_symbol_t *out, const char *s,
 		uint8_t val;
 	} syms[] = {
 		{ "nul", 0 },	   { "backspace", 8 }, { "tab", 9 },
-		{ "enter", '\n' }, { "escape", 27 },   { "space", ' ' },
+		{ "enter", '\r' }, { "escape", 27 },   { "space", ' ' },
 		{ "delete", 127 }, { "minus", '-' },
 	};
 	for (unsigned i = 0; i < sizeof(syms) / sizeof(syms[0]); i++)

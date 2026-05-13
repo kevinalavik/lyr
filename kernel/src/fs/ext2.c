@@ -2,6 +2,7 @@
 #include <debug/log.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
+#include <dev/block.h>
 #include <lib/nanoprintf.h>
 #include <lib/string.h>
 #include <mm/heap.h>
@@ -128,6 +129,8 @@ static int ext2_write(vfs_node_t *node, uint64_t off, const void *buf,
 					  size_t len, size_t *done);
 static int ext2_open(vfs_file_t *file);
 static int ext2_close(vfs_file_t *file);
+static int ext2_fsync(vfs_file_t *file);
+static int ext2_fadvise(vfs_file_t *file, uint64_t offset, uint64_t len, int advice);
 static int ext2_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 static int ext2_truncate(vfs_node_t *node, uint64_t size);
 static void ext2_release(vfs_node_t *node);
@@ -145,6 +148,8 @@ static const vfs_ops_t ext2_ops = {
 	.write = ext2_write,
 	.open = ext2_open,
 	.close = ext2_close,
+	.fsync = ext2_fsync,
+	.fadvise = ext2_fadvise,
 	.readdir = ext2_readdir,
 	.truncate = ext2_truncate,
 	.release = ext2_release,
@@ -785,6 +790,55 @@ static int ext2_close(vfs_file_t *file)
 
 	/* No per-file ext2 state is allocated by ext2_open(). */
 	file->private_data = NULL;
+	return 0;
+}
+
+static int ext2_fsync(vfs_file_t *file)
+{
+	if (!file || !file->node)
+		return -EBADF;
+
+	vfs_node_t *vnode = file->node;
+	ext2_node_t *node = vnode->private_data;
+	if (!node || !node->fs)
+		return -EINVAL;
+
+	/*
+	 * Data blocks are issued synchronously by ext2_write()/write_dir_chunk().
+	 * fsync still has to commit the in-memory inode copy, filesystem-wide
+	 * metadata counters/group descriptors, and then ask the block device to
+	 * flush its own volatile write cache if it has one.
+	 */
+	node->inode.mode = (uint16_t)vnode->mode;
+	node->inode.uid = (uint16_t)vnode->uid;
+	node->inode.gid = (uint16_t)vnode->gid;
+	node->inode.links_count = (uint16_t)vnode->nlink;
+	node->inode.size_lo = (uint32_t)vnode->size;
+	node->inode.size_high = (uint32_t)(vnode->size >> 32);
+
+	int r = write_inode(node->fs, node->ino, &node->inode);
+	if (r != 0)
+		return r;
+
+	r = write_metadata(node->fs);
+	if (r != 0)
+		return r;
+
+	return block_flush(node->fs->dev);
+}
+
+
+static int ext2_fadvise(vfs_file_t *file, uint64_t offset, uint64_t len, int advice)
+{
+	/*
+	 * Advisory only. ext2 currently has no page/block cache readahead or
+	 * eviction policy to tune, so all valid advice classes are accepted as
+	 * a no-op. Validation is done by vfs_fadvise().
+	 */
+	(void)file;
+	(void)offset;
+	(void)len;
+	(void)advice;
 	return 0;
 }
 

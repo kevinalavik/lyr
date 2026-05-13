@@ -43,6 +43,19 @@ static uint32_t rows;
 static bool render_enabled = true;
 static uint32_t framebuffer_raw_users = 0;
 
+static bool cursor_visible = true;
+static uint32_t saved_cursor_x;
+static uint32_t saved_cursor_y;
+
+static uint32_t scroll_top = 0;
+static uint32_t scroll_bottom = 0;
+
+static bool csi_private = false;
+static bool csi_private_qmark = false;
+static bool esc_charset_skip = false;
+
+static bool bold_attr = false;
+
 static const lyrterm_theme_t *active_theme = &lyrterm_theme_dark;
 
 static lyrterm_state_t render_state_storage;
@@ -54,10 +67,9 @@ static char lyrterm_q[LYRTERM_Q_SIZE];
 static size_t lyrterm_rpos;
 static size_t lyrterm_wpos;
 static size_t lyrterm_dropped;
+
 #define ansi_colors (active_theme->ansi_normal)
 #define ansi_colors_bright (active_theme->ansi_bright)
-
-#define CURSOR_COLOR current_fg
 
 #ifdef LYRTERM_LINE_CURSOR
 #define CURSOR_HEIGHT ((_LYRTERM_FONT_HEIGHT - _LYRTERM_LINE_PADDING_Y) / 6)
@@ -89,6 +101,11 @@ typedef struct {
 #define cell_buf render_state->cell_buf
 
 static void cursor_draw(void);
+static void cursor_erase(void);
+static void cursor_set_pos(uint32_t row, uint32_t col);
+static void scroll_up_region(uint32_t top, uint32_t bottom);
+static void scroll_down_region(uint32_t top, uint32_t bottom);
+static void newline(void);
 
 static inline uint32_t min_u32(uint32_t a, uint32_t b)
 {
@@ -221,6 +238,26 @@ static inline uint32_t cell_row(void)
 	return (cursor_y - term_y0() - _LYRTERM_FONT_ASCENT) / _LYRTERM_LINE_HEIGHT;
 }
 
+static uint32_t max_visible_cols(void)
+{
+	return cols < LYRTERM_MAX_COLS ? cols : LYRTERM_MAX_COLS;
+}
+
+static uint32_t max_visible_rows(void)
+{
+	return rows < LYRTERM_MAX_ROWS ? rows : LYRTERM_MAX_ROWS;
+}
+
+static uint32_t current_col(void)
+{
+	return cell_col();
+}
+
+static uint32_t current_row(void)
+{
+	return cell_row();
+}
+
 static void cell_clear(uint32_t col, uint32_t row)
 {
 	if (col >= LYRTERM_MAX_COLS || row >= LYRTERM_MAX_ROWS)
@@ -232,8 +269,8 @@ static void cell_clear(uint32_t col, uint32_t row)
 static void cell_clear_range(uint32_t start_col, uint32_t start_row,
 							 uint32_t end_col, uint32_t end_row)
 {
-	uint32_t max_rows = rows < LYRTERM_MAX_ROWS ? rows : LYRTERM_MAX_ROWS;
-	uint32_t max_cols = cols < LYRTERM_MAX_COLS ? cols : LYRTERM_MAX_COLS;
+	uint32_t max_rows = max_visible_rows();
+	uint32_t max_cols = max_visible_cols();
 
 	if (max_rows == 0 || max_cols == 0)
 		return;
@@ -262,6 +299,7 @@ static void cell_set(uint32_t col, uint32_t row, uint32_t cp, uint32_t fg,
 {
 	if (col >= LYRTERM_MAX_COLS || row >= LYRTERM_MAX_ROWS)
 		return;
+
 	cell_buf[row][col].codepoint = cp;
 	cell_buf[row][col].fg = fg;
 	cell_buf[row][col].bg = bg;
@@ -271,6 +309,7 @@ static lyrterm_cell_t cell_get(uint32_t col, uint32_t row)
 {
 	if (col >= LYRTERM_MAX_COLS || row >= LYRTERM_MAX_ROWS)
 		return (lyrterm_cell_t){ ' ', 0, 0 };
+
 	return cell_buf[row][col];
 }
 
@@ -357,6 +396,47 @@ static void drawch(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t fg,
 	}
 }
 
+static void redraw_cell(uint32_t col, uint32_t row)
+{
+	if (col >= max_visible_cols() || row >= max_visible_rows())
+		return;
+
+	lyrterm_cell_t cell = cell_get(col, row);
+	uint32_t fg = cell.fg ? cell.fg : default_fg;
+	uint32_t bg = cell.bg ? cell.bg : default_bg;
+	uint32_t cp = cell.codepoint ? cell.codepoint : ' ';
+
+	uint32_t x = term_x0() + col * _LYRTERM_LINE_WIDTH;
+	uint32_t y = term_y0() + row * _LYRTERM_LINE_HEIGHT;
+
+	drawch(x, y, cp, fg, bg);
+}
+
+static void redraw_line(uint32_t row)
+{
+	if (row >= max_visible_rows())
+		return;
+
+	for (uint32_t col = 0; col < max_visible_cols(); col++)
+		redraw_cell(col, row);
+}
+
+static void redraw_region(uint32_t top, uint32_t bottom)
+{
+	uint32_t max_rows = max_visible_rows();
+
+	if (max_rows == 0)
+		return;
+
+	if (top >= max_rows)
+		return;
+	if (bottom >= max_rows)
+		bottom = max_rows - 1;
+
+	for (uint32_t row = top; row <= bottom; row++)
+		redraw_line(row);
+}
+
 #undef cursor_x
 #undef cursor_y
 #undef default_fg
@@ -411,20 +491,12 @@ static void lyrterm_redraw_from_state(void)
 
 	fill_rect(0, 0, fb_width, fb_height, default_bg);
 
-	uint32_t buf_rows = rows < LYRTERM_MAX_ROWS ? rows : LYRTERM_MAX_ROWS;
-	uint32_t buf_cols = cols < LYRTERM_MAX_COLS ? cols : LYRTERM_MAX_COLS;
+	uint32_t buf_rows = max_visible_rows();
+	uint32_t buf_cols = max_visible_cols();
 
 	for (uint32_t row = 0; row < buf_rows; row++) {
-		for (uint32_t col = 0; col < buf_cols; col++) {
-			lyrterm_cell_t cell = cell_buf[row][col];
-			uint32_t fg = cell.fg ? cell.fg : default_fg;
-			uint32_t bg = cell.bg ? cell.bg : default_bg;
-			uint32_t cp = cell.codepoint ? cell.codepoint : ' ';
-			uint32_t x = term_x0() + col * _LYRTERM_LINE_WIDTH;
-			uint32_t y = term_y0() + row * _LYRTERM_LINE_HEIGHT;
-
-			drawch(x, y, cp, fg, bg);
-		}
+		for (uint32_t col = 0; col < buf_cols; col++)
+			redraw_cell(col, row);
 	}
 
 	cursor_draw();
@@ -432,6 +504,9 @@ static void lyrterm_redraw_from_state(void)
 
 static void clear_screen(void)
 {
+	if (cursor_visible)
+		cursor_erase();
+
 	fill_rect(0, 0, fb_width, fb_height, default_bg);
 	memset(cell_buf, 0, sizeof(cell_buf));
 	cursor_x = term_x0();
@@ -468,61 +543,107 @@ static void cursor_set_pos(uint32_t row, uint32_t col)
 		term_y0() + (row - 1) * _LYRTERM_LINE_HEIGHT + _LYRTERM_FONT_ASCENT;
 }
 
-static void scroll_up(void)
+static void cursor_set_col(uint32_t col)
 {
-	uint32_t buf_rows = rows < LYRTERM_MAX_ROWS ? rows : LYRTERM_MAX_ROWS;
-	uint32_t buf_cols = cols < LYRTERM_MAX_COLS ? cols : LYRTERM_MAX_COLS;
+	if (col == 0)
+		col = 1;
+	if (col > cols)
+		col = cols;
 
-	if (buf_rows == 0 || buf_cols == 0)
+	cursor_x = term_x0() + (col - 1) * _LYRTERM_LINE_WIDTH;
+}
+
+static void cursor_set_row(uint32_t row)
+{
+	if (row == 0)
+		row = 1;
+	if (row > rows)
+		row = rows;
+
+	cursor_y =
+		term_y0() + (row - 1) * _LYRTERM_LINE_HEIGHT + _LYRTERM_FONT_ASCENT;
+}
+
+static void cursor_save(void)
+{
+	saved_cursor_x = cursor_x;
+	saved_cursor_y = cursor_y;
+}
+
+static void cursor_restore(void)
+{
+	cursor_x = saved_cursor_x;
+	cursor_y = saved_cursor_y;
+
+	if (cursor_x < term_x0())
+		cursor_x = term_x0();
+	if (cursor_y < term_y0() + _LYRTERM_FONT_ASCENT)
+		cursor_y = term_y0() + _LYRTERM_FONT_ASCENT;
+
+	if (cols != 0 && cursor_x >= term_x0() + term_width())
+		cursor_x = term_x0() + (cols - 1) * _LYRTERM_LINE_WIDTH;
+	if (rows != 0 && cursor_y >= term_y0() + term_height())
+		cursor_y = term_y0() + (rows - 1) * _LYRTERM_LINE_HEIGHT +
+				   _LYRTERM_FONT_ASCENT;
+}
+
+static void scroll_up_region(uint32_t top, uint32_t bottom)
+{
+	uint32_t max_rows = max_visible_rows();
+	uint32_t max_cols = max_visible_cols();
+
+	if (max_rows == 0 || max_cols == 0)
 		return;
 
-	if (render_enabled) {
-		uint32_t x0 = term_x0();
-		uint32_t y0 = term_y0();
-		uint32_t w = term_width();
-		uint32_t h = term_height();
+	if (top >= max_rows)
+		return;
+	if (bottom >= max_rows)
+		bottom = max_rows - 1;
+	if (top >= bottom)
+		return;
 
-		if (h <= _LYRTERM_LINE_HEIGHT)
-			return;
+	for (uint32_t r = top; r < bottom; r++)
+		memcpy(cell_buf[r], cell_buf[r + 1], max_cols * sizeof(lyrterm_cell_t));
 
-		uint32_t rows_to_copy = h - _LYRTERM_LINE_HEIGHT;
+	memset(cell_buf[bottom], 0, max_cols * sizeof(lyrterm_cell_t));
 
-		if (x0 == 0 && w == fb_width) {
-			uint8_t *dst = fb_base + y0 * fb_pitch;
-			uint8_t *src = fb_base + (y0 + _LYRTERM_LINE_HEIGHT) * fb_pitch;
+	redraw_region(top, bottom);
+}
 
-			memcpy(dst, src, rows_to_copy * fb_pitch);
-		} else {
-			for (uint32_t row = 0; row < rows_to_copy; row++) {
-				uint8_t *dst = fb_base + (y0 + row) * fb_pitch + x0 * fb_Bpp;
-				uint8_t *src = fb_base +
-							   (y0 + row + _LYRTERM_LINE_HEIGHT) * fb_pitch +
-							   x0 * fb_Bpp;
+static void scroll_down_region(uint32_t top, uint32_t bottom)
+{
+	uint32_t max_rows = max_visible_rows();
+	uint32_t max_cols = max_visible_cols();
 
-				memcpy(dst, src, w * fb_Bpp);
-			}
-		}
+	if (max_rows == 0 || max_cols == 0)
+		return;
 
-		fill_rect(x0, y0 + h - _LYRTERM_LINE_HEIGHT, w, _LYRTERM_LINE_HEIGHT,
-				  default_bg);
-	}
+	if (top >= max_rows)
+		return;
+	if (bottom >= max_rows)
+		bottom = max_rows - 1;
+	if (top >= bottom)
+		return;
 
-	/* Scroll cell buffer up one row and clear the last row. */
-	for (uint32_t r = 0; r + 1 < buf_rows; r++)
-		memcpy(cell_buf[r], cell_buf[r + 1], buf_cols * sizeof(lyrterm_cell_t));
-	memset(cell_buf[buf_rows - 1], 0, buf_cols * sizeof(lyrterm_cell_t));
+	for (uint32_t r = bottom; r > top; r--)
+		memcpy(cell_buf[r], cell_buf[r - 1], max_cols * sizeof(lyrterm_cell_t));
+
+	memset(cell_buf[top], 0, max_cols * sizeof(lyrterm_cell_t));
+
+	redraw_region(top, bottom);
 }
 
 static void cursor_draw(void)
 {
+	if (!cursor_visible)
+		return;
+
 	uint32_t col = cell_col();
 	uint32_t row = cell_row();
 	lyrterm_cell_t cell = cell_get(col, row);
 
 	uint32_t fg = cell.bg ? cell.bg : default_bg;
 	uint32_t bg = cell.fg ? cell.fg : default_fg;
-
-	/* If the cell is blank, fall back to a solid inverted block. */
 	uint32_t cp = cell.codepoint ? cell.codepoint : ' ';
 
 #ifdef LYRTERM_LINE_CURSOR
@@ -550,14 +671,23 @@ static void cursor_erase(void)
 
 static void newline(void)
 {
-	cursor_x = term_x0();
-	cursor_y += _LYRTERM_LINE_HEIGHT;
+	uint32_t row = current_row();
 
-	if (cursor_y + _LYRTERM_FONT_DESCENT > term_y0() + term_height()) {
-		scroll_up();
-		cursor_y = term_y0() + (rows - 1) * _LYRTERM_LINE_HEIGHT +
-				   _LYRTERM_FONT_ASCENT;
+	cursor_x = term_x0();
+
+	if (row == scroll_bottom) {
+		scroll_up_region(scroll_top, scroll_bottom);
+		cursor_set_pos(scroll_bottom + 1, 1);
+		return;
 	}
+
+	if (row + 1 >= rows) {
+		scroll_up_region(scroll_top, scroll_bottom);
+		cursor_set_pos(rows, 1);
+		return;
+	}
+
+	cursor_y += _LYRTERM_LINE_HEIGHT;
 }
 
 static void advance_cursor(void)
@@ -574,6 +704,7 @@ static void ansi_handle_sgr(int *params, int nparams)
 		current_fg = default_fg;
 		current_bg = default_bg;
 		reverse_video = false;
+		bold_attr = false;
 		return;
 	}
 
@@ -584,16 +715,42 @@ static void ansi_handle_sgr(int *params, int nparams)
 			current_fg = default_fg;
 			current_bg = default_bg;
 			reverse_video = false;
+			bold_attr = false;
+		} else if (p == 1) {
+			bold_attr = true;
+		} else if (p == 2) {
+			/* Dim ignored. */
+		} else if (p == 3) {
+			/* Italic ignored. */
+		} else if (p == 4) {
+			/* Underline ignored until cell attributes exist. */
+		} else if (p == 5) {
+			/* Blink ignored. */
 		} else if (p == 7) {
 			reverse_video = true;
+		} else if (p == 8) {
+			current_fg = current_bg;
+		} else if (p == 22) {
+			bold_attr = false;
+		} else if (p == 23) {
+			/* Italic off. */
+		} else if (p == 24) {
+			/* Underline off. */
+		} else if (p == 25) {
+			/* Blink off. */
 		} else if (p == 27) {
 			reverse_video = false;
+		} else if (p == 28) {
+			current_fg = default_fg;
 		} else if (p == 39) {
 			current_fg = default_fg;
 		} else if (p == 49) {
 			current_bg = default_bg;
 		} else if (p >= 30 && p <= 37) {
-			current_fg = pack_color(ansi_colors[p - 30]);
+			if (bold_attr)
+				current_fg = pack_color(ansi_colors_bright[p - 30]);
+			else
+				current_fg = pack_color(ansi_colors[p - 30]);
 		} else if (p >= 40 && p <= 47) {
 			current_bg = pack_color(ansi_colors[p - 40]);
 		} else if (p >= 90 && p <= 97) {
@@ -613,6 +770,20 @@ static void ansi_handle_sgr(int *params, int nparams)
 					current_fg = rgb_color(r, g, b);
 				else
 					current_bg = rgb_color(r, g, b);
+			} else if (mode == 5 && i + 1 < nparams) {
+				int idx = params[++i];
+
+				if (idx >= 0 && idx <= 7) {
+					if (is_fg)
+						current_fg = pack_color(ansi_colors[idx]);
+					else
+						current_bg = pack_color(ansi_colors[idx]);
+				} else if (idx >= 8 && idx <= 15) {
+					if (is_fg)
+						current_fg = pack_color(ansi_colors_bright[idx - 8]);
+					else
+						current_bg = pack_color(ansi_colors_bright[idx - 8]);
+				}
 			}
 		}
 	}
@@ -626,14 +797,8 @@ static void ansi_handle_ed(int *params, int nparams)
 	uint32_t row = cell_row();
 
 	if (mode == 2 || mode == 3) {
-		/*
-		 * ESC[2J: clear whole screen.
-		 * ESC[3J: clear scrollback on real terminals; lyrterm has no
-		 * scrollback, so treat it as full visible clear.
-		 */
 		clear_screen();
 	} else if (mode == 1) {
-		/* ESC[1J: clear from start of screen to cursor. */
 		fill_rect(term_x0(), term_y0(), term_width(),
 				  cursor_y - _LYRTERM_FONT_ASCENT - term_y0(), effective_bg());
 
@@ -643,7 +808,6 @@ static void ansi_handle_ed(int *params, int nparams)
 
 		cell_clear_range(0, 0, col, row);
 	} else {
-		/* ESC[J or ESC[0J: clear from cursor to end of screen. */
 		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
 
 		fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
@@ -668,21 +832,18 @@ static void ansi_handle_el(int *params, int nparams)
 	uint32_t row = cell_row();
 
 	if (mode == 2) {
-		/* ESC[2K: clear whole line. */
 		fill_rect(term_x0(), y, term_width(), _LYRTERM_LINE_HEIGHT,
 				  effective_bg());
 
 		if (row < rows)
 			cell_clear_range(0, row, cols - 1, row);
 	} else if (mode == 1) {
-		/* ESC[1K: clear from start of line to cursor. */
 		fill_rect(term_x0(), y, cursor_x - term_x0() + _LYRTERM_LINE_WIDTH,
 				  _LYRTERM_LINE_HEIGHT, effective_bg());
 
 		if (row < rows)
 			cell_clear_range(0, row, col, row);
 	} else {
-		/* ESC[K or ESC[0K: clear from cursor to end of line. */
 		clear_line_from_cursor();
 	}
 }
@@ -758,12 +919,330 @@ static void ansi_handle_cub(int *params, int nparams)
 		col + 1);
 }
 
+static void ansi_handle_cnl(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+
+	row += n;
+	if (row >= rows)
+		row = rows - 1;
+
+	cursor_set_pos(row + 1, 1);
+}
+
+static void ansi_handle_cpl(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+
+	if (n > row)
+		row = 0;
+	else
+		row -= n;
+
+	cursor_set_pos(row + 1, 1);
+}
+
+static void ansi_handle_cha(int *params, int nparams)
+{
+	uint32_t col = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	cursor_set_col(col);
+}
+
+static void ansi_handle_vpa(int *params, int nparams)
+{
+	uint32_t row = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	cursor_set_row(row);
+}
+
+static void ansi_handle_cht(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+
+	while (n--) {
+		uint32_t col = current_col();
+		uint32_t next = ((col / 8) + 1) * 8;
+
+		if (cols == 0)
+			return;
+		if (next >= cols)
+			next = cols - 1;
+
+		cursor_set_col(next + 1);
+	}
+}
+
+static void ansi_handle_cbt(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+
+	while (n--) {
+		uint32_t col = current_col();
+
+		if (col == 0) {
+			cursor_set_col(1);
+			continue;
+		}
+
+		uint32_t prev = ((col - 1) / 8) * 8;
+		cursor_set_col(prev + 1);
+	}
+}
+
+static void ansi_handle_ich(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+	uint32_t col = current_col();
+	uint32_t max_cols = max_visible_cols();
+
+	if (row >= max_visible_rows() || col >= max_cols)
+		return;
+
+	if (n > max_cols - col)
+		n = max_cols - col;
+
+	for (uint32_t c = max_cols - 1; c >= col + n && c < max_cols; c--)
+		cell_buf[row][c] = cell_buf[row][c - n];
+
+	for (uint32_t c = col; c < col + n; c++)
+		cell_clear(c, row);
+
+	redraw_line(row);
+}
+
+static void ansi_handle_dch(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+	uint32_t col = current_col();
+	uint32_t max_cols = max_visible_cols();
+
+	if (row >= max_visible_rows() || col >= max_cols)
+		return;
+
+	if (n > max_cols - col)
+		n = max_cols - col;
+
+	for (uint32_t c = col; c + n < max_cols; c++)
+		cell_buf[row][c] = cell_buf[row][c + n];
+
+	for (uint32_t c = max_cols - n; c < max_cols; c++)
+		cell_clear(c, row);
+
+	redraw_line(row);
+}
+
+static void ansi_handle_ech(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+	uint32_t col = current_col();
+	uint32_t max_cols = max_visible_cols();
+
+	if (row >= max_visible_rows() || col >= max_cols)
+		return;
+
+	if (n > max_cols - col)
+		n = max_cols - col;
+
+	for (uint32_t c = col; c < col + n; c++)
+		cell_clear(c, row);
+
+	redraw_line(row);
+}
+
+static void ansi_handle_il(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+
+	if (row < scroll_top || row > scroll_bottom)
+		return;
+
+	while (n--)
+		scroll_down_region(row, scroll_bottom);
+}
+
+static void ansi_handle_dl(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+	uint32_t row = current_row();
+
+	if (row < scroll_top || row > scroll_bottom)
+		return;
+
+	while (n--)
+		scroll_up_region(row, scroll_bottom);
+}
+
+static void ansi_handle_su(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+
+	while (n--)
+		scroll_up_region(scroll_top, scroll_bottom);
+}
+
+static void ansi_handle_sd(int *params, int nparams)
+{
+	uint32_t n = (nparams && params[0]) ? (uint32_t)params[0] : 1;
+
+	while (n--)
+		scroll_down_region(scroll_top, scroll_bottom);
+}
+
+static void ansi_handle_decstbm(int *params, int nparams)
+{
+	uint32_t top = 1;
+	uint32_t bottom = rows;
+
+	if (rows == 0)
+		return;
+
+	if (nparams >= 1 && params[0])
+		top = (uint32_t)params[0];
+	if (nparams >= 2 && params[1])
+		bottom = (uint32_t)params[1];
+
+	if (top < 1)
+		top = 1;
+	if (bottom < 1)
+		bottom = 1;
+	if (top > rows)
+		top = rows;
+	if (bottom > rows)
+		bottom = rows;
+
+	if (top >= bottom) {
+		scroll_top = 0;
+		scroll_bottom = rows - 1;
+	} else {
+		scroll_top = top - 1;
+		scroll_bottom = bottom - 1;
+	}
+
+	cursor_set_pos(1, 1);
+}
+
+static void ansi_handle_scp(int *params, int nparams)
+{
+	(void)params;
+	(void)nparams;
+
+	cursor_save();
+}
+
+static void ansi_handle_rcp(int *params, int nparams)
+{
+	(void)params;
+	(void)nparams;
+
+	cursor_restore();
+}
+
+static void ansi_handle_rep(int *params, int nparams)
+{
+	(void)params;
+	(void)nparams;
+}
+
+static void ansi_handle_tbc(int *params, int nparams)
+{
+	(void)params;
+	(void)nparams;
+}
+
+static void ansi_handle_dsr(int *params, int nparams)
+{
+	(void)params;
+	(void)nparams;
+}
+
+static void ansi_handle_decset(int *params, int nparams)
+{
+	if (!csi_private_qmark)
+		return;
+
+	for (int i = 0; i < nparams; i++) {
+		switch (params[i]) {
+		case 1:
+			break;
+		case 7:
+			break;
+		case 12:
+			break;
+		case 25:
+			cursor_visible = true;
+			break;
+		case 47:
+		case 1047:
+		case 1049:
+			clear_screen();
+			break;
+		case 1000:
+		case 1002:
+		case 1003:
+		case 1006:
+		case 2004:
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+static void ansi_handle_decrst(int *params, int nparams)
+{
+	if (!csi_private_qmark)
+		return;
+
+	for (int i = 0; i < nparams; i++) {
+		switch (params[i]) {
+		case 1:
+			break;
+		case 7:
+			break;
+		case 12:
+			break;
+		case 25:
+			cursor_visible = false;
+			break;
+		case 47:
+		case 1047:
+		case 1049:
+			clear_screen();
+			break;
+		case 1000:
+		case 1002:
+		case 1003:
+		case 1006:
+		case 2004:
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 static const ansi_csi_handler_t ansi_csi_handlers[] = {
-	{ 'm', ansi_handle_sgr }, { 'J', ansi_handle_ed },
-	{ 'K', ansi_handle_el },  { 'H', ansi_handle_cup },
-	{ 'f', ansi_handle_cup }, { 'A', ansi_handle_cuu },
-	{ 'B', ansi_handle_cud }, { 'C', ansi_handle_cuf },
-	{ 'D', ansi_handle_cub },
+	{ '@', ansi_handle_ich },	  { 'A', ansi_handle_cuu },
+	{ 'B', ansi_handle_cud },	  { 'C', ansi_handle_cuf },
+	{ 'D', ansi_handle_cub },	  { 'E', ansi_handle_cnl },
+	{ 'F', ansi_handle_cpl },	  { 'G', ansi_handle_cha },
+	{ 'H', ansi_handle_cup },	  { 'I', ansi_handle_cht },
+	{ 'J', ansi_handle_ed },	  { 'K', ansi_handle_el },
+	{ 'L', ansi_handle_il },	  { 'M', ansi_handle_dl },
+	{ 'P', ansi_handle_dch },	  { 'S', ansi_handle_su },
+	{ 'T', ansi_handle_sd },	  { 'X', ansi_handle_ech },
+	{ 'Z', ansi_handle_cbt },	  { '`', ansi_handle_cha },
+	{ 'b', ansi_handle_rep },	  { 'd', ansi_handle_vpa },
+	{ 'f', ansi_handle_cup },	  { 'g', ansi_handle_tbc },
+	{ 'h', ansi_handle_decset },  { 'l', ansi_handle_decrst },
+	{ 'm', ansi_handle_sgr },	  { 'n', ansi_handle_dsr },
+	{ 'r', ansi_handle_decstbm }, { 's', ansi_handle_scp },
+	{ 'u', ansi_handle_rcp },
 };
 
 static void ansi_dispatch_csi(char final)
@@ -780,26 +1259,10 @@ static void ansi_dispatch_csi(char final)
 	}
 }
 
-/*
- * OSC dispatcher.
- *
- * The buffer contains everything between "ESC ]" and the terminator
- * (BEL or ESC \).  Format is "Ps;text" where Ps is a numeric parameter.
- *
- * Supported sequences:
- *   OSC 0 ; text ST  — set icon name and window title (text ignored)
- *   OSC 1 ; text ST  — set icon name               (text ignored)
- *   OSC 2 ; text ST  — set window title             (text ignored)
- *
- * All are silently consumed; lyrterm is a framebuffer terminal with no
- * window manager, so the title string has nowhere to go.  Consuming the
- * sequence cleanly prevents the raw bytes from appearing on screen.
- */
 static void ansi_dispatch_osc(const char *buf, size_t len)
 {
 	(void)buf;
 	(void)len;
-	/* No-op: sequence consumed, nothing rendered. */
 }
 
 static uint32_t utf8_feed(uint8_t byte)
@@ -879,8 +1342,20 @@ void lyrterm_init(const struct limine_framebuffer *lfb)
 	cols = term_width() / _LYRTERM_LINE_WIDTH;
 	rows = term_height() / _LYRTERM_LINE_HEIGHT;
 
+	scroll_top = 0;
+	scroll_bottom = rows ? rows - 1 : 0;
+
 	initialized = true;
 	lyrterm_state_reset_internal(render_state);
+
+	saved_cursor_x = cursor_x;
+	saved_cursor_y = cursor_y;
+	cursor_visible = true;
+	bold_attr = false;
+	csi_private = false;
+	csi_private_qmark = false;
+	esc_charset_skip = false;
+
 	fill_rect(0, 0, fb_width, fb_height, default_bg);
 
 	async_io_register_drain_hook(lyrterm_async_drain, NULL);
@@ -898,6 +1373,7 @@ void lyrterm_apply_theme(const lyrterm_theme_t *theme)
 	current_fg = default_fg;
 	current_bg = default_bg;
 	reverse_video = false;
+	bold_attr = false;
 }
 
 void lyrterm_set_colors(uint32_t fg, uint32_t bg)
@@ -907,6 +1383,7 @@ void lyrterm_set_colors(uint32_t fg, uint32_t bg)
 	current_fg = default_fg;
 	current_bg = default_bg;
 	reverse_video = false;
+	bold_attr = false;
 }
 
 static void tab_advance(void)
@@ -918,7 +1395,8 @@ static void tab_advance(void)
 
 static void lyrterm_putcp_raw_locked(uint32_t codepoint)
 {
-	cursor_erase();
+	if (cursor_visible)
+		cursor_erase();
 
 	switch (codepoint) {
 	case '\n':
@@ -937,6 +1415,7 @@ static void lyrterm_putcp_raw_locked(uint32_t codepoint)
 	default:
 		if (codepoint < 0x20)
 			break;
+
 		uint32_t fg = effective_fg();
 		uint32_t bg = effective_bg();
 
@@ -946,7 +1425,8 @@ static void lyrterm_putcp_raw_locked(uint32_t codepoint)
 		break;
 	}
 
-	cursor_draw();
+	if (cursor_visible)
+		cursor_draw();
 }
 
 static void lyrterm_putch_locked(char raw)
@@ -956,22 +1436,20 @@ static void lyrterm_putch_locked(char raw)
 
 	uint8_t byte = (uint8_t)raw;
 
-	/* ------------------------------------------------------------------ */
-	/* OSC state: accumulate until BEL (0x07) or ST (ESC \)               */
-	/* ------------------------------------------------------------------ */
+	if (esc_charset_skip) {
+		esc_charset_skip = false;
+		ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		return;
+	}
+
 	if (ansi_state == LYRTERM_ANSI_STATE_OSC) {
 		if (osc_saw_esc) {
 			osc_saw_esc = false;
 			if (raw == '\\') {
-				/* ESC \ — String Terminator */
 				osc_buf[osc_len] = '\0';
 				ansi_dispatch_osc(osc_buf, osc_len);
 				ansi_state = LYRTERM_ANSI_STATE_NORMAL;
 			} else {
-				/*
-				 * The ESC was not followed by '\'; treat it as an
-				 * abort and re-process the current byte normally.
-				 */
 				ansi_state = LYRTERM_ANSI_STATE_NORMAL;
 				lyrterm_putch_locked(raw);
 			}
@@ -979,12 +1457,10 @@ static void lyrterm_putch_locked(char raw)
 		}
 
 		if (raw == '\007') {
-			/* BEL — terminates OSC */
 			osc_buf[osc_len] = '\0';
 			ansi_dispatch_osc(osc_buf, osc_len);
 			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
 		} else if (raw == '\033') {
-			/* Possible start of ESC \ */
 			osc_saw_esc = true;
 		} else {
 			if (osc_len + 1 < OSC_MAX)
@@ -993,47 +1469,131 @@ static void lyrterm_putch_locked(char raw)
 		return;
 	}
 
-	/* ------------------------------------------------------------------ */
-	/* ESC state                                                           */
-	/* ------------------------------------------------------------------ */
 	if (ansi_state == LYRTERM_ANSI_STATE_ESC) {
 		if (raw == '[') {
 			ansi_state = LYRTERM_ANSI_STATE_CSI;
 			ansi_nparams = 0;
-			ansi_params[0] = 0;
+			csi_private = false;
+			csi_private_qmark = false;
+			memset(ansi_params, 0, sizeof(int) * ANSI_MAX_PARAMS);
 		} else if (raw == ']') {
 			ansi_state = LYRTERM_ANSI_STATE_OSC;
 			osc_len = 0;
 			osc_saw_esc = false;
 			osc_buf[0] = '\0';
+		} else if (raw == '7') {
+			if (cursor_visible)
+				cursor_erase();
+
+			cursor_save();
+
+			if (cursor_visible)
+				cursor_draw();
+
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == '8') {
+			if (cursor_visible)
+				cursor_erase();
+
+			cursor_restore();
+
+			if (cursor_visible)
+				cursor_draw();
+
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == 'c') {
+			if (cursor_visible)
+				cursor_erase();
+
+			cursor_visible = true;
+			current_fg = default_fg;
+			current_bg = default_bg;
+			reverse_video = false;
+			bold_attr = false;
+			scroll_top = 0;
+			scroll_bottom = rows ? rows - 1 : 0;
+			clear_screen();
+			cursor_draw();
+
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == 'D') {
+			if (cursor_visible)
+				cursor_erase();
+
+			if (current_row() == scroll_bottom)
+				scroll_up_region(scroll_top, scroll_bottom);
+			else if (current_row() + 1 < rows)
+				cursor_y += _LYRTERM_LINE_HEIGHT;
+
+			if (cursor_visible)
+				cursor_draw();
+
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == 'E') {
+			if (cursor_visible)
+				cursor_erase();
+
+			newline();
+
+			if (cursor_visible)
+				cursor_draw();
+
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == 'M') {
+			if (cursor_visible)
+				cursor_erase();
+
+			if (current_row() == scroll_top)
+				scroll_down_region(scroll_top, scroll_bottom);
+			else if (current_row() > 0)
+				cursor_y -= _LYRTERM_LINE_HEIGHT;
+
+			if (cursor_visible)
+				cursor_draw();
+
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == 'H') {
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == '=' || raw == '>') {
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+		} else if (raw == '(' || raw == ')' || raw == '*' || raw == '+') {
+			esc_charset_skip = true;
+			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
 		} else {
 			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
 		}
 		return;
 	}
 
-	/* ------------------------------------------------------------------ */
-	/* CSI state                                                           */
-	/* ------------------------------------------------------------------ */
 	if (ansi_state == LYRTERM_ANSI_STATE_CSI) {
-		if (raw >= '0' && raw <= '9') {
+		if (raw == '?' || raw == '>' || raw == '!') {
+			csi_private = true;
+			if (raw == '?')
+				csi_private_qmark = true;
+		} else if (raw >= '0' && raw <= '9') {
 			ansi_params[ansi_nparams] =
 				ansi_params[ansi_nparams] * 10 + (raw - '0');
-		} else if (raw == ';') {
+		} else if (raw == ';' || raw == ':') {
 			if (ansi_nparams < ANSI_MAX_PARAMS - 1)
 				ansi_params[++ansi_nparams] = 0;
 		} else {
+			if (cursor_visible)
+				cursor_erase();
+
 			ansi_dispatch_csi(raw);
+
 			ansi_nparams = 0;
 			ansi_state = LYRTERM_ANSI_STATE_NORMAL;
+			csi_private = false;
+			csi_private_qmark = false;
+
+			if (cursor_visible)
+				cursor_draw();
 		}
 
 		return;
 	}
 
-	/* ------------------------------------------------------------------ */
-	/* Normal state                                                        */
-	/* ------------------------------------------------------------------ */
 	if (raw == '\033') {
 		ansi_state = LYRTERM_ANSI_STATE_ESC;
 		utf8.codepoint = 0;
@@ -1222,13 +1782,10 @@ void lyrterm_framebuffer_acquire(void)
 		return;
 
 	spinlock_acquire(&lyrterm_render_lock);
-	/*
-	 * This is deliberately idempotent. devfs currently has no open callback,
-	 * so fbdev_write() calls acquire() before each write. Treat any writer as
-	 * the raw framebuffer owner until the file is closed.
-	 */
+
 	framebuffer_raw_users = 1;
 	render_enabled = false;
+
 	spinlock_release(&lyrterm_render_lock);
 }
 
@@ -1238,11 +1795,13 @@ void lyrterm_framebuffer_release(void)
 		return;
 
 	spinlock_acquire(&lyrterm_render_lock);
+
 	if (framebuffer_raw_users != 0) {
 		framebuffer_raw_users = 0;
 		render_enabled = true;
 		lyrterm_redraw_from_state();
 	}
+
 	spinlock_release(&lyrterm_render_lock);
 }
 
@@ -1315,11 +1874,13 @@ void lyrterm_restore_state(const lyrterm_state_t *in)
 		return;
 
 	spinlock_acquire(&lyrterm_render_lock);
+
 	memcpy(render_state, in, sizeof(*render_state));
 	if (framebuffer_raw_users == 0) {
 		render_enabled = true;
 		lyrterm_redraw_from_state();
 	}
+
 	spinlock_release(&lyrterm_render_lock);
 }
 

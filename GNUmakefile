@@ -6,7 +6,7 @@ ROOTFS_DISK := disk.img
 QEMU_NVME := \
 	-drive file=$(ROOTFS_DISK),if=none,id=nvme0,format=raw \
 	-device nvme,drive=nvme0,serial=LYRNVME0
-QEMUFLAGS := -m 2G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME) -rtc base=localtime
+QEMUFLAGS := -m 2G -smp 4 -serial stdio  $(QEMU_NET_USER) $(QEMU_NVME) -rtc base=localtime -enable-kvm -cpu host
 
 override IMAGE_NAME := lyr
 INITRD_ROOT := initrd

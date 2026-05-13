@@ -736,6 +736,53 @@ static long sys_close_handler(interrupt_frame_t *frame)
 	return 0;
 }
 
+static long sys_fsync_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	int fd = (int)frame->rdi;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return -EBADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return -EBADF;
+
+	if (file->private_data || vfs_pipe_is(file))
+		return -EINVAL;
+
+	return vfs_fsync(file);
+}
+
+static long sys_fadvise_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	int fd = (int)frame->rdi;
+	uint64_t offset = frame->rsi;
+	uint64_t len = frame->rdx;
+	int advice = (int)frame->r10;
+
+	if (fd < 0 || fd >= SCHED_FILE_MAX)
+		return -EBADF;
+
+	vfs_file_t *file = thread->process->files[fd];
+	if (!file)
+		return -EBADF;
+
+	if (file->private_data || vfs_pipe_is(file))
+		return -ESPIPE;
+
+	return vfs_fadvise(file, offset, len, advice);
+}
+
 static long sys_fcntl_handler(interrupt_frame_t *frame)
 {
 	tcb_t *thread = sched_current();
@@ -3387,6 +3434,8 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_RMDIR] = sys_rmdir_handler,
 	[SYS_UNLINK] = sys_unlink_handler,
 	[SYS_READLINK] = sys_readlink_handler,
+	[SYS_FSYNC] = sys_fsync_handler,
+	[SYS_FADVICE] = sys_fadvise_handler,
 	[SYS_RENAMEAT] = sys_renameat_handler,
 	[SYS_CHROOT] = sys_chroot_handler,
 	[SYS_MOUNT] = sys_mount_handler,
