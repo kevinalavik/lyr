@@ -374,6 +374,43 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 
 	vfs_node_t *node = NULL;
 	int r = vfs_resolve(path, cred, &node);
+	log_debug("vfs", "open: %s -> node=%p ino=%u mode=0o%o",
+			  path, node, node ? (unsigned)node->ino : 0, node ? node->mode : 0);
+	if (r == 0 && VFS_S_ISLNK(node->mode)) {
+		char link_target[256];
+		size_t link_len = sizeof(link_target) - 1;
+		r = vfs_readlink_node(node, link_target, &link_len);
+		uint32_t orig_ino = node->ino;
+		vfs_node_release(node);
+		if (r != 0) {
+			log_debug("vfs", "open: readlink failed: %d", r);
+			return r;
+		}
+		link_target[link_len] = '\0';
+		log_debug("vfs", "open: symlink %s (ino=%u) -> %s", path, orig_ino, link_target);
+
+		char abs_target[512];
+		if (link_target[0] == '/') {
+			strcpy(abs_target, link_target);
+		} else {
+			strcpy(abs_target, path);
+			char *last_slash = strrchr(abs_target, '/');
+			if (last_slash) {
+				last_slash[1] = '\0';
+				size_t dlen = strlen(abs_target);
+				size_t tlen = strlen(link_target);
+				if (dlen + tlen < sizeof(abs_target))
+					strcat(abs_target, link_target);
+				else
+					return -ENAMETOOLONG;
+			}
+		}
+		r = vfs_resolve(abs_target, cred, &node);
+		log_debug("vfs", "open: resolved %s -> ino=%u mode=0o%o",
+				  abs_target, node ? (unsigned)node->ino : 0, node ? node->mode : 0);
+		if (r != 0)
+			return r;
+	}
 	if (r != 0 && (flags & VFS_O_CREAT)) {
 		if (r != -ENOENT)
 			return r;
@@ -401,7 +438,7 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 		if (r != 0)
 			return r;
 	} else if (r == 0 && (flags & (VFS_O_CREAT | VFS_O_EXCL)) ==
-								  (VFS_O_CREAT | VFS_O_EXCL)) {
+							 (VFS_O_CREAT | VFS_O_EXCL)) {
 		vfs_node_release(node);
 		return -EEXIST;
 	} else if (r != 0) {
@@ -677,7 +714,8 @@ int vfs_rmdir(const char *path, const vfs_cred_t *cred)
 	return _unlink_common(path, cred, 1);
 }
 
-int vfs_rename(const char *old_path, const char *new_path, const vfs_cred_t *cred)
+int vfs_rename(const char *old_path, const char *new_path,
+			   const vfs_cred_t *cred)
 {
 	cred = _cred_or_root(cred);
 	log_debug("vfs", "rename old=%s new=%s uid=%u",
@@ -820,6 +858,66 @@ int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st)
 	st->blocks = (node->size + 511) / 512;
 	vfs_node_release(node);
 	return 0;
+}
+
+int vfs_readlink_node(vfs_node_t *node, char *buf, size_t *size)
+{
+	if (!node || !buf || !size || *size == 0)
+		return -EINVAL;
+
+	if (!VFS_S_ISLNK(node->mode))
+		return -EINVAL;
+
+	size_t read_size = node->size;
+	if (read_size > *size)
+		read_size = *size;
+
+	if (!node->ops || !node->ops->read) {
+		vfs_node_release(node);
+		return -ENOSYS;
+	}
+
+	size_t done = 0;
+	int r = node->ops->read(node, 0, buf, read_size, &done);
+	if (r != 0)
+		return r;
+
+	*size = done;
+	return 0;
+}
+
+int vfs_readlink(const char *path, const vfs_cred_t *cred, char *buf,
+				 size_t size)
+{
+	if (!buf || size == 0)
+		return -EINVAL;
+
+	vfs_node_t *node = NULL;
+	int r = vfs_resolve(path, cred, &node);
+	if (r != 0)
+		return r;
+
+	if (!VFS_S_ISLNK(node->mode)) {
+		vfs_node_release(node);
+		return -EINVAL;
+	}
+
+	if (size > node->size)
+		size = node->size;
+
+	if (!node->ops || !node->ops->read) {
+		vfs_node_release(node);
+		return -ENOSYS;
+	}
+
+	size_t done = 0;
+	r = node->ops->read(node, 0, buf, size, &done);
+	vfs_node_release(node);
+
+	if (r != 0)
+		return r;
+
+	return (int)done;
 }
 
 int vfs_node_get_page(vfs_node_t *node, uint64_t page_index, int for_write,

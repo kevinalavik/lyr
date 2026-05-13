@@ -1,0 +1,111 @@
+sources:
+  - name: libiconv
+    subdir: sources
+    version: '1.19'
+    url: 'https://ftp.sunet.se/mirror/gnu.org/gnu/libiconv/libiconv-1.19.tar.gz'
+    format: 'tar.gz'
+    extract_path: 'libiconv-1.19'
+    checksum: 'sha256:88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6'
+    patch-path-strip: 1
+
+  - name: pkg-config
+    subdir: sources
+    version: '0.29.2'
+    url: 'https://pkgconfig.freedesktop.org/releases/pkg-config-0.29.2.tar.gz'
+    format: 'tar.gz'
+    extract_path: 'pkg-config-0.29.2'
+    checksum: 'sha256:6fc69c01688c9458a57eb9a1664c9aba372ccda420a02bf4429fe610e7e7d591'
+    patch-path-strip: 1
+
+  - name: ncurses
+    subdir: sources
+    version: '6.6'
+    url: 'https://ftp.sunet.se/mirror/gnu.org/gnu/ncurses/ncurses-6.6.tar.gz'
+    format: 'tar.gz'
+    extract_path: 'ncurses-6.6'
+    checksum: 'sha256:355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11'
+    patch-path-strip: 1
+
+packages:
+  - name: libiconv
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libiconv
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+
+    build:
+      - args: ['make', '-j@PARALLELISM@']
+      - args: ['make', 'DESTDIR=@THIS_COLLECT_DIR@', 'install']
+
+  - name: pkg-config
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: pkg-config
+    pkgs_required:
+      - mlibc
+      - libiconv
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--disable-host-tool'
+          - '--with-internal-glib'
+        environ:
+          CFLAGS: '-std=gnu99'
+          LIBS: '-liconv'
+          glib_cv_stack_grows: 'no'
+          glib_cv_uscore: 'no'
+          ac_cv_func_posix_getpwuid_r: 'yes'
+          ac_cv_func_posix_getgrgid_r: 'yes'
+
+    build:
+      - args: ['make', '-j@PARALLELISM@']
+      - args: ['make', 'DESTDIR=@THIS_COLLECT_DIR@', 'install']
+
+  - name: ncurses
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: ncurses
+    pkgs_required:
+      - mlibc
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--without-ada'
+          - '--enable-pc-files'
+          - '--with-pkg-config-libdir=/usr/lib/pkgconfig'
+          - '--with-termlib'
+          - '--enable-widec'
+          - '--with-shared'
+          - '--with-normal'
+          - '--disable-stripping'
+          - '--with-shlib-version=rel'
+
+    build:
+      - args: ['make', '-j@PARALLELISM@']
+      - args: ['make', 'DESTDIR=@THIS_COLLECT_DIR@', 'install']

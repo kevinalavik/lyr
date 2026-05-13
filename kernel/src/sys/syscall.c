@@ -54,7 +54,7 @@
 
 #define SYS_POLL_NFDS_MAX 1024
 #define SYS_USER_STACK_GUARD_SIZE PAGE_SIZE
-#define SYS_USER_STACK_SIZE (16 * PAGE_SIZE)
+#define SYS_USER_STACK_SIZE (8 * 1024 * 1024ULL)
 
 #define SYS_PROT_READ 0x1
 #define SYS_PROT_WRITE 0x2
@@ -1317,6 +1317,39 @@ static long sys_unlink_handler(interrupt_frame_t *frame)
 		return r;
 
 	return vfs_unlink(path, syscall_current_cred());
+}
+
+static long sys_readlink_handler(interrupt_frame_t *frame)
+{
+	char path[SYS_PATH_MAX];
+	int r = syscall_copy_user_path_abs(frame->rdi, path, sizeof(path));
+
+	if (r != 0)
+		return r;
+
+	uint64_t user_buf = frame->rsi;
+	size_t bufsize = (size_t)frame->rdx;
+
+	if (!user_buf || bufsize == 0)
+		return -EINVAL;
+
+	if (!syscall_user_range_write_ok(user_buf, bufsize))
+		return -EFAULT;
+
+	char buf[SYS_PATH_MAX];
+	r = vfs_readlink(path, syscall_current_cred(), buf, sizeof(buf));
+
+	if (r < 0)
+		return r;
+
+	size_t link_len = (size_t)r;
+	if (link_len >= bufsize)
+		link_len = bufsize - 1;
+
+	memcpy((void *)user_buf, buf, link_len);
+	((char *)user_buf)[link_len] = '\0';
+
+	return (long)link_len;
 }
 
 static long sys_renameat_handler(interrupt_frame_t *frame)
@@ -3353,6 +3386,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_MKDIR] = sys_mkdir_handler,
 	[SYS_RMDIR] = sys_rmdir_handler,
 	[SYS_UNLINK] = sys_unlink_handler,
+	[SYS_READLINK] = sys_readlink_handler,
 	[SYS_RENAMEAT] = sys_renameat_handler,
 	[SYS_CHROOT] = sys_chroot_handler,
 	[SYS_MOUNT] = sys_mount_handler,

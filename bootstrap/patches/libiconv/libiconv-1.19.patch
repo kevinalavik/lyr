@@ -1,0 +1,21 @@
+--- a/build-aux/config.sub
++++ b/build-aux/config.sub
+@@ -2035,6 +2035,7 @@
+ 	| lites* \
+ 	| lnews* \
+ 	| luna* \
++	| lyr* \
+ 	| lynxos* \
+ 	| mach* \
+ 	| macos* \
+
+--- a/libcharset/build-aux/config.sub
++++ b/libcharset/build-aux/config.sub
+@@ -2035,6 +2035,7 @@
+ 	| lites* \
+ 	| lnews* \
+ 	| luna* \
++	| lyr* \
+ 	| lynxos* \
+ 	| mach* \
+ 	| macos* \

@@ -106,6 +106,9 @@ rootfs-update:
 	@PATH=$$PATH:/usr/sbin:/sbin; \
 	tmp=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp"' EXIT; \
+	echo "set_inode_field / uid 0" > "$$tmp/script"; \
+	echo "set_inode_field / gid 0" >> "$$tmp/script"; \
+	echo "set_inode_field / mode 040755" >> "$$tmp/script"; \
 	{ \
 		if [ -d "$(ROOTFS_DIR)" ]; then \
 			find "$(ROOTFS_DIR)" -type d -printf '%P\n'; \
@@ -115,12 +118,12 @@ rootfs-update:
 		fi; \
 	} | awk 'NF' | LC_ALL=C sort -u > "$$tmp/dirs"; \
 	while IFS= read -r dir; do \
-		debugfs -w -R "mkdir /$$dir" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+		echo "mkdir /$$dir" >> "$$tmp/script"; \
 		case "$$dir" in \
 			home/lyr/*) \
-				debugfs -w -R "set_inode_field /$$dir uid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-				debugfs -w -R "set_inode_field /$$dir gid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-				debugfs -w -R "set_inode_field /$$dir mode 040755" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+				echo "set_inode_field /$$dir uid 1000" >> "$$tmp/script"; \
+				echo "set_inode_field /$$dir gid 1000" >> "$$tmp/script"; \
+				echo "set_inode_field /$$dir mode 040755" >> "$$tmp/script"; \
 			;; \
 		esac; \
 	done < "$$tmp/dirs"; \
@@ -137,30 +140,48 @@ rootfs-update:
 		if [ -f "$(SYSTEM_ROOT)/$$rel" ]; then \
 			src="$(SYSTEM_ROOT)/$$rel"; \
 		fi; \
-		debugfs -w -R "rm /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-		debugfs -w -R "write $$src /$$rel" "$(ROOTFS_DISK)" >/dev/null 2>&1; \
+		echo "rm /$$rel" >> "$$tmp/script"; \
+		echo "write $$src /$$rel" >> "$$tmp/script"; \
 		case "$$rel" in \
 			home/lyr/*) \
-				debugfs -w -R "set_inode_field /$$rel uid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-				debugfs -w -R "set_inode_field /$$rel gid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
+				echo "set_inode_field /$$rel uid 1000" >> "$$tmp/script"; \
+				echo "set_inode_field /$$rel gid 1000" >> "$$tmp/script"; \
 			;; \
 		esac; \
-	done < "$$tmp/files"
-	@PATH=$$PATH:/usr/sbin:/sbin; \
-	debugfs -w -R "mkdir /home" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "mkdir /home/lyr" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field / uid 0" "$(ROOTFS_DISK)" >/dev/null; \
-	debugfs -w -R "set_inode_field / gid 0" "$(ROOTFS_DISK)" >/dev/null; \
-	debugfs -w -R "set_inode_field / mode 040755" "$(ROOTFS_DISK)" >/dev/null; \
-	debugfs -w -R "set_inode_field /root uid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /root gid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /root mode 040700" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /home uid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /home gid 0" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /home mode 040755" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /home/lyr uid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /home/lyr gid 1000" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true; \
-	debugfs -w -R "set_inode_field /home/lyr mode 040755" "$(ROOTFS_DISK)" >/dev/null 2>&1 || true
+	done < "$$tmp/files"; \
+	{ \
+		if [ -d "$(ROOTFS_DIR)" ]; then \
+			find "$(ROOTFS_DIR)" -type l -printf '%P\n'; \
+		fi; \
+		if [ -d "$(SYSTEM_ROOT)" ]; then \
+			find "$(SYSTEM_ROOT)" -type l -printf '%P\n'; \
+		fi; \
+	} | awk 'NF' | LC_ALL=C sort -u > "$$tmp/symlinks"; \
+	while IFS= read -r rel; do \
+		src="$(ROOTFS_DIR)/$$rel"; \
+		if [ -L "$(SYSTEM_ROOT)/$$rel" ]; then \
+			src="$(SYSTEM_ROOT)/$$rel"; \
+		fi; \
+		target=$$(readlink "$$src"); \
+		echo "rm /$$rel" >> "$$tmp/script"; \
+		echo "symlink /$$rel $$target" >> "$$tmp/script"; \
+		case "$$rel" in \
+			home/lyr/*) \
+				echo "set_inode_field /$$rel uid 1000" >> "$$tmp/script"; \
+				echo "set_inode_field /$$rel gid 1000" >> "$$tmp/script"; \
+			;; \
+		esac; \
+	done < "$$tmp/symlinks"; \
+	echo "set_inode_field /root uid 0" >> "$$tmp/script"; \
+	echo "set_inode_field /root gid 0" >> "$$tmp/script"; \
+	echo "set_inode_field /root mode 040700" >> "$$tmp/script"; \
+	echo "set_inode_field /home uid 0" >> "$$tmp/script"; \
+	echo "set_inode_field /home gid 0" >> "$$tmp/script"; \
+	echo "set_inode_field /home mode 040755" >> "$$tmp/script"; \
+	echo "set_inode_field /home/lyr uid 1000" >> "$$tmp/script"; \
+	echo "set_inode_field /home/lyr gid 1000" >> "$$tmp/script"; \
+	echo "set_inode_field /home/lyr mode 040755" >> "$$tmp/script"; \
+	debugfs -w -f "$$tmp/script" "$(ROOTFS_DISK)" >/dev/null 2>&1
 
 .PHONY: rootfs-extract
 rootfs-extract: $(ROOTFS_DISK)

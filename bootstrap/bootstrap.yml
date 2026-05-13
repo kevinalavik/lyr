@@ -6,6 +6,7 @@ imports:
   - file: bootstrap.d/apps-shell.yml
   - file: bootstrap.d/apps-misc.yml
   - file: bootstrap.d/games-fps.yml
+  - file: bootstrap.d/sys-libs.yml
 general:
   patch_author: Kevin Alavik and contributors
   patch_email: kevin@alavik.se

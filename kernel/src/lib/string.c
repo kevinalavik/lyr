@@ -183,3 +183,34 @@ char *strstr(const char *haystack, const char *needle)
 
 	return NULL;
 }
+
+char *strchr(const char *s, int c)
+{
+	while (*s) {
+		if (*s == (char)c)
+			return (char *)s;
+		s++;
+	}
+	return NULL;
+}
+
+char *strrchr(const char *s, int c)
+{
+	const char *found = NULL;
+	while (*s) {
+		if (*s == (char)c)
+			found = s;
+		s++;
+	}
+	return (char *)found;
+}
+
+char *strcat(char *dest, const char *src)
+{
+	char *ret = dest;
+	while (*dest)
+		dest++;
+	while ((*dest++ = *src++) != '\0')
+		;
+	return ret;
+}

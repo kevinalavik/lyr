@@ -15,5 +15,8 @@ char *strcpy(char *dest, const char *src);
 int strcmp(const char *a, const char *b);
 int strncmp(const char *a, const char *b, size_t n);
 char *strstr(const char *haystack, const char *needle);
+char *strchr(const char *s, int c);
+char *strrchr(const char *s, int c);
+char *strcat(char *dest, const char *src);
 
 #endif // _LYR_LIB_STRING_H

@@ -1,0 +1,40 @@
+--- a/config.sub
++++ b/config.sub
+@@ -2035,6 +2035,7 @@
+ 	| lites* \
+ 	| lnews* \
+ 	| luna* \
++	| lyr* \
+ 	| lynxos* \
+ 	| mach* \
+ 	| macos* \
+
+--- a/configure
++++ b/configure
+@@ -7123,7 +7123,7 @@
+ 		fi
+ 		cf_cv_rm_so_locs=yes
+ 		;;
+-	(linux*|gnu*|k*bsd*-gnu)
++	(linux*|gnu*|k*bsd*-gnu|*lyr)
+ 		if test "$DFT_LWR_MODEL" = "shared" && test -n "$LD_RPATH_OPT" ; then
+ 			LOCAL_LDFLAGS="${LD_RPATH_OPT}\$(LOCAL_LIBDIR)"
+ 			LOCAL_LDFLAGS2="$LOCAL_LDFLAGS"
+@@ -10785,7 +10785,7 @@
+ 	cf_xopen_source="-D_SGI_SOURCE"
+ 	cf_XOPEN_SOURCE=
+ 	;;
+-(linux*gnu*|uclinux*|gnu*|mint*|k*bsd*-gnu|cygwin|msys|mingw*|linux*uclibc)
++(linux*gnu*|uclinux*|gnu*|mint*|k*bsd*-gnu|cygwin|msys|mingw*|linux*uclibc|*lyr)
+
+ cf_gnu_xopen_source=$cf_XOPEN_SOURCE
+
+@@ -10807,6 +10807,8 @@
+ 		return 0;
+ 	#elif __NEWLIB__ > 0 && __NEWLIB_MINOR__ >= 0
+ 		return 0;
++  #elif __lyr__ > 0
++  	return 0;
+ 	#else
+ 	#	error not GNU C library
+ 	#endif

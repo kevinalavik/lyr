@@ -36,6 +36,7 @@
 #define VFS_S_ISDIR(m) (((m) & VFS_S_IFMT) == VFS_S_IFDIR)
 #define VFS_S_ISCHR(m) (((m) & VFS_S_IFMT) == VFS_S_IFCHR)
 #define VFS_S_ISFIFO(m) (((m) & VFS_S_IFMT) == VFS_S_IFIFO)
+#define VFS_S_ISLNK(m) (((m) & VFS_S_IFMT) == VFS_S_IFLNK)
 
 #define VFS_R_OK 4
 #define VFS_W_OK 2
@@ -172,6 +173,8 @@ int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);
 int vfs_chown(const char *path, vfs_uid_t uid, vfs_gid_t gid,
 			  const vfs_cred_t *cred);
 int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st);
+int vfs_readlink_node(vfs_node_t *node, char *buf, size_t *size);
+int vfs_readlink(const char *path, const vfs_cred_t *cred, char *buf, size_t size);
 int vfs_access(vfs_node_t *node, const vfs_cred_t *cred, int mask);
 int vfs_node_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 					  page_t **out);

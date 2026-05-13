@@ -221,6 +221,42 @@ static inline uint32_t cell_row(void)
 	return (cursor_y - term_y0() - _LYRTERM_FONT_ASCENT) / _LYRTERM_LINE_HEIGHT;
 }
 
+static void cell_clear(uint32_t col, uint32_t row)
+{
+	if (col >= LYRTERM_MAX_COLS || row >= LYRTERM_MAX_ROWS)
+		return;
+
+	cell_buf[row][col] = (lyrterm_cell_t){ 0, 0, 0 };
+}
+
+static void cell_clear_range(uint32_t start_col, uint32_t start_row,
+							 uint32_t end_col, uint32_t end_row)
+{
+	uint32_t max_rows = rows < LYRTERM_MAX_ROWS ? rows : LYRTERM_MAX_ROWS;
+	uint32_t max_cols = cols < LYRTERM_MAX_COLS ? cols : LYRTERM_MAX_COLS;
+
+	if (max_rows == 0 || max_cols == 0)
+		return;
+
+	if (start_row >= max_rows)
+		return;
+	if (end_row >= max_rows)
+		end_row = max_rows - 1;
+
+	for (uint32_t row = start_row; row <= end_row; row++) {
+		uint32_t c0 = row == start_row ? start_col : 0;
+		uint32_t c1 = row == end_row ? end_col : max_cols - 1;
+
+		if (c0 >= max_cols)
+			continue;
+		if (c1 >= max_cols)
+			c1 = max_cols - 1;
+
+		for (uint32_t col = c0; col <= c1; col++)
+			cell_clear(col, row);
+	}
+}
+
 static void cell_set(uint32_t col, uint32_t row, uint32_t cp, uint32_t fg,
 					 uint32_t bg)
 {
@@ -405,9 +441,14 @@ static void clear_screen(void)
 static void clear_line_from_cursor(void)
 {
 	uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
+	uint32_t col = cell_col();
+	uint32_t row = cell_row();
 
 	fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
 			  _LYRTERM_LINE_HEIGHT, effective_bg());
+
+	if (row < rows)
+		cell_clear_range(col, row, cols - 1, row);
 }
 
 static void cursor_set_pos(uint32_t row, uint32_t col)
@@ -581,11 +622,28 @@ static void ansi_handle_ed(int *params, int nparams)
 {
 	int mode = nparams ? params[0] : 0;
 
-	/* ESC[J or ESC[0J: clear from cursor to end.
-	   ESC[2J: clear whole screen. */
-	if (mode == 2) {
+	uint32_t col = cell_col();
+	uint32_t row = cell_row();
+
+	if (mode == 2 || mode == 3) {
+		/*
+		 * ESC[2J: clear whole screen.
+		 * ESC[3J: clear scrollback on real terminals; lyrterm has no
+		 * scrollback, so treat it as full visible clear.
+		 */
 		clear_screen();
+	} else if (mode == 1) {
+		/* ESC[1J: clear from start of screen to cursor. */
+		fill_rect(term_x0(), term_y0(), term_width(),
+				  cursor_y - _LYRTERM_FONT_ASCENT - term_y0(), effective_bg());
+
+		fill_rect(term_x0(), cursor_y - _LYRTERM_FONT_ASCENT,
+				  cursor_x - term_x0() + _LYRTERM_LINE_WIDTH,
+				  _LYRTERM_LINE_HEIGHT, effective_bg());
+
+		cell_clear_range(0, 0, col, row);
 	} else {
+		/* ESC[J or ESC[0J: clear from cursor to end of screen. */
 		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
 
 		fill_rect(cursor_x, y, term_x0() + term_width() - cursor_x,
@@ -596,6 +654,8 @@ static void ansi_handle_ed(int *params, int nparams)
 					  term_y0() + term_height() - (y + _LYRTERM_LINE_HEIGHT),
 					  effective_bg());
 		}
+
+		cell_clear_range(col, row, cols - 1, rows - 1);
 	}
 }
 
@@ -603,11 +663,26 @@ static void ansi_handle_el(int *params, int nparams)
 {
 	int mode = nparams ? params[0] : 0;
 
+	uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
+	uint32_t col = cell_col();
+	uint32_t row = cell_row();
+
 	if (mode == 2) {
-		uint32_t y = cursor_y - _LYRTERM_FONT_ASCENT;
+		/* ESC[2K: clear whole line. */
 		fill_rect(term_x0(), y, term_width(), _LYRTERM_LINE_HEIGHT,
 				  effective_bg());
+
+		if (row < rows)
+			cell_clear_range(0, row, cols - 1, row);
+	} else if (mode == 1) {
+		/* ESC[1K: clear from start of line to cursor. */
+		fill_rect(term_x0(), y, cursor_x - term_x0() + _LYRTERM_LINE_WIDTH,
+				  _LYRTERM_LINE_HEIGHT, effective_bg());
+
+		if (row < rows)
+			cell_clear_range(0, row, col, row);
 	} else {
+		/* ESC[K or ESC[0K: clear from cursor to end of line. */
 		clear_line_from_cursor();
 	}
 }
@@ -1140,7 +1215,6 @@ int lyrterm_get_framebuffer_info(lyrterm_framebuffer_info_t *out)
 	out->size = fb_pitch * fb_height;
 	return 0;
 }
-
 
 void lyrterm_framebuffer_acquire(void)
 {

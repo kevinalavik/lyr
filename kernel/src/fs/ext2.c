@@ -100,6 +100,9 @@ struct ext2_fs {
 	vfs_node_t *root;
 	char mount_path[64];
 	ext2_fs_t *next;
+#define INODE_CACHE_SIZE 64
+	vfs_node_t *inode_cache[INODE_CACHE_SIZE];
+	uint32_t inode_cache_ino[INODE_CACHE_SIZE];
 };
 
 static ext2_fs_t *mounts;
@@ -261,6 +264,13 @@ static int write_inode(ext2_fs_t *fs, uint32_t ino, const ext2_inode_t *in)
 
 static int alloc_ext2_node(ext2_fs_t *fs, uint32_t ino, vfs_node_t **out)
 {
+	for (int i = 0; i < INODE_CACHE_SIZE; i++) {
+		if (fs->inode_cache_ino[i] == ino && fs->inode_cache[i]) {
+			vfs_node_ref(fs->inode_cache[i]);
+			*out = fs->inode_cache[i];
+			return 0;
+		}
+	}
 	ext2_node_t *node = kzalloc(sizeof(*node));
 	if (!node)
 		return -ENOMEM;
@@ -278,6 +288,14 @@ static int alloc_ext2_node(ext2_fs_t *fs, uint32_t ino, vfs_node_t **out)
 	node->vnode.size = inode_size(&node->inode);
 	node->vnode.nlink = node->inode.links_count;
 	node->vnode.private_data = node;
+	for (int i = 0; i < INODE_CACHE_SIZE; i++) {
+		if (!fs->inode_cache[i]) {
+			vfs_node_ref(&node->vnode);
+			fs->inode_cache[i] = &node->vnode;
+			fs->inode_cache_ino[i] = ino;
+			break;
+		}
+	}
 	*out = &node->vnode;
 	return 0;
 }
@@ -581,6 +599,58 @@ static int ext2_read(vfs_node_t *vnode, uint64_t off, void *buf, size_t len,
 {
 	if (done)
 		*done = 0;
+
+	if (VFS_S_ISLNK(vnode->mode)) {
+		if (off >= vnode->size || len == 0)
+			return 0;
+		if (len > vnode->size - off)
+			len = (size_t)(vnode->size - off);
+
+		ext2_node_t *node = vnode->private_data;
+		if (vnode->size < 60) {
+			memcpy(buf, (const char *)node->inode.block, len);
+			if (done)
+				*done = len;
+			return 0;
+		}
+
+		uint8_t *blk = kzalloc(node->fs->block_size);
+		if (!blk)
+			return -ENOMEM;
+
+		size_t copied = 0;
+		while (copied < len) {
+			uint64_t pos = off + copied;
+			uint32_t fblk = (uint32_t)(pos / node->fs->block_size);
+			size_t boff = (size_t)(pos % node->fs->block_size);
+			size_t chunk = node->fs->block_size - boff;
+			if (chunk > len - copied)
+				chunk = len - copied;
+
+			uint32_t disk_block = 0;
+			int r = file_block(node, fblk, &disk_block);
+			if (r != 0) {
+				kfree(blk);
+				return r;
+			}
+			if (disk_block) {
+				r = read_block(node->fs, disk_block, blk);
+				if (r != 0) {
+					kfree(blk);
+					return r;
+				}
+				memcpy((uint8_t *)buf + copied, blk + boff, chunk);
+			} else {
+				memset((uint8_t *)buf + copied, 0, chunk);
+			}
+			copied += chunk;
+		}
+		kfree(blk);
+		if (done)
+			*done = copied;
+		return 0;
+	}
+
 	if (!VFS_S_ISREG(vnode->mode))
 		return -EISDIR;
 	if (off >= vnode->size || len == 0)
@@ -1546,6 +1616,10 @@ int ext2_mount(block_device_t *dev, const char *path)
 	if (!fs->groups) {
 		kfree(fs);
 		return -ENOMEM;
+	}
+	for (int i = 0; i < INODE_CACHE_SIZE; i++) {
+		fs->inode_cache_ino[i] = 0;
+		fs->inode_cache[i] = NULL;
 	}
 	fs->gd_off = (fs->block_size == 1024) ? 2048 : fs->block_size;
 	r = block_read(dev, fs->gd_off, fs->groups, gd_bytes);
