@@ -2,7 +2,7 @@
 #
 # System-wide environment for shells in lyrOS
 
-uid="${UID:-$(id -u)}"
+uid="${UID:-$(id -u 2> /dev/null)}"
 if [ "$uid" = "0" ] || [ "$USER" = "root" ]; then
     PATH="/bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin"
 else

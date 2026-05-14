@@ -558,7 +558,13 @@ static int _vfs_open_at(vfs_node_t *base, const char *path, uint32_t flags,
 		return r;
 	}
 
-	if ((flags & VFS_O_TRUNC) && (acc & VFS_W_OK)) {
+	/*
+	 * Shell redirections commonly open character devices like /dev/null with
+	 * O_TRUNC even though truncation is only meaningful for regular files.
+	 * Treat truncation as a real operation for regular files and ignore it for
+	 * device nodes so they can still be used as redirect targets.
+	 */
+	if ((flags & VFS_O_TRUNC) && (acc & VFS_W_OK) && VFS_S_ISREG(node->mode)) {
 		if (!node->ops || !node->ops->truncate) {
 			vfs_node_release(node);
 			return -ENOSYS;
