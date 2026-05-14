@@ -160,8 +160,12 @@ int vfs_chroot(const char *path, const vfs_cred_t *cred);
 int vfs_change_root(const char *path, const vfs_cred_t *cred);
 int vfs_mount(const char *path, vfs_node_t *root, const vfs_cred_t *cred);
 int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out);
+int vfs_resolve_at(vfs_node_t *base, const char *path, const vfs_cred_t *cred,
+				   vfs_node_t **out);
 int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 			 const vfs_cred_t *cred, vfs_file_t **out);
+int vfs_open_at(vfs_node_t *base, const char *path, uint32_t flags,
+				vfs_mode_t mode, const vfs_cred_t *cred, vfs_file_t **out);
 int vfs_close(vfs_file_t *file);
 int vfs_fsync(vfs_file_t *file);
 int vfs_fadvise(vfs_file_t *file, uint64_t offset, uint64_t len, int advice);
@@ -172,12 +176,23 @@ int vfs_poll(vfs_file_t *file, int events);
 int vfs_readdir(vfs_node_t *dir, size_t index, vfs_dirent_t *out);
 int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off);
 int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);
+int vfs_mkdir_at(vfs_node_t *base, const char *path, vfs_mode_t mode,
+				 const vfs_cred_t *cred);
 int vfs_unlink(const char *path, const vfs_cred_t *cred);
+int vfs_unlink_at(vfs_node_t *base, const char *path, const vfs_cred_t *cred);
 int vfs_rmdir(const char *path, const vfs_cred_t *cred);
+int vfs_rmdir_at(vfs_node_t *base, const char *path, const vfs_cred_t *cred);
 int vfs_rename(const char *old_path, const char *new_path, const vfs_cred_t *cred);
+int vfs_rename_at(vfs_node_t *old_base, const char *old_path,
+				  vfs_node_t *new_base, const char *new_path,
+				  const vfs_cred_t *cred);
 int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred);
+int vfs_chmod_at(vfs_node_t *base, const char *path, vfs_mode_t mode,
+				 const vfs_cred_t *cred);
 int vfs_chown(const char *path, vfs_uid_t uid, vfs_gid_t gid,
 			  const vfs_cred_t *cred);
+int vfs_chown_at(vfs_node_t *base, const char *path, vfs_uid_t uid,
+				 vfs_gid_t gid, const vfs_cred_t *cred);
 int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st);
 int vfs_readlink_node(vfs_node_t *node, char *buf, size_t *size);
 int vfs_readlink(const char *path, const vfs_cred_t *cred, char *buf, size_t size);

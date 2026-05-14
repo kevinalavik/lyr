@@ -44,6 +44,34 @@
 #define SYS_O_CLOEXEC 02000000u
 #define SYS_O_NONBLOCK SOCK_NONBLOCK
 #define SYS_AT_FDCWD (-100)
+#define SYS_AT_SYMLINK_NOFOLLOW 0x100u
+#define SYS_AT_REMOVEDIR 0x200u
+#define SYS_AT_EACCESS 0x200u
+#define SYS_AT_EMPTY_PATH 0x1000u
+
+#define SYS_O_ACCMODE 00000003u
+#define SYS_O_RDONLY 00000000u
+#define SYS_O_WRONLY 00000001u
+#define SYS_O_RDWR 00000002u
+#define SYS_O_CREAT 00000100u
+#define SYS_O_EXCL 00000200u
+#define SYS_O_NOCTTY 00000400u
+#define SYS_O_TRUNC 00001000u
+#define SYS_O_APPEND 00002000u
+#define SYS_O_DSYNC 00010000u
+#define SYS_O_ASYNC 00020000u
+#define SYS_O_DIRECT 00040000u
+#define SYS_O_LARGEFILE 00100000u
+#define SYS_O_DIRECTORY 000200000u
+#define SYS_O_NOFOLLOW 000400000u
+#define SYS_O_NOATIME 001000000u
+#define SYS_O_CLOEXEC_POSIX 02000000u
+#define SYS_O_SYNC 04010000u
+#define SYS_OPENAT_IGNORED_FLAGS \
+	(SYS_O_NOCTTY | SYS_O_CLOEXEC_POSIX | SYS_O_NONBLOCK | SYS_O_DSYNC | \
+	 SYS_O_ASYNC | SYS_O_DIRECT | SYS_O_LARGEFILE | SYS_O_NOFOLLOW | \
+	 SYS_O_NOATIME | SYS_O_SYNC)
+
 
 #define EXEC_ARG_MAX 4096
 #define EXEC_ENV_MAX 4096
@@ -339,6 +367,52 @@ static int syscall_copy_user_path_abs(uint64_t user, char *out, size_t out_len)
 	return syscall_normalize_path(raw, out, out_len);
 }
 
+static int syscall_copy_user_path_raw(uint64_t user, char *out, size_t out_len)
+{
+	return syscall_copy_user_string(user, out, out_len);
+}
+
+static int syscall_open_flags_to_vfs(uint32_t flags, uint32_t *vfs_flags,
+								 uint32_t *fd_flags)
+{
+	uint32_t out = 0;
+	uint32_t known = SYS_O_ACCMODE | SYS_O_CREAT | SYS_O_EXCL |
+		SYS_O_TRUNC | SYS_O_APPEND | SYS_O_DIRECTORY |
+		SYS_OPENAT_IGNORED_FLAGS;
+
+	if ((flags & ~known) != 0)
+		return -EINVAL;
+
+	switch (flags & SYS_O_ACCMODE) {
+	case SYS_O_RDONLY:
+		out |= VFS_O_RDONLY;
+		break;
+	case SYS_O_WRONLY:
+		out |= VFS_O_WRONLY;
+		break;
+	case SYS_O_RDWR:
+		out |= VFS_O_RDWR;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (flags & SYS_O_CREAT)
+		out |= VFS_O_CREAT;
+	if (flags & SYS_O_EXCL)
+		out |= VFS_O_EXCL;
+	if (flags & SYS_O_TRUNC)
+		out |= VFS_O_TRUNC;
+	if (flags & SYS_O_APPEND)
+		out |= VFS_O_APPEND;
+	if (flags & SYS_O_DIRECTORY)
+		out |= VFS_O_DIRECTORY;
+
+	*vfs_flags = out;
+	*fd_flags = (flags & SYS_O_CLOEXEC_POSIX) ? SYS_FD_CLOEXEC : 0;
+	return 0;
+}
+
 static uint32_t syscall_mmap_prot_to_vmm(int prot)
 {
 	uint32_t flags = VMM_PRESENT | VMM_USER;
@@ -501,6 +575,36 @@ static int syscall_alloc_fd(pcb_t *process, int minfd)
 	}
 
 	return -ENOMEM;
+}
+
+static int syscall_at_base_and_path(int dirfd, uint64_t user_path,
+								vfs_node_t **base_out, char *path,
+								size_t path_size)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process || !base_out || !path)
+		return -EBADF;
+
+	*base_out = NULL;
+	int r = syscall_copy_user_path_raw(user_path, path, path_size);
+	if (r != 0)
+		return r;
+
+	if (path[0] == '/' || dirfd == SYS_AT_FDCWD)
+		return syscall_normalize_path(path, path, path_size);
+
+	if (dirfd < 0 || dirfd >= SCHED_FILE_MAX ||
+		!thread->process->files[dirfd])
+		return -EBADF;
+
+	vfs_node_t *base = vfs_file_node(thread->process->files[dirfd]);
+	if (!base)
+		return -EBADF;
+	if (!VFS_S_ISDIR(base->mode))
+		return -ENOTDIR;
+
+	*base_out = base;
+	return 0;
 }
 
 static void syscall_close_file_slot(vfs_file_t **slot)
@@ -719,6 +823,41 @@ static long sys_open_handler(interrupt_frame_t *frame)
 	}
 
 	return -ENOMEM;
+}
+
+static long sys_openat_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	int dirfd = (int)frame->rdi;
+	uint32_t user_flags = (uint32_t)frame->rdx;
+	uint32_t vfs_flags = 0;
+	uint32_t fd_flags = 0;
+	int r = syscall_open_flags_to_vfs(user_flags, &vfs_flags, &fd_flags);
+	if (r != 0)
+		return r;
+
+	char path[SYS_PATH_MAX];
+	vfs_node_t *base = NULL;
+	r = syscall_at_base_and_path(dirfd, frame->rsi, &base, path, sizeof(path));
+	if (r != 0)
+		return r;
+
+	int fd = syscall_alloc_fd(thread->process, 0);
+	if (fd < 0)
+		return fd;
+
+	vfs_file_t *file = NULL;
+	r = vfs_open_at(base, path, vfs_flags, (vfs_mode_t)frame->r10,
+					syscall_current_cred(), &file);
+	if (r != 0)
+		return r;
+
+	thread->process->files[fd] = file;
+	thread->process->fd_flags[fd] = fd_flags;
+	return fd;
 }
 
 static long sys_close_handler(interrupt_frame_t *frame)
@@ -1375,6 +1514,99 @@ static long sys_unlink_handler(interrupt_frame_t *frame)
 	return vfs_unlink(path, syscall_current_cred());
 }
 
+static long sys_unlinkat_handler(interrupt_frame_t *frame)
+{
+	int dirfd = (int)frame->rdi;
+	int flags = (int)frame->rdx;
+
+	if (flags & ~((int)SYS_AT_REMOVEDIR))
+		return -EINVAL;
+
+	char path[SYS_PATH_MAX];
+	vfs_node_t *base = NULL;
+	int r = syscall_at_base_and_path(dirfd, frame->rsi, &base, path, sizeof(path));
+	if (r != 0)
+		return r;
+
+	if (flags & SYS_AT_REMOVEDIR)
+		return vfs_rmdir_at(base, path, syscall_current_cred());
+	return vfs_unlink_at(base, path, syscall_current_cred());
+}
+
+static long sys_mkdirat_handler(interrupt_frame_t *frame)
+{
+	char path[SYS_PATH_MAX];
+	vfs_node_t *base = NULL;
+	int r = syscall_at_base_and_path((int)frame->rdi, frame->rsi,
+								  &base, path, sizeof(path));
+	if (r != 0)
+		return r;
+
+	return vfs_mkdir_at(base, path, (vfs_mode_t)frame->rdx,
+					 syscall_current_cred());
+}
+
+static long sys_fchmodat_handler(interrupt_frame_t *frame)
+{
+	int flags = (int)frame->r10;
+	if (flags & ~((int)SYS_AT_SYMLINK_NOFOLLOW))
+		return -EINVAL;
+
+	char path[SYS_PATH_MAX];
+	vfs_node_t *base = NULL;
+	int r = syscall_at_base_and_path((int)frame->rdi, frame->rsi,
+								  &base, path, sizeof(path));
+	if (r != 0)
+		return r;
+
+	return vfs_chmod_at(base, path, (vfs_mode_t)frame->rdx,
+					 syscall_current_cred());
+}
+
+static long sys_fchownat_handler(interrupt_frame_t *frame)
+{
+	int flags = (int)frame->r8;
+	if (flags & ~((int)SYS_AT_SYMLINK_NOFOLLOW))
+		return -EINVAL;
+
+	char path[SYS_PATH_MAX];
+	vfs_node_t *base = NULL;
+	int r = syscall_at_base_and_path((int)frame->rdi, frame->rsi,
+								  &base, path, sizeof(path));
+	if (r != 0)
+		return r;
+
+	return vfs_chown_at(base, path, (vfs_uid_t)frame->rdx,
+					 (vfs_gid_t)frame->r10, syscall_current_cred());
+}
+
+static long sys_faccessat_handler(interrupt_frame_t *frame)
+{
+	int mode = (int)frame->rdx;
+	int flags = (int)frame->r10;
+
+	if (flags & ~((int)(SYS_AT_EACCESS | SYS_AT_SYMLINK_NOFOLLOW)))
+		return -EINVAL;
+	if (mode & ~(VFS_R_OK | VFS_W_OK | VFS_X_OK))
+		return -EINVAL;
+
+	char path[SYS_PATH_MAX];
+	vfs_node_t *base = NULL;
+	int r = syscall_at_base_and_path((int)frame->rdi, frame->rsi,
+								  &base, path, sizeof(path));
+	if (r != 0)
+		return r;
+
+	vfs_node_t *node = NULL;
+	r = vfs_resolve_at(base, path, syscall_current_cred(), &node);
+	if (r != 0)
+		return r;
+
+	r = vfs_access(node, syscall_current_cred(), mode);
+	vfs_node_release(node);
+	return r;
+}
+
 static long sys_readlink_handler(interrupt_frame_t *frame)
 {
 	char path[SYS_PATH_MAX];
@@ -1410,20 +1642,23 @@ static long sys_readlink_handler(interrupt_frame_t *frame)
 
 static long sys_renameat_handler(interrupt_frame_t *frame)
 {
-	if ((int)frame->rdi != SYS_AT_FDCWD || (int)frame->rdx != SYS_AT_FDCWD)
-		return -ENOSYS;
-
 	char old_path[SYS_PATH_MAX];
 	char new_path[SYS_PATH_MAX];
-	int r = syscall_copy_user_path_abs(frame->rsi, old_path, sizeof(old_path));
+	vfs_node_t *old_base = NULL;
+	vfs_node_t *new_base = NULL;
+
+	int r = syscall_at_base_and_path((int)frame->rdi, frame->rsi,
+								  &old_base, old_path, sizeof(old_path));
 	if (r != 0)
 		return r;
 
-	r = syscall_copy_user_path_abs(frame->r10, new_path, sizeof(new_path));
+	r = syscall_at_base_and_path((int)frame->rdx, frame->r10,
+							 &new_base, new_path, sizeof(new_path));
 	if (r != 0)
 		return r;
 
-	return vfs_rename(old_path, new_path, syscall_current_cred());
+	return vfs_rename_at(old_base, old_path, new_base, new_path,
+					 syscall_current_cred());
 }
 
 static long sys_chmod_handler(interrupt_frame_t *frame)
@@ -3423,6 +3658,7 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_READ] = sys_read_handler,
 	[SYS_WRITE] = sys_write_handler,
 	[SYS_OPEN] = sys_open_handler,
+	[SYS_OPENAT] = sys_openat_handler,
 	[SYS_CLOSE] = sys_close_handler,
 	[SYS_STAT] = sys_stat_handler,
 	[SYS_FSTAT] = sys_fstat_handler,
@@ -3439,12 +3675,17 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_CHMOD] = sys_chmod_handler,
 	[SYS_CHOWN] = sys_chown_handler,
 	[SYS_MKDIR] = sys_mkdir_handler,
+	[SYS_MKDIRAT] = sys_mkdirat_handler,
 	[SYS_RMDIR] = sys_rmdir_handler,
 	[SYS_UNLINK] = sys_unlink_handler,
+	[SYS_UNLINKAT] = sys_unlinkat_handler,
 	[SYS_READLINK] = sys_readlink_handler,
 	[SYS_FSYNC] = sys_fsync_handler,
 	[SYS_FADVICE] = sys_fadvise_handler,
 	[SYS_RENAMEAT] = sys_renameat_handler,
+	[SYS_FCHMODAT] = sys_fchmodat_handler,
+	[SYS_FCHOWNAT] = sys_fchownat_handler,
+	[SYS_FACCESSAT] = sys_faccessat_handler,
 	[SYS_CHROOT] = sys_chroot_handler,
 	[SYS_MOUNT] = sys_mount_handler,
 	[SYS_CHANGE_ROOT] = sys_change_root_handler,

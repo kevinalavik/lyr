@@ -332,34 +332,41 @@ static int elf_read_file(const char *path, uint8_t **file_out, size_t *size_out)
 	if (!path || !file_out || !size_out)
 		return -EINVAL;
 
-	vfs_stat_t st;
-	int r = vfs_stat(path, &vfs_root_cred, &st);
-	if (r != 0)
-		return r;
-	if (!VFS_S_ISREG(st.mode) || st.size == 0 || st.size > SIZE_MAX)
-		return -EINVAL;
-
 	vfs_file_t *fp = NULL;
-	r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &fp);
+	int r = vfs_open(path, VFS_O_RDONLY, 0, &vfs_root_cred, &fp);
 	if (r != 0)
 		return r;
 
-	uint8_t *file = kzalloc((size_t)st.size);
+	vfs_node_t *node = vfs_file_node(fp);
+	if (!node) {
+		vfs_close(fp);
+		return -EINVAL;
+	}
+
+	if (!VFS_S_ISREG(node->mode) || node->size == 0 || node->size > SIZE_MAX) {
+		vfs_close(fp);
+		return -EINVAL;
+	}
+
+	uint8_t *file = kzalloc((size_t)node->size);
 	if (!file) {
 		vfs_close(fp);
 		return -ENOMEM;
 	}
 
+	size_t size = (size_t)node->size;
 	size_t done = 0;
-	r = vfs_read(fp, file, (size_t)st.size, &done);
+
+	r = vfs_read(fp, file, size, &done);
 	vfs_close(fp);
-	if (r != 0 || done != (size_t)st.size) {
+
+	if (r != 0 || done != size) {
 		kfree(file);
 		return r == 0 ? -EINVAL : r;
 	}
 
 	*file_out = file;
-	*size_out = (size_t)st.size;
+	*size_out = size;
 	return 0;
 }
 

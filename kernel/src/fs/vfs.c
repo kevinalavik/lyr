@@ -275,22 +275,31 @@ int vfs_access(vfs_node_t *node, const vfs_cred_t *cred, int mask)
 	return 0;
 }
 
-int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
+int vfs_resolve_at(vfs_node_t *base, const char *path, const vfs_cred_t *cred,
+				   vfs_node_t **out)
 {
 	cred = _cred_or_root(cred);
-	log_trace("vfs", "resolve path=%s uid=%u", path ? path : "(null)",
-			  cred->uid);
-	if (!root_node || !path || !out)
-		return -EINVAL;
-	if (*path != '/')
+	log_trace("vfs", "resolve_at base=%p path=%s uid=%u", base,
+			  path ? path : "(null)", cred->uid);
+	if (!root_node || !path || !out || path[0] == '\0')
 		return -EINVAL;
 
-	vfs_node_t *cur = root_node;
-	vfs_node_ref(cur);
+	vfs_node_t *cur;
 	char cur_path[512];
 	cur_path[0] = '/';
 	cur_path[1] = '\0';
-	cur = _follow_mount_at(cur, cur_path);
+
+	if (path[0] == '/' || !base) {
+		cur = root_node;
+		vfs_node_ref(cur);
+		cur = _follow_mount_at(cur, cur_path);
+	} else {
+		if (!VFS_S_ISDIR(base->mode))
+			return -ENOTDIR;
+		cur = base;
+		vfs_node_ref(cur);
+		cur = _follow_mount_at(cur, cur_path);
+	}
 
 	const char *p = _skip_slashes(path);
 	if (*p == '\0') {
@@ -338,6 +347,13 @@ int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
 	return 0;
 }
 
+int vfs_resolve(const char *path, const vfs_cred_t *cred, vfs_node_t **out)
+{
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return vfs_resolve_at(NULL, path, cred, out);
+}
+
 static int _resolve_parent(const char *path, const vfs_cred_t *cred,
 						   vfs_node_t **parent, char name[VFS_NAME_MAX + 1],
 						   size_t *name_len)
@@ -378,8 +394,57 @@ static int _resolve_parent(const char *path, const vfs_cred_t *cred,
 	return r;
 }
 
-int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
-			 const vfs_cred_t *cred, vfs_file_t **out)
+static int _resolve_parent_at(vfs_node_t *base, const char *path,
+							  const vfs_cred_t *cred, vfs_node_t **parent,
+							  char name[VFS_NAME_MAX + 1], size_t *name_len)
+{
+	if (!path || path[0] == '\0')
+		return -EINVAL;
+
+	if (path[0] == '/')
+		return _resolve_parent(path, cred, parent, name, name_len);
+
+	const char *end = path + strlen(path);
+	while (end > path && end[-1] == '/')
+		end--;
+	if (end == path)
+		return -EINVAL;
+
+	const char *slash = end;
+	while (slash > path && slash[-1] != '/')
+		slash--;
+
+	size_t len = (size_t)(end - slash);
+	int r = _copy_name(slash, len, name);
+	if (r != 0)
+		return r;
+	if (name_len)
+		*name_len = len;
+
+	if (slash == path) {
+		if (!base)
+			return -EINVAL;
+		if (!VFS_S_ISDIR(base->mode))
+			return -ENOTDIR;
+		vfs_node_ref(base);
+		*parent = base;
+		return 0;
+	}
+
+	size_t parent_len = (size_t)(slash - path - 1);
+	char *tmp = kmalloc(parent_len + 1);
+	if (!tmp)
+		return -ENOMEM;
+	memcpy(tmp, path, parent_len);
+	tmp[parent_len] = '\0';
+
+	r = vfs_resolve_at(base, tmp, cred, parent);
+	kfree(tmp);
+	return r;
+}
+
+static int _vfs_open_at(vfs_node_t *base, const char *path, uint32_t flags,
+						vfs_mode_t mode, const vfs_cred_t *cred, vfs_file_t **out)
 {
 	cred = _cred_or_root(cred);
 	log_debug("vfs", "open path=%s flags=0x%x mode=0%o uid=%u",
@@ -388,7 +453,7 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 		return -EINVAL;
 
 	vfs_node_t *node = NULL;
-	int r = vfs_resolve(path, cred, &node);
+	int r = vfs_resolve_at(base, path, cred, &node);
 	log_debug("vfs", "open: %s -> node=%p ino=%u mode=0o%o",
 			  path, node, node ? (unsigned)node->ino : 0, node ? node->mode : 0);
 	if (r == 0 && VFS_S_ISLNK(node->mode)) {
@@ -418,9 +483,11 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 					strcat(abs_target, link_target);
 				else
 					return -ENAMETOOLONG;
+			} else {
+				strcpy(abs_target, link_target);
 			}
 		}
-		r = vfs_resolve(abs_target, cred, &node);
+		r = vfs_resolve_at(base, abs_target, cred, &node);
 		log_debug("vfs", "open: resolved %s -> ino=%u mode=0o%o",
 				  abs_target, node ? (unsigned)node->ino : 0, node ? node->mode : 0);
 		if (r != 0)
@@ -432,7 +499,7 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 		vfs_node_t *parent = NULL;
 		char name[VFS_NAME_MAX + 1];
 		size_t name_len = 0;
-		r = _resolve_parent(path, cred, &parent, name, &name_len);
+		r = _resolve_parent_at(base, path, cred, &parent, name, &name_len);
 		if (r != 0)
 			return r;
 		if (!VFS_S_ISDIR(parent->mode)) {
@@ -526,6 +593,20 @@ int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
 	log_trace("vfs", "open ok path=%s node=%p size=%llu", path, node,
 			  node->size);
 	return 0;
+}
+
+int vfs_open_at(vfs_node_t *base, const char *path, uint32_t flags,
+				vfs_mode_t mode, const vfs_cred_t *cred, vfs_file_t **out)
+{
+	return _vfs_open_at(base, path, flags, mode, cred, out);
+}
+
+int vfs_open(const char *path, uint32_t flags, vfs_mode_t mode,
+			 const vfs_cred_t *cred, vfs_file_t **out)
+{
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return _vfs_open_at(NULL, path, flags, mode, cred, out);
 }
 
 int vfs_close(vfs_file_t *file)
@@ -706,15 +787,16 @@ int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off)
 	return 0;
 }
 
-int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
+int vfs_mkdir_at(vfs_node_t *base, const char *path, vfs_mode_t mode,
+				 const vfs_cred_t *cred)
 {
 	cred = _cred_or_root(cred);
-	log_debug("vfs", "mkdir path=%s mode=0%o uid=%u", path ? path : "(null)",
-			  mode, cred->uid);
+	log_debug("vfs", "mkdir_at base=%p path=%s mode=0%o uid=%u", base,
+			  path ? path : "(null)", mode, cred->uid);
 	vfs_node_t *parent = NULL;
 	char name[VFS_NAME_MAX + 1];
 	size_t name_len = 0;
-	int r = _resolve_parent(path, cred, &parent, name, &name_len);
+	int r = _resolve_parent_at(base, path, cred, &parent, name, &name_len);
 	if (r != 0)
 		return r;
 	r = vfs_access(parent, cred, VFS_W_OK | VFS_X_OK);
@@ -734,13 +816,21 @@ int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
 	return r;
 }
 
-static int _unlink_common(const char *path, const vfs_cred_t *cred, int dir)
+int vfs_mkdir(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
+{
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return vfs_mkdir_at(NULL, path, mode, cred);
+}
+
+static int _unlink_common_at(vfs_node_t *base, const char *path,
+							 const vfs_cred_t *cred, int dir)
 {
 	cred = _cred_or_root(cred);
 	vfs_node_t *parent = NULL;
 	char name[VFS_NAME_MAX + 1];
 	size_t name_len = 0;
-	int r = _resolve_parent(path, cred, &parent, name, &name_len);
+	int r = _resolve_parent_at(base, path, cred, &parent, name, &name_len);
 	if (r != 0)
 		return r;
 
@@ -766,28 +856,43 @@ static int _unlink_common(const char *path, const vfs_cred_t *cred, int dir)
 	return r;
 }
 
+int vfs_unlink_at(vfs_node_t *base, const char *path, const vfs_cred_t *cred)
+{
+	log_debug("vfs", "unlink_at base=%p path=%s", base, path ? path : "(null)");
+	return _unlink_common_at(base, path, cred, 0);
+}
+
 int vfs_unlink(const char *path, const vfs_cred_t *cred)
 {
-	log_debug("vfs", "unlink path=%s", path ? path : "(null)");
-	return _unlink_common(path, cred, 0);
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return vfs_unlink_at(NULL, path, cred);
+}
+
+int vfs_rmdir_at(vfs_node_t *base, const char *path, const vfs_cred_t *cred)
+{
+	log_debug("vfs", "rmdir_at base=%p path=%s", base, path ? path : "(null)");
+	return _unlink_common_at(base, path, cred, 1);
 }
 
 int vfs_rmdir(const char *path, const vfs_cred_t *cred)
 {
-	log_debug("vfs", "rmdir path=%s", path ? path : "(null)");
-	return _unlink_common(path, cred, 1);
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return vfs_rmdir_at(NULL, path, cred);
 }
 
-int vfs_rename(const char *old_path, const char *new_path,
-			   const vfs_cred_t *cred)
+int vfs_rename_at(vfs_node_t *old_base, const char *old_path,
+				  vfs_node_t *new_base, const char *new_path,
+				  const vfs_cred_t *cred)
 {
 	cred = _cred_or_root(cred);
-	log_debug("vfs", "rename old=%s new=%s uid=%u",
-			  old_path ? old_path : "(null)", new_path ? new_path : "(null)",
-			  cred->uid);
+	log_debug("vfs", "rename_at old_base=%p old=%s new_base=%p new=%s uid=%u",
+			  old_base, old_path ? old_path : "(null)", new_base,
+			  new_path ? new_path : "(null)", cred->uid);
 	if (!old_path || !new_path)
 		return -EINVAL;
-	if (!strcmp(old_path, new_path))
+	if (old_base == new_base && !strcmp(old_path, new_path))
 		return 0;
 
 	vfs_node_t *old_parent = NULL;
@@ -799,11 +904,11 @@ int vfs_rename(const char *old_path, const char *new_path,
 	size_t old_len = 0;
 	size_t new_len = 0;
 
-	int r = _resolve_parent(old_path, cred, &old_parent, old_name, &old_len);
+	int r = _resolve_parent_at(old_base, old_path, cred, &old_parent, old_name, &old_len);
 	if (r != 0)
 		return r;
 
-	r = _resolve_parent(new_path, cred, &new_parent, new_name, &new_len);
+	r = _resolve_parent_at(new_base, new_path, cred, &new_parent, new_name, &new_len);
 	if (r != 0) {
 		vfs_node_release(old_parent);
 		return r;
@@ -868,11 +973,20 @@ done:
 	return r;
 }
 
-int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
+int vfs_rename(const char *old_path, const char *new_path,
+			   const vfs_cred_t *cred)
+{
+	if (!old_path || !new_path || old_path[0] != '/' || new_path[0] != '/')
+		return -EINVAL;
+	return vfs_rename_at(NULL, old_path, NULL, new_path, cred);
+}
+
+int vfs_chmod_at(vfs_node_t *base, const char *path, vfs_mode_t mode,
+				 const vfs_cred_t *cred)
 {
 	cred = _cred_or_root(cred);
 	vfs_node_t *node = NULL;
-	int r = vfs_resolve(path, cred, &node);
+	int r = vfs_resolve_at(base, path, cred, &node);
 	if (r != 0)
 		return r;
 	if (cred->uid != 0 && cred->uid != node->uid) {
@@ -880,19 +994,26 @@ int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
 		return -EPERM;
 	}
 	node->mode = (node->mode & VFS_S_IFMT) | (mode & VFS_S_PERM);
-	log_trace("vfs", "chmod path=%s mode=0%o", path, node->mode);
+	log_trace("vfs", "chmod_at base=%p path=%s mode=0%o", base, path, node->mode);
 	vfs_node_release(node);
 	return 0;
 }
 
-int vfs_chown(const char *path, vfs_uid_t uid, vfs_gid_t gid,
-			  const vfs_cred_t *cred)
+int vfs_chmod(const char *path, vfs_mode_t mode, const vfs_cred_t *cred)
+{
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return vfs_chmod_at(NULL, path, mode, cred);
+}
+
+int vfs_chown_at(vfs_node_t *base, const char *path, vfs_uid_t uid,
+				 vfs_gid_t gid, const vfs_cred_t *cred)
 {
 	cred = _cred_or_root(cred);
 	if (cred->uid != 0)
 		return -EPERM;
 	vfs_node_t *node = NULL;
-	int r = vfs_resolve(path, cred, &node);
+	int r = vfs_resolve_at(base, path, cred, &node);
 	if (r != 0)
 		return r;
 	node->uid = uid;
@@ -900,6 +1021,14 @@ int vfs_chown(const char *path, vfs_uid_t uid, vfs_gid_t gid,
 	node->mode &= ~(VFS_S_ISUID | VFS_S_ISGID);
 	vfs_node_release(node);
 	return 0;
+}
+
+int vfs_chown(const char *path, vfs_uid_t uid, vfs_gid_t gid,
+			  const vfs_cred_t *cred)
+{
+	if (!path || path[0] != '/')
+		return -EINVAL;
+	return vfs_chown_at(NULL, path, uid, gid, cred);
 }
 
 int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st)
