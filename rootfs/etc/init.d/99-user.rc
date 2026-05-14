@@ -1,6 +1,10 @@
 echo "Starting login manager"
-spawn /usr/bin/login /dev/tty1 --autologin root
+
+# serial tty's
 spawn /usr/bin/login /dev/ttyS0
+
+# fb tty's
+spawn /usr/bin/login /dev/tty1
 spawn /usr/bin/login /dev/tty2
 spawn /usr/bin/login /dev/tty3
 spawn /usr/bin/login /dev/tty4
