@@ -4,6 +4,7 @@
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <util/kprintf.h>
+#include <sched/sched.h>
 
 typedef struct devfs_node {
 	vfs_node_t vnode;
@@ -90,22 +91,54 @@ static int zero_read(void *ctx, uint64_t off, void *buf, size_t len,
 	return 0;
 }
 
+static int kmsg_snprintf(char *str, size_t size, const char *fmt, ...)
+{
+	va_list ap;
+	int r;
+
+	va_start(ap, fmt);
+	r = vsnprintf(str, size, fmt, ap);
+	va_end(ap);
+
+	return r;
+}
+
 static int kmsg_write(void *ctx, uint64_t off, const void *buf, size_t len,
 					  size_t *done)
 {
 	(void)ctx;
 	(void)off;
+
 	if (!buf)
 		return -EINVAL;
+
 	char line[192];
 	size_t n = len;
+
 	if (n >= sizeof(line))
 		n = sizeof(line) - 1;
+
 	memcpy(line, buf, n);
 	line[n] = '\0';
-	kprintf("%s", line);
+
+	while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+		line[--n] = '\0';
+
+	tcb_t *cur = sched_current();
+
+	char subsys[96];
+
+	if (cur)
+		kmsg_snprintf(subsys, sizeof(subsys), "%s[%d]", cur->name,
+					  cur->process->pid);
+	else
+		kmsg_snprintf(subsys, sizeof(subsys), "unknown[0]");
+
+	__log(LOG_CLR_INFO, subsys, "%s", line);
+
 	if (done)
 		*done = len;
+
 	return 0;
 }
 
@@ -368,7 +401,6 @@ static int devfs_poll_op(vfs_file_t *file, int events)
 	return dn->poll(dn->ctx, events);
 }
 
-
 static int devfs_close_op(vfs_file_t *file)
 {
 	if (!file || !file->node)
@@ -525,16 +557,16 @@ int devfs_register_chr_mmap_poll_close(const char *path, vfs_mode_t mode,
 	return 0;
 }
 
-int devfs_register_chr_poll(const char *path, vfs_mode_t mode, devfs_read_t read,
-							devfs_write_t write, devfs_ioctl_t ioctl,
-							devfs_poll_t poll, void *ctx)
+int devfs_register_chr_poll(const char *path, vfs_mode_t mode,
+							devfs_read_t read, devfs_write_t write,
+							devfs_ioctl_t ioctl, devfs_poll_t poll, void *ctx)
 {
 	return devfs_register_chr_poll_close(path, mode, read, write, ioctl, poll,
-									 NULL, ctx);
+										 NULL, ctx);
 }
 
 int devfs_register_chr_ex(const char *path, vfs_mode_t mode, devfs_read_t read,
-					  devfs_write_t write, devfs_ioctl_t ioctl, void *ctx)
+						  devfs_write_t write, devfs_ioctl_t ioctl, void *ctx)
 {
 	return devfs_register_chr_poll(path, mode, read, write, ioctl, NULL, ctx);
 }
@@ -544,7 +576,6 @@ int devfs_register_chr(const char *path, vfs_mode_t mode, devfs_read_t read,
 {
 	return devfs_register_chr_ex(path, mode, read, write, NULL, ctx);
 }
-
 
 int devfs_set_size(const char *path, uint64_t size)
 {
