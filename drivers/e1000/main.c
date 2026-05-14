@@ -45,12 +45,12 @@
 #define E1000_CMD_RS (1u << 3)
 #define E1000_DESC_DD 0x01
 
-#define RX_COUNT 32
-#define TX_COUNT 16
-#define RX_BUF_SIZE 2048
 #define E1000_MMIO_BASE 0xffffffffc0000000ULL
 #define E1000_MMIO_STRIDE 0x20000ULL
 
+#define RX_COUNT 128
+#define TX_COUNT 128
+#define RX_BUF_SIZE 2048
 typedef struct __attribute__((packed)) {
 	uint64_t addr;
 	uint16_t length;
@@ -89,8 +89,9 @@ typedef struct {
 	uint8_t mac[6];
 } e1000_t;
 
-extern ptable_t *kernel_ptable;
 extern uint64_t _lyr_hhdm_offset;
+extern void sched_map_kernel_mmio(uint64_t virt, uint64_t phys,
+								  uint64_t npages);
 
 static uint64_t next_mmio = E1000_MMIO_BASE;
 static uint32_t next_netdev_id;
@@ -98,6 +99,22 @@ static uint32_t next_netdev_id;
 static void *phys_to_virt(uint64_t phys)
 {
 	return (void *)(phys + _lyr_hhdm_offset);
+}
+
+static inline volatile uint32_t *e1000_mmio(e1000_t *e)
+{
+	if (!e || !e->mmio)
+		return NULL;
+
+	ptable_t *pt = (ptable_t *)read_cr3();
+	if (pt && get_phys(pt, e->mmio_virt) != e->mmio_phys) {
+		/* Keep the BAR visible in the active address space even if a process
+		 * page table missed the one-time registration window. */
+		map_mmio(pt, e->mmio_virt, e->mmio_phys,
+				 E1000_MMIO_STRIDE / PAGE_SIZE);
+	}
+
+	return e->mmio;
 }
 
 static uint32_t pci_addr(uint8_t bus, uint8_t slot, uint8_t function,
@@ -136,13 +153,18 @@ static void pci_write16(const device_pci_info_t *dev, uint8_t off, uint16_t v)
 
 static inline uint32_t erd(e1000_t *e, uint32_t reg)
 {
-	return e->mmio[reg / 4];
+	volatile uint32_t *mmio = e1000_mmio(e);
+	return mmio ? mmio[reg / 4] : 0;
 }
 
 static inline void ewr(e1000_t *e, uint32_t reg, uint32_t val)
 {
-	e->mmio[reg / 4] = val;
-	(void)e->mmio[E1000_REG_STATUS / 4];
+	volatile uint32_t *mmio = e1000_mmio(e);
+	if (!mmio)
+		return;
+
+	mmio[reg / 4] = val;
+	(void)mmio[E1000_REG_STATUS / 4];
 }
 
 static int e1000_match(const device_t *dev, void *ctx)
@@ -293,8 +315,8 @@ static int e1000_probe(device_t *dev, void *ctx)
 	e->mmio_phys = bar0 & ~0x0full;
 	e->mmio_virt = next_mmio;
 	next_mmio += E1000_MMIO_STRIDE;
-	map_mmio(kernel_ptable, e->mmio_virt, e->mmio_phys,
-			 E1000_MMIO_STRIDE / PAGE_SIZE);
+	sched_map_kernel_mmio(e->mmio_virt, e->mmio_phys,
+						  E1000_MMIO_STRIDE / PAGE_SIZE);
 	e->mmio = (volatile uint32_t *)e->mmio_virt;
 
 	e1000_read_mac(e);
@@ -337,18 +359,16 @@ static int e1000_main(driver_t *driver)
 }
 
 static const char *const e1000_imports[] = {
-	"_lyr_hhdm_offset",
 	"device_handler_register",
 	"driver_log",
-	"kernel_ptable",
 	"kzalloc",
-	"map_mmio",
 	"memcpy",
 	"memset",
 	"net_receive_frame",
 	"netdev_register",
 	"npf_snprintf_",
 	"palloc_single",
+	"sched_map_kernel_mmio",
 };
 
 const driver_metadata_t lyr_driver_metadata = {
