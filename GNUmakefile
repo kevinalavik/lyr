@@ -1,7 +1,7 @@
 .SUFFIXES:
 
 TAP_IF ?= tap0
-QEMU_NET_USER := -netdev user,id=net0,net=10.0.2.0/24,hostfwd=tcp::6969-:6969,hostfwd=tcp::8080-:80 -device e1000,netdev=net0
+QEMU_NET_USER := -netdev user,id=net0,net=10.0.2.0/24 -device e1000,netdev=net0
 ROOTFS_DISK := disk.img
 QEMU_NVME := \
 	-drive file=$(ROOTFS_DISK),if=none,id=nvme0,format=raw \
