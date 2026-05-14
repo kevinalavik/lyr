@@ -27,6 +27,14 @@ extern char __data_end[];
 #define PML_SHIFT_L4 39
 
 static spinlock_t paging_lock = SPINLOCK_INIT;
+typedef struct mmio_region {
+	uint64_t virt;
+	uint64_t phys;
+	uint64_t npages;
+	struct mmio_region *next;
+} mmio_region_t;
+static spinlock_t mmio_lock = SPINLOCK_INIT;
+static mmio_region_t *mmio_regions = NULL;
 
 static inline uint16_t _pml1_idx(uintptr_t v)
 {
@@ -207,6 +215,12 @@ void map_page_phys(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t flags)
 	if (*pte & VMM_PRESENT)
 		goto out;
 
+	page_t *page = pfndb_phys_to_page(phys);
+	if (page && page_is_used(page)) {
+		page_share(page);
+		page_ref(page);
+	}
+
 	*pte = phys | (flags & ~PAGE_FRAME_MASK) | VMM_PRESENT;
 
 	asm volatile("invlpg (%0)" ::"r"(virt) : "memory");
@@ -283,6 +297,11 @@ ptable_t *ptable_create(void)
 		for (int i = 256; i < 512; i++)
 			pml4[i] = kpml4[i];
 	}
+
+	spinlock_acquire(&mmio_lock);
+	for (mmio_region_t *region = mmio_regions; region; region = region->next)
+		map_mmio((ptable_t *)phys, region->virt, region->phys, region->npages);
+	spinlock_release(&mmio_lock);
 	return (ptable_t *)phys;
 }
 
@@ -376,6 +395,25 @@ void map_mmio(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t npages)
 
 		asm volatile("invlpg (%0)" ::"r"(v) : "memory");
 	}
+}
+
+void paging_register_kernel_mmio(uint64_t virt, uint64_t phys, uint64_t npages)
+{
+	if (!npages)
+		return;
+
+	mmio_region_t *region = kzalloc(sizeof(*region));
+	if (!region)
+		kpanic(NULL, "paging: failed to register mmio region");
+
+	region->virt = ALIGN_DOWN(virt, PAGE_SIZE);
+	region->phys = ALIGN_DOWN(phys, PAGE_SIZE);
+	region->npages = npages;
+
+	spinlock_acquire(&mmio_lock);
+	region->next = mmio_regions;
+	mmio_regions = region;
+	spinlock_release(&mmio_lock);
 }
 
 void paging_init(void)

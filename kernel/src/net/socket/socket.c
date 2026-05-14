@@ -293,7 +293,7 @@ static int inet_socket_init(socket_t *sock)
 	if (!sock->inet_data)
 		return NET_SOCK_ERR_NOMEM;
 
-	sock->inet_data->recv_timeout_ms = 10000;
+	sock->inet_data->recv_timeout_ms = UINT64_MAX;
 	sock->inet_data->ttl = 64;
 	return NET_SOCK_OK;
 }
@@ -794,6 +794,7 @@ int net_connect(socket_t *sock, const sockaddr_t *addr, socklen_t addrlen)
 		}
 
 		sock->inet_data->tcp_conn = conn;
+		sock->inet_data->local_port = net_tcp_conn_local_port(conn);
 		sock->flags |= NET_SOCK_BINDED | NET_SOCK_CONNECTED;
 
 		log_debug("socket", "AF_INET connected to %u.%u.%u.%u:%d",
@@ -993,47 +994,21 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 		if (!(sock->flags & NET_SOCK_CONNECTED))
 			return NET_SOCK_ERR_WOULDBLOCK;
 
-		if (sock->inet_data->rx_len == 0) {
-			if (sock->flags & NET_SOCK_NONBLOCK)
-				return NET_SOCK_ERR_WOULDBLOCK;
+		size_t done = 0;
+		int r = net_tcp_recv(sock->inet_data->tcp_conn, buf, len, &done,
+							 UINT64_MAX);
 
-			size_t done = 0;
-			int r =
-				net_tcp_recv(sock->inet_data->tcp_conn, sock->inet_data->rx_buf,
-							 SOCKET_BUF_SIZE, &done, 10000);
+		if (r == -EINTR)
+			return r;
+		if (r == -ETIMEDOUT)
+			return NET_SOCK_ERR_WOULDBLOCK;
 
-			if (r == -EINTR)
-				return r;
-			if (r == -ETIMEDOUT)
-				return NET_SOCK_ERR_WOULDBLOCK;
+		if (r != 0)
+			return NET_SOCK_ERR_NOTCONN;
 
-			if (r != 0)
-				return NET_SOCK_ERR_NOTCONN;
-
-			/*
-			 * done == 0 with 0 is TCP EOF. Return 0 to userspace
-			 * instead of translating EOF into ENOTCONN.
-			 */
-			if (done == 0)
-				return 0;
-
-			sock->inet_data->rx_len = done;
-			sock->inet_data->rx_head = 0;
-		}
-
-		size_t to_read = sock->inet_data->rx_len;
-		if (to_read > len)
-			to_read = len;
-
-		if (to_read == 0)
-			return 0;
-
-		memcpy(buf, sock->inet_data->rx_buf + sock->inet_data->rx_head,
-			   to_read);
-		sock->inet_data->rx_head += to_read;
-		sock->inet_data->rx_len -= to_read;
-
-		return (int)to_read;
+		/* done == 0 with 0 is TCP EOF. Return 0 to userspace instead of
+		 * translating EOF into ENOTCONN. */
+		return (int)done;
 	}
 
 	return NET_SOCK_ERR_INVAL;
@@ -1250,16 +1225,19 @@ int net_poll_socket(socket_t *sock, int events)
 	if (sock->domain == AF_INET && sock->inet_data) {
 		inet_sock_t *is = sock->inet_data;
 
-		if ((events & LYR_POLL_READ_MASK) && is->rx_len > 0)
+		if ((events & LYR_POLL_READ_MASK) &&
+			(is->rx_len > 0 || (is->tcp_conn &&
+							 (net_tcp_conn_has_pending_rx(is->tcp_conn) ||
+							  net_tcp_conn_is_closed(is->tcp_conn) ||
+							  net_tcp_conn_has_error(is->tcp_conn)))))
 			revents |= LYR_POLLIN | LYR_POLLRDNORM;
 
 		if (sock->type == SOCK_STREAM && is->tcp_conn) {
-			/*
-			 * Socket-layer TCP buffering is filled by recv().  Until the TCP core
-			 * exposes a non-consuming readiness primitive, report established
-			 * TCP sockets as writable and rely on recv() for blocking reads.
-			 */
-			if (!(sock->flags & NET_SOCK_CONNECTED))
+			if (net_tcp_conn_has_error(is->tcp_conn))
+				revents |= LYR_POLLERR;
+			else if (net_tcp_conn_is_closed(is->tcp_conn))
+				revents |= LYR_POLLHUP;
+			else if (!(sock->flags & NET_SOCK_CONNECTED))
 				revents |= LYR_POLLHUP;
 		}
 

@@ -174,6 +174,10 @@ int net_send_ipv4_tcp_window_opts(netdev_t *dev, const uint8_t dst_mac[6],
 					  int include_mss, int include_wscale, uint8_t wscale,
 					  int include_sack_permitted, const void *payload,
 					  size_t payload_len);
+uint16_t net_tcp_conn_local_port(net_tcp_conn_t *conn);
+int net_tcp_conn_has_pending_rx(net_tcp_conn_t *conn);
+int net_tcp_conn_is_closed(net_tcp_conn_t *conn);
+int net_tcp_conn_has_error(net_tcp_conn_t *conn);
 
 int net_arp_resolve(netdev_t *dev, uint32_t target_ip, uint64_t timeout_ms,
 					uint8_t out_mac[NET_ETH_ALEN]);

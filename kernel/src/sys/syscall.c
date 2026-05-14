@@ -19,6 +19,7 @@
 #include <sys/poll.h>
 #include <stdarg.h>
 #include <debug/panic.h>
+#include <sync/spinlock.h>
 
 #define MSR_EFER 0xC0000080
 #define MSR_STAR 0xC0000081
@@ -83,6 +84,8 @@
 #define SYS_POLL_NFDS_MAX 1024
 #define SYS_USER_STACK_GUARD_SIZE PAGE_SIZE
 #define SYS_USER_STACK_SIZE (16 * 1024 * 1024ULL)
+
+#define SYS_FUTEX_BUCKET_COUNT 256
 
 #define SYS_PROT_READ 0x1
 #define SYS_PROT_WRITE 0x2
@@ -169,8 +172,18 @@ typedef struct {
 	uint64_t mask;
 } syscall_sigaction_t;
 
+typedef struct {
+	spinlock_t lock;
+	sched_waitq_t waitq;
+} futex_bucket_t;
+
+static futex_bucket_t futex_buckets[SYS_FUTEX_BUCKET_COUNT];
+static void futex_init(void);
+
 void syscall_init(void)
 {
+	futex_init();
+
 	uint64_t efer = rdmsr(MSR_EFER);
 	uint64_t star = ((uint64_t)(KERNEL_CS & ~0x3) << 32) |
 					((uint64_t)((USER_CS - 0x10) & ~0x3) << 48);
@@ -259,6 +272,19 @@ static int syscall_copy_user_string(uint64_t user, char *out, size_t out_len)
 
 	out[out_len - 1] = '\0';
 	return -ENAMETOOLONG;
+}
+
+static void futex_init(void)
+{
+	for (size_t i = 0; i < SYS_FUTEX_BUCKET_COUNT; i++) {
+		spinlock_init(&futex_buckets[i].lock);
+		sched_waitq_init(&futex_buckets[i].waitq);
+	}
+}
+
+static inline futex_bucket_t *futex_bucket_for(uint64_t addr)
+{
+	return &futex_buckets[(addr >> 2) & (SYS_FUTEX_BUCKET_COUNT - 1)];
 }
 
 static int syscall_interrupted(void)
@@ -2189,6 +2215,13 @@ static long sys_exit_handler(interrupt_frame_t *frame)
 	return (long)(uintptr_t)sched_syscall_exit(frame, (int)frame->rdi);
 }
 
+static long sys_thread_exit_handler(interrupt_frame_t *frame) __attribute__((noreturn));
+static long sys_thread_exit_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+	sched_thread_exit(0);
+}
+
 static long sys_waitpid_handler(interrupt_frame_t *frame)
 {
 	pcb_t *process = syscall_current_process();
@@ -2312,6 +2345,105 @@ static long sys_fork_handler(interrupt_frame_t *frame)
 	child_thread->fs_base = thread->fs_base;
 
 	return (long)child->pid;
+}
+
+static long sys_thread_create_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process || !thread->process->vas)
+		return -EBADF;
+
+	uint64_t rip = frame->rdi;
+	uint64_t user_rsp = frame->rsi;
+
+	if (!rip || !user_rsp)
+		return -EINVAL;
+
+	tcb_t *child = sched_create_user_thread(thread->process, thread->name, rip, user_rsp);
+	if (!child)
+		return -ENOMEM;
+
+	child->fs_base = thread->fs_base;
+	child->signal_mask = thread->signal_mask;
+
+	return (long)child->tid;
+}
+
+static long sys_futex_wait_handler(interrupt_frame_t *frame)
+{
+	uint64_t addr = frame->rdi;
+	int expected = (int)frame->rsi;
+	uint64_t timeout_ptr = frame->rdx;
+
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process || !thread->process->vas)
+		return -EBADF;
+
+	if (!addr || (addr & 3))
+		return -EINVAL;
+
+	if (!syscall_user_range_ok(addr, sizeof(int)))
+		return -EFAULT;
+
+	time_timeout_t timeout;
+	const time_timeout_t *timeoutp = NULL;
+
+	if (timeout_ptr) {
+		syscall_timespec_t ts;
+		if (!syscall_user_range_ok(timeout_ptr, sizeof(ts)))
+			return -EFAULT;
+		if (syscall_copy_from_user(&ts, timeout_ptr, sizeof(ts)) != 0)
+			return -EFAULT;
+		int r = time_timeout_after_timespec(ts.tv_sec, ts.tv_nsec, &timeout);
+		if (r != 0)
+			return r;
+		timeoutp = &timeout;
+	}
+
+	futex_bucket_t *bucket = futex_bucket_for(addr);
+	spinlock_acquire(&bucket->lock);
+
+	int current;
+	if (syscall_copy_from_user(&current, addr, sizeof(current)) != 0) {
+		spinlock_release(&bucket->lock);
+		return -EFAULT;
+	}
+
+	if (current != expected) {
+		spinlock_release(&bucket->lock);
+		return -EAGAIN;
+	}
+
+	unsigned seq = sched_waitq_prepare(&bucket->waitq);
+	spinlock_release(&bucket->lock);
+
+	return sched_waitq_wait(&bucket->waitq, seq, timeoutp);
+}
+
+static long sys_futex_wake_handler(interrupt_frame_t *frame)
+{
+	uint64_t addr = frame->rdi;
+	(void)frame->rsi;
+
+	tcb_t *thread = sched_current();
+
+	if (!thread || !thread->process || !thread->process->vas)
+		return -EBADF;
+
+	if (!addr || (addr & 3))
+		return -EINVAL;
+
+	if (!syscall_user_range_ok(addr, sizeof(int)))
+		return -EFAULT;
+
+	futex_bucket_t *bucket = futex_bucket_for(addr);
+	spinlock_acquire(&bucket->lock);
+	sched_waitq_wake_all(&bucket->waitq);
+	spinlock_release(&bucket->lock);
+
+	return 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3652,6 +3784,10 @@ static syscall_handler_t syscall_table[] = {
 
 	[SYS_EXIT] = sys_exit_handler,
 	[SYS_FORK] = sys_fork_handler,
+	[SYS_THREAD_CREATE] = sys_thread_create_handler,
+	[SYS_FUTEX_WAIT] = sys_futex_wait_handler,
+	[SYS_FUTEX_WAKE] = sys_futex_wake_handler,
+	[SYS_THREAD_EXIT] = sys_thread_exit_handler,
 	[SYS_EXECVE] = sys_execve_handler,
 	[SYS_WAITPID] = sys_waitpid_handler,
 	[SYS_NSLEEP] = sys_nsleep_handler,
@@ -3739,7 +3875,8 @@ interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)
 		syscall_table[nr]) {
 		long ret = syscall_table[nr](frame);
 
-		if (nr == SYS_EXIT || nr == SYS_CHANGE_ROOT || nr == SYS_SIGRETURN)
+		if (nr == SYS_EXIT || nr == SYS_CHANGE_ROOT || nr == SYS_SIGRETURN ||
+			nr == SYS_THREAD_EXIT)
 			return sched_signal_deliver((interrupt_frame_t *)(uintptr_t)ret);
 
 		frame->rax = (uint64_t)(int64_t)ret;

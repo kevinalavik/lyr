@@ -103,6 +103,31 @@ static const console_target_t console_target_process_tty = {
 
 static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 						 size_t *done);
+static void console_input_flush(console_tty_t *tty);
+
+static void console_set_default_termios(console_tty_t *tty)
+{
+	if (!tty)
+		return;
+
+	memset(&tty->termios, 0, sizeof(tty->termios));
+	tty->termios.c_iflag = LYR_ICRNL | LYR_IXON;
+	tty->termios.c_oflag = LYR_OPOST | LYR_ONLCR;
+	tty->termios.c_lflag =
+		LYR_ISIG | LYR_ICANON | LYR_ECHO | LYR_ECHOE | LYR_ECHOK | LYR_IEXTEN;
+	tty->termios.c_ispeed = 38400;
+	tty->termios.c_ospeed = 38400;
+	tty->termios.c_cc[LYR_VINTR] = 3;
+	tty->termios.c_cc[LYR_VQUIT] = 28;
+	tty->termios.c_cc[LYR_VERASE] = 127;
+	tty->termios.c_cc[LYR_VKILL] = 21;
+	tty->termios.c_cc[LYR_VEOF] = 4;
+	tty->termios.c_cc[LYR_VMIN] = 1;
+	tty->termios.c_cc[LYR_VTIME] = 0;
+	tty->termios.c_cc[LYR_VSTART] = 17;
+	tty->termios.c_cc[LYR_VSTOP] = 19;
+	tty->termios.c_cc[LYR_VSUSP] = 26;
+}
 
 static console_tty_t *console_ctx_to_tty(void *ctx)
 {
@@ -158,30 +183,24 @@ static void console_tty_init(console_tty_t *tty, unsigned index)
 	 * Local:
 	 *   ICANON/ECHO/ISIG for normal shell behavior.
 	 */
-	tty->termios.c_iflag = LYR_ICRNL | LYR_IXON;
-	tty->termios.c_oflag = LYR_OPOST | LYR_ONLCR;
-	tty->termios.c_lflag =
-		LYR_ISIG | LYR_ICANON | LYR_ECHO | LYR_ECHOE | LYR_ECHOK | LYR_IEXTEN;
-
-	tty->termios.c_ispeed = 38400;
-	tty->termios.c_ospeed = 38400;
-
-	tty->termios.c_cc[LYR_VINTR] = 3; /* ^C */
-	tty->termios.c_cc[LYR_VQUIT] = 28; /* ^\ */
-	tty->termios.c_cc[LYR_VERASE] = 127;
-	tty->termios.c_cc[LYR_VKILL] = 21; /* ^U */
-	tty->termios.c_cc[LYR_VEOF] = 4; /* ^D */
-	tty->termios.c_cc[LYR_VMIN] = 1;
-	tty->termios.c_cc[LYR_VTIME] = 0;
-	tty->termios.c_cc[LYR_VSTART] = 17; /* ^Q */
-	tty->termios.c_cc[LYR_VSTOP] = 19; /* ^S */
-	tty->termios.c_cc[LYR_VSUSP] = 26; /* ^Z */
+	console_set_default_termios(tty);
 
 	tty->foreground_pgrp = 0;
 	sched_waitq_init(&tty->input_waitq);
 
 	console_tty_name(index, tty->name, sizeof(tty->name));
 	lyrterm_capture_state(&tty->render);
+}
+
+void console_reset_tty(unsigned index)
+{
+	if (index >= LYR_TTY_COUNT)
+		return;
+
+	console_tty_t *tty = &consoles[index];
+	console_set_default_termios(tty);
+	tty->input_interrupted = 0;
+	console_input_flush(tty);
 }
 
 static void console_input_flush(console_tty_t *tty)

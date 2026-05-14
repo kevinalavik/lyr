@@ -23,10 +23,13 @@
 #include <dev/kbd.h>
 
 #define MODULE_REGION_BASE 0xffffffffa0000000ULL
+#define ELF64_ST_TYPE(i) ((i) & 0xf)
+#define STT_FUNC 2
 
 typedef struct {
 	const char *name;
 	uint64_t value;
+	bool text;
 } kernel_symbol_t;
 
 typedef struct module_symbol {
@@ -36,70 +39,105 @@ typedef struct module_symbol {
 	struct module_symbol *next;
 } module_symbol_t;
 
+typedef struct trace_symbol {
+	const char *owner;
+	const char *name;
+	uint64_t value;
+	struct trace_symbol *next;
+} trace_symbol_t;
+
 extern int npf_snprintf_(char *buffer, size_t bufsz, const char *format, ...);
 extern int npf_vsnprintf(char *buffer, size_t bufsz, const char *format,
 						 va_list vlist);
 
 /* public kernel symbols */
 static const kernel_symbol_t kernel_symbols[] = {
-	{ "devfs_mkdir", (uint64_t)devfs_mkdir },
-	{ "devfs_register_chr", (uint64_t)devfs_register_chr },
-	{ "devfs_register_chr_poll", (uint64_t)devfs_register_chr_poll },
-	{ "console_input_put", (uint64_t)console_input_put },
-	{ "block_register", (uint64_t)block_register },
-	{ "device_handler_register", (uint64_t)device_handler_register },
-	{ "device_register", (uint64_t)device_register },
-	{ "driver_log", (uint64_t)driver_log },
-	{ "get_phys", (uint64_t)get_phys },
-	{ "ipc_call", (uint64_t)ipc_call },
-	{ "ipc_endpoint_register", (uint64_t)ipc_endpoint_register },
-	{ "ipc_notify", (uint64_t)ipc_notify },
-	{ "ipc_shm_create", (uint64_t)ipc_shm_create },
-	{ "ipc_shm_open", (uint64_t)ipc_shm_open },
-	{ "kprintf", (uint64_t)kprintf },
-	{ "kernel_ptable", (uint64_t)&kernel_ptable },
-	{ "_lyr_hhdm_offset", (uint64_t)&_lyr_hhdm_offset },
-	{ "map_mmio", (uint64_t)map_mmio },
-	{ "memcpy", (uint64_t)memcpy },
-	{ "memset", (uint64_t)memset },
-	{ "net_receive_frame", (uint64_t)net_receive_frame },
-	{ "net_tcp_listen", (uint64_t)net_tcp_listen },
-	{ "net_poll_all", (uint64_t)net_poll_all },
-	{ "net_default_dev", (uint64_t)net_default_dev },
-	{ "netdev_count", (uint64_t)netdev_count },
-	{ "net_ipv4_format", (uint64_t)net_ipv4_format },
-	{ "netdev_register", (uint64_t)netdev_register },
-	{ "npf_snprintf_", (uint64_t)npf_snprintf_ },
-	{ "npf_vsnprintf", (uint64_t)npf_vsnprintf },
-	{ "palloc_single", (uint64_t)palloc_single },
-	{ "strlen", (uint64_t)strlen },
-	{ "strcpy", (uint64_t)strcpy },
-	{ "vfs_root_cred", (uint64_t)&vfs_root_cred },
-	{ "vfs_close", (uint64_t)vfs_close },
-	{ "vfs_open", (uint64_t)vfs_open },
-	{ "vfs_read", (uint64_t)vfs_read },
-	{ "vfs_write", (uint64_t)vfs_write },
-	{ "kzalloc", (uint64_t)kzalloc },
-	{ "krealloc", (uint64_t)krealloc },
-	{ "kfree", (uint64_t)kfree },
-	{ "driver_spawn_thread", (uint64_t)driver_spawn_thread },
-	{ "vfs_node_release", (uint64_t)vfs_node_release },
-	{ "vfs_readdir", (uint64_t)vfs_readdir },
-	{ "vfs_resolve", (uint64_t)vfs_resolve },
-	{ "vfs_stat", (uint64_t)vfs_stat },
-	{ "memmove", (uint64_t)memmove },
-	{ "strcmp", (uint64_t)strcmp },
-	{ "strncmp", (uint64_t)strncmp },
-	{ "strstr", (uint64_t)strstr },
-	{ "net_default_dev", (uint64_t)net_default_dev },
-	{ "net_ipv4_format", (uint64_t)net_ipv4_format },
-	{ "netdev_count", (uint64_t)netdev_count },
-	{ "kbd_submit_event", (uint64_t)kbd_submit_event },
+	{ "devfs_mkdir", (uint64_t)devfs_mkdir, true },
+	{ "devfs_register_chr", (uint64_t)devfs_register_chr, true },
+	{ "devfs_register_chr_poll", (uint64_t)devfs_register_chr_poll, true },
+	{ "console_input_put", (uint64_t)console_input_put, true },
+	{ "block_register", (uint64_t)block_register, true },
+	{ "device_handler_register", (uint64_t)device_handler_register, true },
+	{ "device_register", (uint64_t)device_register, true },
+	{ "driver_log", (uint64_t)driver_log, true },
+	{ "get_phys", (uint64_t)get_phys, true },
+	{ "ipc_call", (uint64_t)ipc_call, true },
+	{ "ipc_endpoint_register", (uint64_t)ipc_endpoint_register, true },
+	{ "ipc_notify", (uint64_t)ipc_notify, true },
+	{ "ipc_shm_create", (uint64_t)ipc_shm_create, true },
+	{ "ipc_shm_open", (uint64_t)ipc_shm_open, true },
+	{ "kprintf", (uint64_t)kprintf, true },
+	{ "kernel_ptable", (uint64_t)&kernel_ptable, false },
+	{ "_lyr_hhdm_offset", (uint64_t)&_lyr_hhdm_offset, false },
+	{ "map_mmio", (uint64_t)map_mmio, true },
+	{ "sched_map_kernel_mmio", (uint64_t)sched_map_kernel_mmio, true },
+	{ "map_page_phys", (uint64_t)map_page_phys, true },
+	{ "memcpy", (uint64_t)memcpy, true },
+	{ "memset", (uint64_t)memset, true },
+	{ "net_receive_frame", (uint64_t)net_receive_frame, true },
+	{ "net_tcp_listen", (uint64_t)net_tcp_listen, true },
+	{ "net_poll_all", (uint64_t)net_poll_all, true },
+	{ "net_default_dev", (uint64_t)net_default_dev, true },
+	{ "netdev_count", (uint64_t)netdev_count, true },
+	{ "net_ipv4_format", (uint64_t)net_ipv4_format, true },
+	{ "netdev_register", (uint64_t)netdev_register, true },
+	{ "npf_snprintf_", (uint64_t)npf_snprintf_, true },
+	{ "npf_vsnprintf", (uint64_t)npf_vsnprintf, true },
+	{ "palloc_single", (uint64_t)palloc_single, true },
+	{ "strlen", (uint64_t)strlen, true },
+	{ "strcpy", (uint64_t)strcpy, true },
+	{ "vfs_root_cred", (uint64_t)&vfs_root_cred, false },
+	{ "vfs_close", (uint64_t)vfs_close, true },
+	{ "vfs_open", (uint64_t)vfs_open, true },
+	{ "vfs_read", (uint64_t)vfs_read, true },
+	{ "vfs_write", (uint64_t)vfs_write, true },
+	{ "kzalloc", (uint64_t)kzalloc, true },
+	{ "krealloc", (uint64_t)krealloc, true },
+	{ "kfree", (uint64_t)kfree, true },
+	{ "driver_spawn_thread", (uint64_t)driver_spawn_thread, true },
+	{ "vfs_node_release", (uint64_t)vfs_node_release, true },
+	{ "vfs_readdir", (uint64_t)vfs_readdir, true },
+	{ "vfs_resolve", (uint64_t)vfs_resolve, true },
+	{ "vfs_stat", (uint64_t)vfs_stat, true },
+	{ "memmove", (uint64_t)memmove, true },
+	{ "strcmp", (uint64_t)strcmp, true },
+	{ "strncmp", (uint64_t)strncmp, true },
+	{ "strstr", (uint64_t)strstr, true },
+	{ "net_default_dev", (uint64_t)net_default_dev, true },
+	{ "net_ipv4_format", (uint64_t)net_ipv4_format, true },
+	{ "netdev_count", (uint64_t)netdev_count, true },
+	{ "kbd_submit_event", (uint64_t)kbd_submit_event, true },
 };
 
+static bool kernel_symbol_lookup(uint64_t addr, driver_symbol_info_t *out)
+{
+	const kernel_symbol_t *best = NULL;
+
+	for (size_t i = 0; i < sizeof(kernel_symbols) / sizeof(kernel_symbols[0]);
+		 i++) {
+		uint64_t sym_addr = kernel_symbols[i].value;
+		if (!kernel_symbols[i].text)
+			continue;
+		if (sym_addr > addr)
+			continue;
+		if (!best || sym_addr > best->value)
+			best = &kernel_symbols[i];
+	}
+
+	if (!best)
+		return false;
+
+	out->owner = "kernel";
+	out->name = best->name;
+	out->address = best->value;
+	return true;
+}
+
 static const char *boot_driver_paths[] = {
-	"/sys/pci.sys",	   "/sys/nvme.sys", "/sys/e1000.sys",
-	"/sys/websrv.sys", "/sys/ps2.sys",
+	"/sys/pci.sys",
+	"/sys/nvme.sys",
+	"/sys/e1000.sys",
+	/*"/sys/websrv.sys",*/ "/sys/ps2.sys",
 };
 
 static spinlock_t driver_lock = SPINLOCK_INIT;
@@ -107,6 +145,7 @@ static spinlock_t module_alloc_lock = SPINLOCK_INIT;
 static driver_t *loaded_drivers[16];
 static size_t loaded_driver_count = 0;
 static module_symbol_t *module_symbols = NULL;
+static trace_symbol_t *trace_symbols = NULL;
 static uint64_t next_module_base = MODULE_REGION_BASE;
 
 static void copy_cstr(char *dst, size_t dst_len, const char *src)
@@ -162,6 +201,65 @@ static module_symbol_t *module_symbol_find_locked(const char *name)
 	return NULL;
 }
 
+static const module_symbol_t *module_symbol_lookup_locked(uint64_t addr)
+{
+	const module_symbol_t *best = NULL;
+
+	for (module_symbol_t *sym = module_symbols; sym; sym = sym->next) {
+		if (sym->value > addr)
+			continue;
+		if (!best || sym->value > best->value)
+			best = sym;
+	}
+
+	return best;
+}
+
+static const trace_symbol_t *trace_symbol_lookup_locked(uint64_t addr)
+{
+	const trace_symbol_t *best = NULL;
+
+	for (trace_symbol_t *sym = trace_symbols; sym; sym = sym->next) {
+		if (sym->value > addr)
+			continue;
+		if (!best || sym->value > best->value)
+			best = sym;
+	}
+
+	return best;
+}
+
+static int driver_register_trace_symbols(driver_t *driver, elf_image_t *image)
+{
+	if (!driver || !image || !image->symtab || !image->strtab)
+		return 0;
+
+	for (size_t i = 0; i < image->sym_count; i++) {
+		const elf64_sym_t *sym = &image->symtab[i];
+		if (sym->st_shndx == ELF_SHN_UNDEF)
+			continue;
+		if (ELF64_ST_TYPE(sym->st_info) != STT_FUNC)
+			continue;
+		const char *name = elf_symbol_name(image, sym);
+		if (!name || !*name)
+			continue;
+
+		trace_symbol_t *trace = kzalloc(sizeof(*trace));
+		if (!trace)
+			return -ENOMEM;
+		trace->owner = driver->name;
+		trace->name = name;
+		trace->value = (uint64_t)image->sections[sym->st_shndx] + sym->st_value;
+
+		spinlock_acquire(&driver_lock);
+		trace->next = trace_symbols;
+		trace_symbols = trace;
+		spinlock_release(&driver_lock);
+	}
+
+	return 0;
+}
+
 static int module_symbol_resolve(const char *name, uint64_t *out, void *ctx)
 {
 	(void)ctx;
@@ -185,6 +283,42 @@ static int module_symbol_resolve(const char *name, uint64_t *out, void *ctx)
 	}
 	spinlock_release(&driver_lock);
 	return -ENOENT;
+}
+
+bool driver_lookup_symbol(uint64_t addr, driver_symbol_info_t *out)
+{
+	if (!out)
+		return false;
+
+	driver_symbol_info_t best = { 0 };
+	bool found = false;
+
+	if (kernel_symbol_lookup(addr, &best))
+		found = true;
+
+	spinlock_acquire(&driver_lock);
+	const trace_symbol_t *trace = trace_symbol_lookup_locked(addr);
+	if (trace && (!found || trace->value > best.address)) {
+		best.owner = trace->owner ? trace->owner : "driver";
+		best.name = trace->name;
+		best.address = trace->value;
+		found = true;
+	}
+	const module_symbol_t *mod = module_symbol_lookup_locked(addr);
+	if (mod && (!found || mod->value > best.address)) {
+		best.owner =
+			mod->driver && mod->driver->name[0] ? mod->driver->name : "driver";
+		best.name = mod->name;
+		best.address = mod->value;
+		found = true;
+	}
+	spinlock_release(&driver_lock);
+
+	if (!found)
+		return false;
+
+	*out = best;
+	return true;
 }
 
 static driver_metadata_t *driver_metadata_from_elf(elf_image_t *image)
@@ -370,6 +504,10 @@ static int driver_load_module(const char *path)
 	log_debug("driver", "loaded ELF %s as %s pid=%d", path, driver->name,
 			  driver->pid);
 	r = driver_register_exports(driver, &image);
+	if (r != 0)
+		return r;
+
+	r = driver_register_trace_symbols(driver, &image);
 	if (r != 0)
 		return r;
 

@@ -2,11 +2,13 @@
 #include <debug/log.h>
 #include <util/kprintf.h>
 #include <cpu/instr.h>
+#include <drv/driver.h>
 #include <stdatomic.h>
 #include <sys/smp.h>
 #include <sched/sched.h>
 
 static atomic_flag panic_lock = ATOMIC_FLAG_INIT;
+static const uint64_t user_space_limit = 0x0000800000000000ULL;
 
 static const char *pf_reason(uint64_t err)
 {
@@ -36,10 +38,64 @@ static void dump_registers(const interrupt_frame_t *f)
 static void decode_page_fault(uint64_t err)
 {
 	log_err("panic", "#PF: %s, %s, %s, %s, %s", pf_reason(err),
-			(err & 2) ? "write" : "read",
-			(err & 4) ? "user" : "supervisor",
+			(err & 2) ? "write" : "read", (err & 4) ? "user" : "supervisor",
 			(err & 8) ? "reserved-bit" : "no-reserved-bit",
 			(err & 16) ? "instruction-fetch" : "data-access");
+}
+
+static bool panic_rbp_in_stack(uint64_t rbp, const tcb_t *thread)
+{
+	if (!thread || rbp < thread->kstack_base || rbp + 16 > thread->kstack_top)
+		return false;
+	return true;
+}
+
+static void panic_print_symbol(int depth, uint64_t addr, const pcb_t *process)
+{
+	driver_symbol_info_t sym;
+	if (driver_lookup_symbol(addr, &sym)) {
+		log_err("panic", "    #%d %s:%s+0x%lx [0x%016lx]", depth, sym.owner,
+				sym.name, addr - sym.address, addr);
+		return;
+	}
+
+	if (process && addr < user_space_limit) {
+		log_err("panic", "    #%d %s[%d] [0x%016lx]", depth, process->name,
+				process->pid, addr);
+		return;
+	}
+
+	log_err("panic", "    #%d [0x%016lx]", depth, addr);
+}
+
+static void panic_backtrace(const interrupt_frame_t *frame, tcb_t *thread,
+							pcb_t *process)
+{
+	uint64_t rip = frame ? frame->rip : 0;
+	uint64_t rbp = frame ? frame->rbp : 0;
+	bool have_chain = frame && panic_rbp_in_stack(rbp, thread);
+
+	log_err("panic", "Backtrace:");
+	if (rip)
+		panic_print_symbol(0, rip, process);
+	else
+		log_err("panic", "    [unknown]");
+
+	for (int depth = 0; have_chain && depth < 12; depth++) {
+		uint64_t *fp = (uint64_t *)rbp;
+		uint64_t next_rbp = fp[0];
+		uint64_t ret = fp[1];
+
+		if (!ret)
+			break;
+		if (!panic_rbp_in_stack(next_rbp, thread))
+			have_chain = false;
+
+		panic_print_symbol(depth + 1, ret, process);
+		rbp = next_rbp;
+		if (!have_chain)
+			break;
+	}
 }
 
 __attribute__((noreturn)) void kpanic(interrupt_frame_t *frame, const char *fmt,
@@ -69,14 +125,20 @@ __attribute__((noreturn)) void kpanic(interrupt_frame_t *frame, const char *fmt,
 		log_err("panic", "CPU: %d PID: unknown Comm: kernel", cpu_index);
 	}
 
+	if (thread && thread->mode == TCB_MODE_USER && process)
+		log_err("panic", "App: %s", process->name);
+
 	if (frame) {
 		if (frame->vector == 14) {
-			log_err("panic", "BUG: unable to handle page fault for address: %016lx",
+			log_err("panic",
+					"BUG: unable to handle page fault for address: %016lx",
 					frame->cr2);
 			decode_page_fault(frame->err);
 		}
 		dump_registers(frame);
 	}
+
+	panic_backtrace(frame, thread, process);
 
 	log_err("panic", "Kernel frozen");
 

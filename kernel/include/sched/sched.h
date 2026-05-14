@@ -189,6 +189,7 @@ int sched_process_setuid(pcb_t *process, vfs_uid_t uid);
 int sched_process_setgid(pcb_t *process, vfs_gid_t gid);
 int sched_process_seteuid(pcb_t *process, vfs_uid_t uid);
 int sched_process_setegid(pcb_t *process, vfs_gid_t gid);
+void sched_map_kernel_mmio(uint64_t virt, uint64_t phys, uint64_t npages);
 bool sched_reap_pending(void);
 size_t sched_runnable_threads(void);
 void sched_loadavg_task_counts(size_t *runnable_out, size_t *total_out);

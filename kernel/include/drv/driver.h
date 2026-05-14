@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define DRIVER_NAME_MAX 31
 #define DRIVER_ENTRY_MAX 31
@@ -36,9 +37,16 @@ typedef struct driver_metadata {
 	size_t import_count;
 } driver_metadata_t;
 
+typedef struct driver_symbol_info {
+	const char *owner;
+	const char *name;
+	uint64_t address;
+} driver_symbol_info_t;
+
 int driver_manager_init(void);
 void driver_log(driver_t *driver, const char *level, const char *message);
 int driver_spawn_thread(driver_t *driver, const char *name,
 						driver_thread_entry_t entry, void *arg);
+bool driver_lookup_symbol(uint64_t addr, driver_symbol_info_t *out);
 
 #endif /* _LYR_DRV_DRIVER_H */

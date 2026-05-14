@@ -245,6 +245,7 @@ void lyr_entry(void)
 
 	/* timer */
 	pit_init(1000);
+	assert(net_poll_async_init() == 0);
 
 	/* Give the PIT a moment to deliver at least one tick. */
 	uint64_t t0 = pit_get_ticks();

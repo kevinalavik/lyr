@@ -8,10 +8,12 @@
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <sync/spinlock.h>
+#include <stdatomic.h>
 
 static spinlock_t net_lock = SPINLOCK_INIT;
 static netdev_t *netdevs;
 static netdev_t *default_netdev;
+static atomic_uint net_poll_waiters = ATOMIC_VAR_INIT(0);
 
 static int loopback_send(netdev_t *dev, const void *frame, size_t len)
 {
@@ -438,6 +440,35 @@ int net_init(void)
 
 	log_info("net", "network core ok");
 	return 0;
+}
+
+static size_t net_async_drain(size_t budget, void *ctx)
+{
+	(void)budget;
+	(void)ctx;
+	if (atomic_load_explicit(&net_poll_waiters, memory_order_acquire) == 0)
+		return 0;
+	net_poll_all();
+	return 1;
+}
+
+void net_poll_wait_begin(void)
+{
+	atomic_fetch_add_explicit(&net_poll_waiters, 1, memory_order_acq_rel);
+}
+
+void net_poll_wait_end(void)
+{
+	unsigned cur = atomic_load_explicit(&net_poll_waiters, memory_order_acquire);
+	while (cur && !atomic_compare_exchange_weak_explicit(
+					 &net_poll_waiters, &cur, cur - 1, memory_order_acq_rel,
+					 memory_order_acquire))
+		;
+}
+
+int net_poll_async_init(void)
+{
+	return async_io_register_drain_hook(net_async_drain, NULL);
 }
 
 int netdev_register(netdev_t *src)

@@ -1,0 +1,66 @@
+sources:
+  - name: curl
+    subdir: sources
+    version: '8.20.0'
+    url: 'https://curl.se/download/curl-8.20.0.tar.gz'
+    format: 'tar.gz'
+    extract_path: 'curl-8.20.0'
+    checksum: 'sha256:fc5819cad3f9f5482669adcdc49a782c15f36d2a0715b395b06d9173593d2dc0'
+    patch-path-strip: 1
+
+packages:
+  - name: curl
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: curl
+    pkgs_required:
+      - mlibc
+      - zlib
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--without-ssl'
+          - '--with-zlib=/usr'
+          - '--without-libpsl'
+          - '--without-brotli'
+          - '--without-zstd'
+          - '--without-nghttp2'
+          - '--without-ngtcp2'
+          - '--without-nghttp3'
+          - '--without-libidn2'
+          - '--without-librtmp'
+          - '--disable-ldap'
+          - '--disable-ldaps'
+          - '--disable-rtsp'
+          - '--disable-dict'
+          - '--disable-telnet'
+          - '--disable-tftp'
+          - '--disable-pop3'
+          - '--disable-imap'
+          - '--disable-smtp'
+          - '--disable-gopher'
+          - '--disable-mqtt'
+          - '--disable-manual'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG: 'x86_64-lyr-pkg-config'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'

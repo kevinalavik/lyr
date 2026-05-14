@@ -27,5 +27,6 @@ int console_init(void);
 void console_input_put(uint8_t ch);
 int console_switch_tty(unsigned index);
 unsigned console_active_tty(void);
+void console_reset_tty(unsigned index);
 
 #endif /* _LYR_DEV_CONSOLE_H */

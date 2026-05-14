@@ -231,6 +231,34 @@ static int tcp_send_ack(tcp_conn_t *conn)
 	return tcp_send_conn_packet(conn, TCP_ACK, NULL, 0);
 }
 
+uint16_t net_tcp_conn_local_port(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	return conn ? conn->local_port : 0;
+}
+
+int net_tcp_conn_has_pending_rx(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	return conn && conn->rx_len > 0;
+}
+
+int net_tcp_conn_is_closed(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	return conn && conn->closed;
+}
+
+int net_tcp_conn_has_error(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	return conn && conn->error;
+}
+
 static void tcp_conn_add(tcp_conn_t *conn)
 {
 	conn->next = tcp_conns;
@@ -562,11 +590,14 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 				payload_len, conn->rx_len, conn->rx_cap, tcp_recv_window(conn));
 			sched_io_wake_all();
 
-			/* Delayed ACK heuristic: ACK every other received segment, and
-			 * immediately when the advertised window is getting tight. recv() also
-			 * sends a window-update ACK after userspace drains the buffer. */
+			/*
+			 * Ack immediately for short packets or once we've accumulated enough
+			 * payload to benefit from a delayed ACK. This keeps bulk transfers
+			 * moving without forcing one ACK per incoming segment.
+			 */
 			if (conn->rx_since_ack >= TCP_DELAYED_ACK_SEGMENTS ||
-				tcp_recv_window_full(conn) < TCP_SEGMENT_DATA_MAX * 4) {
+				payload_len < TCP_SEGMENT_DATA_MAX ||
+				conn->rx_len >= conn->rx_cap) {
 				conn->rx_since_ack = 0;
 				tcp_send_ack(conn);
 			}
@@ -743,6 +774,7 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 				 uint64_t timeout_ms)
 {
 	tcp_conn_t *conn = conn_;
+	int infinite_timeout = timeout_ms == UINT64_MAX;
 
 	if (!conn || !buf || !cap)
 		return -EINVAL;
@@ -753,30 +785,36 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 	if (!conn->connected)
 		return -ENOENT;
 
-	uint64_t until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
+	uint64_t until = 0;
+	if (!infinite_timeout)
+		until = pit_get_ticks() + net_timeout_ticks(timeout_ms);
 
 	log_debug("tcp",
 			  "recv wait: cap=%zu queued=%zu closed=%d error=%d timeout=%llu",
 			  cap, conn->rx_len, conn->closed, conn->error, timeout_ms);
 
+	net_poll_wait_begin();
 	while (!conn->rx_len && !conn->closed && !conn->error &&
-		   pit_get_ticks() < until) {
+		   (infinite_timeout || pit_get_ticks() < until)) {
 		if (tcp_interrupted() != 0)
-			return -EINTR;
-		uint64_t now = pit_get_ticks();
-		uint64_t remain_ms = timeout_ms;
-		if (until > now && pit_get_hz() != 0)
-			remain_ms = ((until - now) * 1000ULL) / pit_get_hz();
+			break;
 		time_timeout_t timeout;
-		time_timeout_after_ms((int)remain_ms, &timeout);
+		if (!infinite_timeout) {
+			uint64_t now = pit_get_ticks();
+			uint64_t remain_ms = timeout_ms;
+			if (until > now && pit_get_hz() != 0)
+				remain_ms = ((until - now) * 1000ULL) / pit_get_hz();
+			time_timeout_after_ms((int)remain_ms, &timeout);
+		}
 		unsigned io_seq = sched_io_wait_prepare();
 		net_poll_all();
 		if (conn->rx_len || conn->closed || conn->error)
 			break;
-		int wr = sched_io_wait(io_seq, &timeout);
+		int wr = sched_io_wait(io_seq, infinite_timeout ? NULL : &timeout);
 		if (wr == -EINTR)
-			return -EINTR;
+			break;
 	}
+	net_poll_wait_end();
 
 	/*
 	 * Data wins over connection errors.

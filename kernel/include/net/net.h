@@ -99,6 +99,9 @@ int net_tcp_listen_accept(uint16_t port, net_tcp_accept_handler_t handler,
 int net_tcp_listen_accept_addr(uint32_t local_ip, uint16_t port,
 								 net_tcp_accept_handler_t handler, void *ctx);
 void net_poll_all(void);
+int net_poll_async_init(void);
+void net_poll_wait_begin(void);
+void net_poll_wait_end(void);
 size_t netdev_count(void);
 uint32_t net_ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d);
 void net_ipv4_format(uint32_t ip, char *out, size_t len);

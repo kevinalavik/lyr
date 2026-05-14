@@ -2,6 +2,7 @@
 #include <cpu/gdt.h>
 #include <cpu/instr.h>
 #include <dev/time.h>
+#include <dev/console.h>
 #include <debug/assert.h>
 #include <debug/log.h>
 #include <debug/panic.h>
@@ -151,7 +152,7 @@ int sched_waitq_wait(sched_waitq_t *waitq, unsigned seq,
 	for (;;) {
 		if (sched_waitq_prepare(waitq) != seq)
 			return 0;
-		if (time_timeout_expired(timeout))
+		if (timeout && time_timeout_expired(timeout))
 			return -ETIMEDOUT;
 		tcb_t *thread = sched_current();
 		if (thread && sched_signal_is_pending(thread))
@@ -305,6 +306,26 @@ int sched_process_setegid(pcb_t *process, vfs_gid_t gid)
 	process_refresh_cred(process);
 	spinlock_release(&process->lock);
 	return 0;
+}
+
+void sched_map_kernel_mmio(uint64_t virt, uint64_t phys, uint64_t npages)
+{
+	if (!npages)
+		return;
+
+	uint64_t irq = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	paging_register_kernel_mmio(virt, phys, npages);
+	map_mmio(kernel_ptable, virt, phys, npages);
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (!process->pml4 || process->pml4 == kernel_ptable)
+			continue;
+		map_mmio(process->pml4, virt, phys, npages);
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(irq);
 }
 
 static void runq_push_locked(cpu_local_t *cpu, tcb_t *thread)
@@ -905,6 +926,9 @@ static void process_destroy(pcb_t *process)
 	char name[sizeof(process->name)];
 	name_set(name, sizeof(name), process->name);
 
+	if (process->controlling_tty >= 0)
+		console_reset_tty((unsigned)process->controlling_tty);
+
 	if (process->owns_vas && process->vas)
 		vas_destroy(process->vas);
 
@@ -934,6 +958,9 @@ void sched_process_discard(pcb_t *process)
 	pid_t pid = process->pid;
 	char name[sizeof(process->name)];
 	name_set(name, sizeof(name), process->name);
+
+	if (process->controlling_tty >= 0)
+		console_reset_tty((unsigned)process->controlling_tty);
 
 	if (process->owns_vas && process->vas)
 		vas_destroy(process->vas);

@@ -97,8 +97,9 @@ typedef struct {
 	char name[BLOCK_NAME_MAX + 1];
 } nvme_ns_t;
 
-extern ptable_t *kernel_ptable;
 extern uint64_t _lyr_hhdm_offset;
+extern void sched_map_kernel_mmio(uint64_t virt, uint64_t phys,
+								  uint64_t npages);
 
 static uint64_t next_mmio = NVME_MMIO_BASE;
 static uint32_t next_ctrl_id;
@@ -445,7 +446,7 @@ static int nvme_probe(device_t *dev, void *ctx)
 
 	n->mmio_virt = next_mmio;
 	next_mmio += NVME_MMIO_STRIDE;
-	map_mmio(kernel_ptable, n->mmio_virt, bar, 8);
+	sched_map_kernel_mmio(n->mmio_virt, bar, 8);
 	n->regs = (volatile uint8_t *)n->mmio_virt;
 	uint64_t cap = nrd64(n, NVME_REG_CAP);
 	n->db_stride = 4u << ((cap >> 32) & 0xF);
@@ -512,10 +513,9 @@ static int nvme_main(driver_t *driver)
 
 static const char *const nvme_imports[] = {
 	"_lyr_hhdm_offset", "block_register", "device_handler_register",
-	"driver_log",	  "kernel_ptable", "kfree",
-	"kzalloc",		  "map_mmio",	  "memcpy",
-	"memset",		  "npf_snprintf_", "palloc_single",
-	"strlen",
+	"driver_log",	  "kfree",	  "kzalloc",
+	"memcpy",		  "memset",	  "npf_snprintf_",
+	"palloc_single",	 "sched_map_kernel_mmio", "strlen",
 };
 
 const driver_metadata_t lyr_driver_metadata = {

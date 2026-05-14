@@ -26,6 +26,8 @@ typedef uint64_t ptable_t;
 void map_page(ptable_t *pt, uint64_t virt, page_t *page, uint64_t flags);
 void map_page_phys(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t flags);
 void map_mmio(ptable_t *pt, uint64_t virt, uint64_t phys, uint64_t npages);
+void paging_register_kernel_mmio(uint64_t virt, uint64_t phys,
+								 uint64_t npages);
 void unmap_page(ptable_t *pt, uint64_t virt);
 
 uint64_t get_phys(ptable_t *pt, uint64_t virt);
