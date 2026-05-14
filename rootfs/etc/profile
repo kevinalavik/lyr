@@ -43,41 +43,7 @@ if [ -n "$BASH_VERSION" ]; then
     shopt -s histappend 
     shopt -s checkwinsize
 
-    __set_prompt() {
-          local exit_code="$?"
-          local uid
-          local normal dim red green cyan yellow magenta
-          local user_color prompt_symbol status_part
-
-          normal="\[\e[0m\]"
-          dim="\[\e[2m\]"
-          red="\[\e[1;31m\]"
-          green="\[\e[1;32m\]"
-          cyan="\[\e[1;36m\]"
-          yellow="\[\e[1;33m\]"
-          magenta="\[\e[1;35m\]"
-
-          uid="${UID:-$(id -u)}"
-
-          if [ "$uid" = "0" ] || [ "$USER" = "root" ]; then
-              user_color="$red"
-              prompt_symbol="#"
-          else
-              user_color="$green"
-              prompt_symbol='$'
-          fi
-
-          if [ "$exit_code" = "0" ]; then
-              status_part="${green}0${normal}"
-          else
-              status_part="${red}${exit_code}${normal}"
-          fi
-
-          PS1="${dim}[${status_part}${dim}] ${user_color}\u${normal}${dim}@${normal}${cyan}\h${normal} ${magenta}\w${normal} ${yellow}${prompt_symbol}${normal} "
-      }
-
-    PROMPT_COMMAND="__set_prompt"
-
+    export PS1='[\[\e[36m\]\u\[\e[0m\]@\[\e[33m\]\h\[\e[0m\] \[\e[32m\]\w\[\e[0m\]]\$ '
 fi
 
 if [ -d /etc/profile.d ]; then
