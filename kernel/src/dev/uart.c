@@ -40,6 +40,14 @@ static bool _uart_transmitter_empty(uint16_t port)
 	return lsr.transmitter_holding_register_empty;
 }
 
+static bool _uart_data_ready(uint16_t port)
+{
+	uart_lsr_t lsr = { 0 };
+	uint8_t raw = _uart_read_reg(port, UART_REG_LSR);
+	lsr = *(uart_lsr_t *)&raw;
+	return lsr.data_ready;
+}
+
 static void _uart_enqueue_locked(const char *buf, size_t len)
 {
 	for (size_t i = 0; i < len; i++) {
@@ -192,4 +200,17 @@ size_t uart_dropped_bytes(void)
 	}
 
 	return dropped;
+}
+
+int uart_try_read(uint8_t *ch)
+{
+	if (!ch)
+		return -1;
+
+	if (!_uart_data_ready(DEFAULT_UART_PORT)) {
+		return 0;
+	}
+
+	*ch = _uart_read_reg(DEFAULT_UART_PORT, UART_REG_RBR);
+	return 1;
 }

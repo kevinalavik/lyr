@@ -14,7 +14,7 @@
 #define LYR_TIOCGNAME 0x4c590001UL
 
 #define LYR_TTY_NAME_MAX 64
-#define LYR_TTY_COUNT 4
+#define LYR_TTY_COUNT 5
 
 typedef struct lyr_winsize {
 	uint16_t ws_row;

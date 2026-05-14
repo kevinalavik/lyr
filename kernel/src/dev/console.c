@@ -1,4 +1,5 @@
 #include <dev/console.h>
+#include <dev/async.h>
 #include <dev/uart.h>
 #include <errno.h>
 #include <fs/devfs.h>
@@ -50,6 +51,8 @@
 #define LYR_VSUSP 10
 
 #define CONSOLE_INPUT_SIZE 1024
+#define CONSOLE_FRAMEBUFFER_TTY_COUNT 4
+#define CONSOLE_SERIAL_TTY_INDEX 4
 
 typedef struct lyr_termios {
 	uint32_t c_iflag;
@@ -72,6 +75,7 @@ typedef struct console_input_ring {
 
 typedef struct console_tty {
 	unsigned index;
+	bool serial;
 	char name[LYR_TTY_NAME_MAX];
 	console_input_ring_t input;
 	sched_waitq_t input_waitq;
@@ -104,6 +108,13 @@ static const console_target_t console_target_process_tty = {
 static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 						 size_t *done);
 static void console_input_flush(console_tty_t *tty);
+static void console_input_backspace(console_tty_t *tty);
+static void console_raise_signal(console_tty_t *tty, int signal);
+static void console_echo_input(console_tty_t *tty, uint8_t ch);
+static int console_input_translate(console_tty_t *tty, uint8_t *chp);
+static void console_input_push(console_tty_t *tty, uint8_t ch);
+static void console_input_put_tty(console_tty_t *tty, uint8_t ch);
+static size_t console_serial_async_drain(size_t budget, void *context);
 
 static void console_set_default_termios(console_tty_t *tty)
 {
@@ -158,6 +169,18 @@ static void console_tty_name(unsigned index, char *buf, size_t cap)
 	if (!buf || cap < 5)
 		return;
 
+	if (index == CONSOLE_SERIAL_TTY_INDEX) {
+		if (cap < 6)
+			return;
+		buf[0] = 't';
+		buf[1] = 't';
+		buf[2] = 'y';
+		buf[3] = 'S';
+		buf[4] = '0';
+		buf[5] = '\0';
+		return;
+	}
+
 	buf[0] = 't';
 	buf[1] = 't';
 	buf[2] = 'y';
@@ -170,6 +193,7 @@ static void console_tty_init(console_tty_t *tty, unsigned index)
 	memset(tty, 0, sizeof(*tty));
 
 	tty->index = index;
+	tty->serial = index == CONSOLE_SERIAL_TTY_INDEX;
 
 	/*
 	 * Default cooked terminal behavior:
@@ -213,9 +237,64 @@ static void console_input_flush(console_tty_t *tty)
 	sched_io_wake_all();
 }
 
+static void console_input_put_tty(console_tty_t *tty, uint8_t ch)
+{
+	if (!tty)
+		return;
+
+	if (!console_input_translate(tty, &ch))
+		return;
+
+	int canonical = (tty->termios.c_lflag & LYR_ICANON) != 0;
+	int echo = (tty->termios.c_lflag & LYR_ECHO) != 0;
+
+	if (tty->termios.c_lflag & LYR_ISIG) {
+		if (ch == tty->termios.c_cc[LYR_VINTR]) {
+			if (echo && (tty->serial || tty->index == active_console))
+				console_write(tty, 0, "^C\r\n", 4, NULL);
+
+			tty->input_interrupted = 1;
+			sched_waitq_wake_all(&tty->input_waitq);
+			sched_io_wake_all();
+			console_raise_signal(tty, 2);
+			return;
+		}
+
+		if (ch == tty->termios.c_cc[LYR_VQUIT]) {
+			if (echo && (tty->serial || tty->index == active_console))
+				console_write(tty, 0, "^\\\r\n", 5, NULL);
+
+			tty->input_interrupted = 1;
+			sched_waitq_wake_all(&tty->input_waitq);
+			sched_io_wake_all();
+			console_raise_signal(tty, 3);
+			return;
+		}
+	}
+
+	if (canonical &&
+		(ch == 8 || ch == 127 || ch == tty->termios.c_cc[LYR_VERASE])) {
+		console_input_backspace(tty);
+		return;
+	}
+
+	if (canonical && ch == tty->termios.c_cc[LYR_VEOF]) {
+		tty->input.lines++;
+		sched_waitq_wake_all(&tty->input_waitq);
+		sched_io_wake_all();
+		return;
+	}
+
+	console_input_push(tty, ch);
+	console_echo_input(tty, ch);
+}
+
 static int console_wait_input(console_tty_t *tty)
 {
-	if (tty->index == active_console)
+	if (!tty)
+		return -EINVAL;
+
+	if (!tty->serial && tty->index == active_console)
 		lyrterm_flush();
 
 	for (;;) {
@@ -334,7 +413,7 @@ static void console_echo_input(console_tty_t *tty, uint8_t ch)
 	if (!(tty->termios.c_lflag & LYR_ECHO))
 		return;
 
-	if (tty->index != active_console)
+	if (!tty->serial && tty->index != active_console)
 		return;
 
 	if (ch == '\n') {
@@ -377,57 +456,12 @@ static int console_input_translate(console_tty_t *tty, uint8_t *chp)
 
 void console_input_put(uint8_t ch)
 {
-	console_tty_t *tty = &consoles[active_console];
+	console_input_put_tty(&consoles[active_console], ch);
+}
 
-	if (!console_input_translate(tty, &ch))
-		return;
-
-	int canonical = (tty->termios.c_lflag & LYR_ICANON) != 0;
-	int echo = (tty->termios.c_lflag & LYR_ECHO) != 0;
-
-	if (tty->termios.c_lflag & LYR_ISIG) {
-		if (ch == tty->termios.c_cc[LYR_VINTR]) {
-			if (echo && tty->index == active_console)
-				console_write(tty, 0, "^C\r\n", 4, NULL);
-
-			tty->input_interrupted = 1;
-			sched_waitq_wake_all(&tty->input_waitq);
-			sched_io_wake_all();
-			console_raise_signal(tty, 2);
-			return;
-		}
-
-		if (ch == tty->termios.c_cc[LYR_VQUIT]) {
-			if (echo && tty->index == active_console)
-				console_write(tty, 0, "^\\\r\n", 5, NULL);
-
-			tty->input_interrupted = 1;
-			sched_waitq_wake_all(&tty->input_waitq);
-			sched_io_wake_all();
-			console_raise_signal(tty, 3);
-			return;
-		}
-	}
-
-	if (canonical &&
-		(ch == 8 || ch == 127 || ch == tty->termios.c_cc[LYR_VERASE])) {
-		console_input_backspace(tty);
-		return;
-	}
-
-	/*
-	 * Canonical EOF (^D): wake readers without placing the EOF byte into
-	 * the stream. If the line is empty, read() returns 0 bytes.
-	 */
-	if (canonical && ch == tty->termios.c_cc[LYR_VEOF]) {
-		tty->input.lines++;
-		sched_waitq_wake_all(&tty->input_waitq);
-		sched_io_wake_all();
-		return;
-	}
-
-	console_input_push(tty, ch);
-	console_echo_input(tty, ch);
+static void console_serial_input_put(uint8_t ch)
+{
+	console_input_put_tty(&consoles[CONSOLE_SERIAL_TTY_INDEX], ch);
 }
 
 static int console_read(void *ctx, uint64_t off, void *buf, size_t len,
@@ -484,8 +518,9 @@ static void console_write_translated(console_tty_t *tty, const uint8_t *buf,
 									 size_t len)
 {
 	if (!(tty->termios.c_oflag & LYR_OPOST)) {
-		if (tty->index == active_console) {
+		if (tty->serial) {
 			uart_wbuf((const char *)buf, len);
+		} else if (tty->index == active_console) {
 			lyrterm_write((const char *)buf, len);
 		} else {
 			lyrterm_update_state(&tty->render, (const char *)buf, len);
@@ -499,15 +534,17 @@ static void console_write_translated(console_tty_t *tty, const uint8_t *buf,
 		if ((tty->termios.c_oflag & LYR_ONLCR) && ch == '\n') {
 			const char crlf[2] = { '\r', '\n' };
 
-			if (tty->index == active_console) {
+			if (tty->serial) {
 				uart_wbuf(crlf, 2);
+			} else if (tty->index == active_console) {
 				lyrterm_write(crlf, 2);
 			} else {
 				lyrterm_update_state(&tty->render, crlf, 2);
 			}
 		} else {
-			if (tty->index == active_console) {
+			if (tty->serial) {
 				uart_wbuf((const char *)&ch, 1);
+			} else if (tty->index == active_console) {
 				lyrterm_write((const char *)&ch, 1);
 			} else {
 				lyrterm_update_state(&tty->render, (const char *)&ch, 1);
@@ -532,6 +569,27 @@ static int console_write(void *ctx, uint64_t off, const void *buf, size_t len,
 		*done = len;
 
 	return 0;
+}
+
+static size_t console_serial_async_drain(size_t budget, void *context)
+{
+	(void)context;
+
+	size_t done = 0;
+	if (budget == 0)
+		budget = CONSOLE_INPUT_SIZE;
+
+	while (done < budget) {
+		uint8_t ch;
+		int r = uart_try_read(&ch);
+		if (r <= 0)
+			break;
+
+		console_serial_input_put(ch);
+		done++;
+	}
+
+	return done;
 }
 
 static int console_poll(void *ctx, int events)
@@ -664,8 +722,10 @@ static int console_ioctl(void *ctx, unsigned long request, void *arg)
 
 int console_switch_tty(unsigned index)
 {
-	if (index >= LYR_TTY_COUNT || index == active_console)
-		return index < LYR_TTY_COUNT ? 0 : -EINVAL;
+	if (index >= CONSOLE_FRAMEBUFFER_TTY_COUNT)
+		return -EINVAL;
+	if (index == active_console)
+		return 0;
 
 	lyrterm_flush();
 	lyrterm_capture_state(&consoles[active_console].render);
@@ -686,6 +746,10 @@ int console_init(void)
 	for (unsigned i = 0; i < LYR_TTY_COUNT; i++)
 		console_tty_init(&consoles[i], i);
 
+	int r = async_io_register_drain_hook(console_serial_async_drain, NULL);
+	if (r != 0)
+		return r;
+
 	for (unsigned i = 0; i < LYR_TTY_COUNT; i++) {
 		char path[32];
 
@@ -700,9 +764,9 @@ int console_init(void)
 			return r;
 	}
 
-	int r = devfs_register_chr_poll("/dev/console", 0666, console_read,
-									console_write, console_ioctl, console_poll,
-									(void *)&console_target_active);
+	r = devfs_register_chr_poll("/dev/console", 0666, console_read,
+								console_write, console_ioctl, console_poll,
+								(void *)&console_target_active);
 	if (r != 0 && r != -EEXIST)
 		return r;
 
@@ -727,6 +791,12 @@ int console_init(void)
 	r = devfs_register_chr_poll("/dev/stderr", 0222, NULL, console_write,
 								console_ioctl, console_poll,
 								(void *)&console_target_process_tty);
+	if (r != 0 && r != -EEXIST)
+		return r;
+
+	r = devfs_register_chr_poll("/dev/ttyS0", 0666, console_read, console_write,
+								console_ioctl, console_poll,
+								(void *)&consoles[CONSOLE_SERIAL_TTY_INDEX]);
 	if (r != 0 && r != -EEXIST)
 		return r;
 

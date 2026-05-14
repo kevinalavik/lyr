@@ -347,5 +347,6 @@ void uart_wch(char c);
 size_t uart_drain(size_t budget);
 void uart_flush(void);
 size_t uart_dropped_bytes(void);
+int uart_try_read(uint8_t *ch);
 
 #endif // _LYR_DEV_UART_H
