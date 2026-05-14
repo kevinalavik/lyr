@@ -129,6 +129,8 @@ int main(int argc, char **argv)
 			term_println(NULL, "");
 			dprintf(STDOUT_FILENO, "Autologin: %s\n", user.username);
 			handle_session(&user);
+			/* Avoid a fork/exec storm if the shell exits immediately. */
+			sleep(1);
 			continue;
 		}
 

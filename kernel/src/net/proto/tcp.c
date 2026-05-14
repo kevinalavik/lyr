@@ -1,6 +1,7 @@
 #include "../stack.h"
 #include <debug/log.h>
 #include <dev/pit.h>
+#include <dev/time.h>
 #include <errno.h>
 #include <fs/vfs.h>
 #include <lib/nanoprintf.h>
@@ -433,6 +434,7 @@ static void tcp_handle_passive_payload(tcp_conn_t *conn, const uint8_t *payload,
 	}
 
 	conn->closed = 1;
+	sched_io_wake_all();
 }
 
 void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
@@ -485,6 +487,7 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 	if (flags & 0x04) {
 		conn->error = 1;
 		conn->closed = 1;
+		sched_io_wake_all();
 		if (conn->passive)
 			tcp_close_passive(conn);
 		return;
@@ -494,6 +497,7 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 		if (!conn->connected && (flags & TCP_ACK) && ack == conn->seq + 1) {
 			conn->seq++;
 			conn->connected = 1;
+			sched_io_wake_all();
 
 			if (conn->accept_handler) {
 				int r = conn->accept_handler(conn->dev, conn->remote_ip,
@@ -533,6 +537,7 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 		conn->ack = seq + 1;
 		conn->seq++;
 		conn->connected = 1;
+		sched_io_wake_all();
 		tcp_send_ack(conn);
 		return;
 	}
@@ -555,6 +560,7 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 				"tcp",
 				"active queued payload: got=%zu queued=%zu cap=%zu wnd=%u",
 				payload_len, conn->rx_len, conn->rx_cap, tcp_recv_window(conn));
+			sched_io_wake_all();
 
 			/* Delayed ACK heuristic: ACK every other received segment, and
 			 * immediately when the advertised window is getting tight. recv() also
@@ -583,6 +589,7 @@ void net_tcp_receive(netdev_t *dev, const uint8_t src_mac[NET_ETH_ALEN],
 		conn->ack++;
 		tcp_send_ack(conn);
 		conn->closed = 1;
+		sched_io_wake_all();
 	}
 }
 
@@ -756,7 +763,19 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 		   pit_get_ticks() < until) {
 		if (tcp_interrupted() != 0)
 			return -EINTR;
+		uint64_t now = pit_get_ticks();
+		uint64_t remain_ms = timeout_ms;
+		if (until > now && pit_get_hz() != 0)
+			remain_ms = ((until - now) * 1000ULL) / pit_get_hz();
+		time_timeout_t timeout;
+		time_timeout_after_ms((int)remain_ms, &timeout);
+		unsigned io_seq = sched_io_wait_prepare();
 		net_poll_all();
+		if (conn->rx_len || conn->closed || conn->error)
+			break;
+		int wr = sched_io_wait(io_seq, &timeout);
+		if (wr == -EINTR)
+			return -EINTR;
 	}
 
 	/*

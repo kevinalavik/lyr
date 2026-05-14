@@ -14,10 +14,12 @@
 #include <dev/pit.h>
 #include <dev/block.h>
 #include <fs/vfs.h>
+#include <fs/pipe.h>
 #include <fs/tmpfs.h>
 #include <fs/ext2.h>
 #include <ipc/ipc.h>
 #include <net/net.h>
+#include <sys/poll.h>
 #include <util/kprintf.h>
 #include <sys/syscall.h>
 
@@ -1070,6 +1072,43 @@ static void vfs_tmpfs_test(vas_t *vas)
 	assert(strcmp(buf, "Hello Tmpfs") == 0);
 	vas_unmap(vas, map, PAGE_SIZE);
 	log_debug("vfs_tmpfs_test", "file-backed VMM mapping ok");
+
+	vfs_file_t *pipe_read = NULL;
+	vfs_file_t *pipe_write = NULL;
+	assert(vfs_pipe_create(&pipe_read, &pipe_write) == 0);
+	assert(pipe_read);
+	assert(pipe_write);
+
+	const char *pipe_msg = "abcdef";
+	assert(vfs_pipe_write(pipe_write, pipe_msg, strlen(pipe_msg), &done) == 0);
+	assert(done == strlen(pipe_msg));
+	memset(buf, 0, sizeof(buf));
+	assert(vfs_seek(pipe_read, VFS_SEEK_SET, 2, NULL) == 0);
+	assert(vfs_pipe_read(pipe_read, buf, 3, &done) == 0);
+	assert(done == 3);
+	assert(memcmp(buf, "cde", 3) == 0);
+	assert(vfs_seek(pipe_read, VFS_SEEK_SET, 0, NULL) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(vfs_pipe_read(pipe_read, buf, 6, &done) == 0);
+	assert(done == 6);
+	assert(memcmp(buf, "abcdef", 6) == 0);
+	assert(vfs_seek(pipe_write, VFS_SEEK_END, 0, NULL) == 0);
+	assert(vfs_seek(pipe_write, VFS_SEEK_SET, 2, NULL) == 0);
+	assert(vfs_pipe_write(pipe_write, "ZZ", 2, &done) == 0);
+	assert(done == 2);
+	assert(vfs_seek(pipe_read, VFS_SEEK_SET, 0, NULL) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(vfs_pipe_read(pipe_read, buf, 6, &done) == 0);
+	assert(done == 6);
+	assert(memcmp(buf, "abZZef", 6) == 0);
+	assert(vfs_poll(pipe_read, LYR_POLLIN | LYR_POLLRDNORM) == 0);
+	assert(vfs_poll(pipe_write, LYR_POLLOUT | LYR_POLLWRNORM) ==
+		   (LYR_POLLOUT | LYR_POLLWRNORM));
+	assert(vfs_close(pipe_write) == 0);
+	assert(vfs_poll(pipe_read, LYR_POLLIN | LYR_POLLRDNORM) &
+		   LYR_POLLHUP);
+	assert(vfs_close(pipe_read) == 0);
+	log_debug("vfs_tmpfs_test", "pipe lseek semantics ok");
 
 	assert(vfs_close(file) == 0);
 	assert(vfs_unlink("/tmp/hello", &vfs_root_cred) == 0);

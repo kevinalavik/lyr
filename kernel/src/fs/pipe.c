@@ -7,19 +7,19 @@
 #include <sync/spinlock.h>
 #include <sys/poll.h>
 
-#define PIPE_CAPACITY 4096
+#define PIPE_INITIAL_CAPACITY 4096
 #define PIPE_READER 1
 #define PIPE_WRITER 2
 
 typedef struct pipe_shared {
 	spinlock_t lock;
-	size_t head;
-	size_t tail;
-	size_t count;
+	sched_waitq_t waitq;
+	uint8_t *buffer;
+	size_t capacity;
+	uint64_t write_offset;
 	unsigned readers;
 	unsigned writers;
 	unsigned nodes;
-	uint8_t buffer[PIPE_CAPACITY];
 } pipe_shared_t;
 
 typedef struct pipe_endpoint {
@@ -28,14 +28,9 @@ typedef struct pipe_endpoint {
 	int side;
 } pipe_endpoint_t;
 
-static int pipe_wait_interruptible(void)
+static int pipe_wait_interruptible(pipe_shared_t *shared, unsigned seq)
 {
-	for (;;) {
-		tcb_t *thread = sched_current();
-		if (thread && sched_signal_is_pending(thread))
-			return -EINTR;
-		__asm__ volatile("sti; hlt; cli" ::: "memory");
-	}
+	return sched_waitq_wait(&shared->waitq, seq, NULL);
 }
 
 static pipe_endpoint_t *pipe_endpoint_from_node(vfs_node_t *node)
@@ -59,6 +54,8 @@ static int pipe_close(vfs_file_t *file)
 			shared->writers--;
 	}
 	spinlock_release(&shared->lock);
+	sched_waitq_wake_all(&shared->waitq);
+	sched_io_wake_all();
 	return 0;
 }
 
@@ -73,14 +70,16 @@ static int pipe_poll(vfs_file_t *file, int events)
 	spinlock_acquire(&shared->lock);
 
 	if (events & LYR_POLL_READ_MASK) {
-		if (shared->count > 0 || shared->writers == 0)
+		if (file->offset < shared->write_offset || shared->writers == 0)
 			revents |= LYR_POLLIN | LYR_POLLRDNORM;
+		if (shared->writers == 0)
+			revents |= LYR_POLLHUP;
 	}
 
 	if (events & LYR_POLL_WRITE_MASK) {
 		if (shared->readers == 0)
 			revents |= LYR_POLLERR;
-		else if (shared->count < PIPE_CAPACITY)
+		else
 			revents |= LYR_POLLOUT | LYR_POLLWRNORM;
 	}
 
@@ -102,8 +101,10 @@ static void pipe_release(vfs_node_t *node)
 			shared->nodes--;
 		free_shared = shared->nodes == 0;
 		spinlock_release(&shared->lock);
-		if (free_shared)
+		if (free_shared) {
+			kfree(shared->buffer);
 			kfree(shared);
+		}
 	}
 
 	kfree(endpoint);
@@ -140,6 +141,13 @@ int vfs_pipe_create(vfs_file_t **read_end, vfs_file_t **write_end)
 		return -ENOMEM;
 
 	spinlock_init(&shared->lock);
+	sched_waitq_init(&shared->waitq);
+	shared->capacity = PIPE_INITIAL_CAPACITY;
+	shared->buffer = kzalloc(shared->capacity + 1);
+	if (!shared->buffer) {
+		kfree(shared);
+		return -ENOMEM;
+	}
 	shared->readers = 1;
 	shared->writers = 1;
 	shared->nodes = 2;
@@ -223,18 +231,26 @@ int vfs_pipe_read(vfs_file_t *file, void *buf, size_t len, size_t *done)
 	size_t total = 0;
 
 	for (;;) {
+		unsigned wait_seq = sched_waitq_prepare(&shared->waitq);
 		spinlock_acquire(&shared->lock);
 
-		while (total < len && shared->count > 0) {
-			out[total++] = shared->buffer[shared->tail];
-			shared->tail = (shared->tail + 1) % PIPE_CAPACITY;
-			shared->count--;
+		int writers = (int)shared->writers;
+		uint64_t write_offset = shared->write_offset;
+
+		uint64_t available =
+			file->offset < write_offset ? write_offset - file->offset : 0;
+		if (available > 0) {
+			size_t chunk = len - total;
+			if ((uint64_t)chunk > available)
+				chunk = (size_t)available;
+			memcpy(out + total, shared->buffer + (size_t)file->offset, chunk);
+			total += chunk;
+			file->offset += chunk;
 		}
 
-		int writers = (int)shared->writers;
 		spinlock_release(&shared->lock);
 
-		if (total > 0 || writers == 0) {
+		if (total > 0 || (writers == 0 && file->offset >= write_offset)) {
 			if (done)
 				*done = total;
 			return 0;
@@ -243,7 +259,7 @@ int vfs_pipe_read(vfs_file_t *file, void *buf, size_t len, size_t *done)
 		if (file->flags & 0x800u)
 			return -EAGAIN;
 
-		int r = pipe_wait_interruptible();
+		int r = pipe_wait_interruptible(shared, wait_seq);
 		if (r != 0)
 			return r;
 	}
@@ -270,32 +286,82 @@ int vfs_pipe_write(vfs_file_t *file, const void *buf, size_t len, size_t *done)
 			spinlock_release(&shared->lock);
 			return -EPIPE;
 		}
-
-		while (total < len && shared->count < PIPE_CAPACITY) {
-			shared->buffer[shared->head] = in[total++];
-			shared->head = (shared->head + 1) % PIPE_CAPACITY;
-			shared->count++;
+		size_t start = (size_t)file->offset;
+		size_t need = start + (len - total);
+		if (need > shared->capacity) {
+			size_t new_cap = shared->capacity ? shared->capacity : PIPE_INITIAL_CAPACITY;
+			while (new_cap < need)
+				new_cap *= 2;
+			uint8_t *new_buf = krealloc(shared->buffer, new_cap + 1);
+			if (!new_buf) {
+				spinlock_release(&shared->lock);
+				if (total > 0 && done)
+					*done = total;
+				return total > 0 ? 0 : -ENOMEM;
+			}
+			if (new_cap > shared->capacity)
+				memset(new_buf + shared->capacity, 0,
+					   (new_cap + 1) - shared->capacity);
+			shared->buffer = new_buf;
+			shared->capacity = new_cap;
 		}
+
+		size_t chunk = len - total;
+		if ((uint64_t)start > shared->write_offset) {
+			memset(shared->buffer + (size_t)shared->write_offset, 0,
+				   start - (size_t)shared->write_offset);
+		}
+		memcpy(shared->buffer + start, in + total, chunk);
+		total += chunk;
+		file->offset += chunk;
+		if (file->offset > shared->write_offset)
+			shared->write_offset = file->offset;
+		shared->buffer[(size_t)shared->write_offset] = 0;
 
 		spinlock_release(&shared->lock);
+		sched_waitq_wake_all(&shared->waitq);
+		sched_io_wake_all();
 
-		if (total == len) {
-			if (done)
-				*done = total;
-			return 0;
-		}
-
-		if (file->flags & 0x800u) {
-			if (total > 0 && done)
-				*done = total;
-			return total > 0 ? 0 : -EAGAIN;
-		}
-
-		int r = pipe_wait_interruptible();
-		if (r != 0) {
-			if (total > 0 && done)
-				*done = total;
-			return total > 0 ? 0 : r;
-		}
+		if (done)
+			*done = total;
+		return 0;
 	}
+}
+
+int vfs_pipe_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off)
+{
+	pipe_endpoint_t *endpoint = pipe_endpoint_from_node(file ? file->node : NULL);
+	if (!endpoint || !endpoint->shared)
+		return -EBADF;
+
+	pipe_shared_t *shared = endpoint->shared;
+	spinlock_acquire(&shared->lock);
+
+	uint64_t base;
+	switch (whence) {
+	case VFS_SEEK_SET:
+		base = 0;
+		break;
+	case VFS_SEEK_CUR:
+		base = file->offset;
+		break;
+	case VFS_SEEK_END:
+		base = shared->write_offset;
+		break;
+	default:
+		spinlock_release(&shared->lock);
+		return -EINVAL;
+	}
+
+	if (off < 0 && (uint64_t)(-off) > base) {
+		spinlock_release(&shared->lock);
+		return -EINVAL;
+	}
+
+	file->offset = off < 0 ? base - (uint64_t)(-off) : base + (uint64_t)off;
+	if (new_off)
+		*new_off = file->offset;
+
+	spinlock_release(&shared->lock);
+	return 0;
 }

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <debug/log.h>
 #include <lib/string.h>
+#include <sched/sched.h>
 #include <sync/spinlock.h>
 #include <cpu/instr.h>
 
@@ -122,7 +123,9 @@ void time_sleep_until_interrupt_or_timeout(const time_timeout_t *timeout)
 	if (time_timeout_expired(timeout))
 		return;
 
+	sched_sleep_hint_begin();
 	__asm__ volatile("sti; hlt; cli" ::: "memory");
+	sched_sleep_hint_end();
 }
 
 int time_register_source(const time_source_t *source)

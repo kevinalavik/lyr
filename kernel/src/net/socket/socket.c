@@ -1,4 +1,5 @@
 #include "../stack.h"
+#include <dev/time.h>
 #include <dev/pit.h>
 #include <debug/log.h>
 #include <fs/vfs.h>
@@ -848,6 +849,7 @@ int net_sendto(socket_t *sock, const void *buf, size_t len, int flags,
 		}
 
 		peer->readable = 1;
+		sched_io_wake_all();
 
 		return (int)to_copy;
 	} else if (sock->domain == AF_INET) {
@@ -947,13 +949,20 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 		if (sock->type == SOCK_DGRAM || sock->type == SOCK_RAW) {
 			inet_sock_t *is = sock->inet_data;
 			if (is->rx_len == 0) {
-				uint64_t until = pit_get_ticks() +
-					net_timeout_ticks(is->recv_timeout_ms);
-				while (!is->readable && pit_get_ticks() < until) {
+				time_timeout_t timeout;
+				time_timeout_after_ms((int)is->recv_timeout_ms, &timeout);
+				while (!is->readable && !time_timeout_expired(&timeout)) {
 					if (socket_interrupted() != 0)
 						return -EINTR;
+					unsigned io_seq = sched_io_wait_prepare();
 					net_poll_all();
-					__asm__ volatile("pause" ::: "memory");
+					if (is->readable)
+						break;
+					int wr = sched_io_wait(io_seq, &timeout);
+					if (wr == -EINTR)
+						return -EINTR;
+					if (wr == -ETIMEDOUT)
+						break;
 				}
 			}
 			if (is->rx_len == 0)
@@ -1316,6 +1325,7 @@ void net_socket_raw_icmp_receive(netdev_t *dev, const ipv4_hdr_t *ip,
 		is->packet_src_ip = src_ip;
 		is->packet_src_port = 0;
 		is->readable = 1;
+		sched_io_wake_all();
 	}
 }
 
@@ -1368,6 +1378,7 @@ static int socket_udp_receive(const net_udp_dgram_t *dgram, void *ctx)
 		is->packet_src_ip = dgram->src_ip;
 		is->packet_src_port = dgram->src_port;
 		is->readable = 1;
+		sched_io_wake_all();
 
 		log_debug("socket", "UDP rx %u.%u.%u.%u:%u -> %u.%u.%u.%u:%u len=%zu",
 				  (dgram->src_ip >> 24) & 0xff, (dgram->src_ip >> 16) & 0xff,

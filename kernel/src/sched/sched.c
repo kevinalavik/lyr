@@ -1,6 +1,7 @@
 #include <sched/sched.h>
 #include <cpu/gdt.h>
 #include <cpu/instr.h>
+#include <dev/time.h>
 #include <debug/assert.h>
 #include <debug/log.h>
 #include <debug/panic.h>
@@ -57,10 +58,20 @@ extern void sched_switch_to_user(ptable_t *pml4, uint64_t rip, uint64_t rsp)
 
 static spinlock_t sched_lock = SPINLOCK_INIT;
 static spinlock_t kstack_lock = SPINLOCK_INIT;
+static spinlock_t sched_loadavg_lock = SPINLOCK_INIT;
 static atomic_bool sched_ready = false;
 static atomic_uint reap_inflight = 0;
+static atomic_int sched_last_process_pid = 0;
 static uint64_t next_kstack_base = KSTACK_REGION_BASE;
 static pcb_t *process_list = NULL;
+static uint64_t sched_loadavg_fp[3];
+static uint64_t sched_loadavg_last_sec;
+static sched_waitq_t sched_io_waitq = { .seq = ATOMIC_VAR_INIT(1) };
+
+#define SCHED_LOADAVG_SCALE 1000000ULL
+#define SCHED_LOADAVG_EXP_1 983471ULL
+#define SCHED_LOADAVG_EXP_5 996672ULL
+#define SCHED_LOADAVG_EXP_15 998890ULL
 
 typedef struct id_node {
 	int id;
@@ -89,6 +100,27 @@ static void irq_restore(uint64_t flags)
 		sti();
 }
 
+void sched_waitq_init(sched_waitq_t *waitq)
+{
+	if (!waitq)
+		return;
+	atomic_init(&waitq->seq, 1);
+}
+
+unsigned sched_waitq_prepare(const sched_waitq_t *waitq)
+{
+	if (!waitq)
+		return 0;
+	return atomic_load_explicit(&waitq->seq, memory_order_acquire);
+}
+
+void sched_waitq_wake_all(sched_waitq_t *waitq)
+{
+	if (!waitq)
+		return;
+	atomic_fetch_add_explicit(&waitq->seq, 1, memory_order_release);
+}
+
 static void name_set(char *dst, size_t dst_len, const char *src)
 {
 	size_t i = 0;
@@ -108,6 +140,41 @@ static void process_refresh_cred(pcb_t *process)
 	process->cred.gid = process->egid;
 	process->cred.group_count = 0;
 	process->cred.umask = 0022;
+}
+
+int sched_waitq_wait(sched_waitq_t *waitq, unsigned seq,
+					 const time_timeout_t *timeout)
+{
+	if (!waitq)
+		return -EINVAL;
+
+	for (;;) {
+		if (sched_waitq_prepare(waitq) != seq)
+			return 0;
+		if (time_timeout_expired(timeout))
+			return -ETIMEDOUT;
+		tcb_t *thread = sched_current();
+		if (thread && sched_signal_is_pending(thread))
+			return -EINTR;
+		sched_sleep_hint_begin();
+		__asm__ volatile("sti; hlt; cli" ::: "memory");
+		sched_sleep_hint_end();
+	}
+}
+
+unsigned sched_io_wait_prepare(void)
+{
+	return sched_waitq_prepare(&sched_io_waitq);
+}
+
+int sched_io_wait(unsigned seq, const time_timeout_t *timeout)
+{
+	return sched_waitq_wait(&sched_io_waitq, seq, timeout);
+}
+
+void sched_io_wake_all(void)
+{
+	sched_waitq_wake_all(&sched_io_waitq);
 }
 
 const vfs_cred_t *sched_process_cred(const pcb_t *process)
@@ -519,6 +586,7 @@ static void process_notify_parent_signal(pid_t parent_pid, int signal)
 		/* Wake any waitpid() sleeping on this parent */
 		atomic_fetch_add_explicit(&parent->child_event, 1,
 								  memory_order_release);
+		sched_waitq_wake_all(&parent->child_waitq);
 		log_trace("sched", "queued signal=%d for parent pid=%d", signal,
 				  parent->pid);
 		break;
@@ -771,6 +839,7 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 		return NULL;
 
 	process->pid = pid;
+	atomic_store_explicit(&sched_last_process_pid, pid, memory_order_release);
 	process->ppid = 0;
 	name_set(process->name, sizeof(process->name), name ? name : "process");
 	process->vas = vas ? vas : vas_create(NULL);
@@ -783,6 +852,7 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 	atomic_init(&process->thread_count, 0);
 	atomic_init(&process->dying, false);
 	atomic_init(&process->child_event, 0);
+	sched_waitq_init(&process->child_waitq);
 	process->zombie = false;
 	process->stopped = false;
 	process->stop_signal = 0;
@@ -1524,6 +1594,7 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 					atomic_fetch_add_explicit(&parent->child_event, 1,
 											  memory_order_release);
 					parent->pending_signals |= SCHED_SIGNAL_BIT(SCHED_SIGCHLD);
+					sched_waitq_wake_all(&parent->child_waitq);
 					break;
 				}
 			}
@@ -1540,6 +1611,7 @@ int sched_process_signal(pcb_t *sender, pid_t pid, int signal)
 												  memory_order_release);
 						parent->pending_signals |=
 							SCHED_SIGNAL_BIT(SCHED_SIGCHLD);
+						sched_waitq_wake_all(&parent->child_waitq);
 						break;
 					}
 				}
@@ -2050,6 +2122,97 @@ bool sched_reap_pending(void)
 	return pending;
 }
 
+size_t sched_runnable_threads(void)
+{
+	size_t count = 0;
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	for (pcb_t *process = process_list; process; process = process->next) {
+		for (tcb_t *thread = process->threads; thread;
+			 thread = thread->process_next) {
+			if (thread->is_idle)
+				continue;
+			if (thread->sleep_hint)
+				continue;
+			if (thread->state == TCB_READY || thread->state == TCB_RUNNING)
+				count++;
+		}
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+	return count;
+}
+
+void sched_loadavg_task_counts(size_t *runnable_out, size_t *total_out)
+{
+	size_t runnable = 0;
+	size_t total = 0;
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_lock);
+
+	for (pcb_t *process = process_list; process; process = process->next) {
+		if (process_is_kernel_owned(process) || process->zombie)
+			continue;
+
+		for (tcb_t *thread = process->threads; thread;
+			 thread = thread->process_next) {
+			if (thread->is_idle || thread->state == TCB_ZOMBIE)
+				continue;
+			total++;
+			if (thread->sleep_hint)
+				continue;
+			if (thread->state == TCB_READY || thread->state == TCB_RUNNING)
+				runnable++;
+		}
+	}
+
+	spinlock_release(&sched_lock);
+	irq_restore(flags);
+
+	if (runnable_out)
+		*runnable_out = runnable;
+	if (total_out)
+		*total_out = total;
+}
+
+void sched_loadavg_snapshot(uint64_t out[3])
+{
+	if (!out)
+		return;
+
+	uint64_t flags = irq_save();
+	spinlock_acquire(&sched_loadavg_lock);
+	out[0] = sched_loadavg_fp[0];
+	out[1] = sched_loadavg_fp[1];
+	out[2] = sched_loadavg_fp[2];
+	spinlock_release(&sched_loadavg_lock);
+	irq_restore(flags);
+}
+
+pid_t sched_last_pid(void)
+{
+	return (pid_t)atomic_load_explicit(&sched_last_process_pid,
+									   memory_order_acquire);
+}
+
+void sched_sleep_hint_begin(void)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || thread->is_idle)
+		return;
+	thread->sleep_hint = true;
+}
+
+void sched_sleep_hint_end(void)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || thread->is_idle)
+		return;
+	thread->sleep_hint = false;
+}
+
 void sched_idle_loop(void)
 {
 	while (!sched_is_initialized())
@@ -2100,6 +2263,42 @@ interrupt_frame_t *sched_tick(interrupt_frame_t *frame)
 	cpu_local_t *cpu = get_cpu_local();
 	if (!cpu || !atomic_load_explicit(&cpu->sched_ready, memory_order_acquire))
 		return frame;
+
+	if (cpu->cpu_index == 0) {
+		uint64_t now_sec = time_monotonic_ns() / NSEC_PER_SEC;
+		uint64_t flags = irq_save();
+		spinlock_acquire(&sched_loadavg_lock);
+		if (sched_loadavg_last_sec == 0)
+			sched_loadavg_last_sec = now_sec;
+
+		uint64_t elapsed = now_sec - sched_loadavg_last_sec;
+		if (elapsed > 3600)
+			elapsed = 3600;
+		if (elapsed != 0) {
+			size_t runnable = 0;
+			sched_loadavg_task_counts(&runnable, NULL);
+			for (uint64_t i = 0; i < elapsed; i++) {
+				sched_loadavg_fp[0] =
+					(sched_loadavg_fp[0] * SCHED_LOADAVG_EXP_1) /
+						SCHED_LOADAVG_SCALE +
+					((uint64_t)runnable *
+					 (SCHED_LOADAVG_SCALE - SCHED_LOADAVG_EXP_1));
+				sched_loadavg_fp[1] =
+					(sched_loadavg_fp[1] * SCHED_LOADAVG_EXP_5) /
+						SCHED_LOADAVG_SCALE +
+					((uint64_t)runnable *
+					 (SCHED_LOADAVG_SCALE - SCHED_LOADAVG_EXP_5));
+				sched_loadavg_fp[2] =
+					(sched_loadavg_fp[2] * SCHED_LOADAVG_EXP_15) /
+						SCHED_LOADAVG_SCALE +
+					((uint64_t)runnable *
+					 (SCHED_LOADAVG_SCALE - SCHED_LOADAVG_EXP_15));
+			}
+			sched_loadavg_last_sec = now_sec;
+		}
+		spinlock_release(&sched_loadavg_lock);
+		irq_restore(flags);
+	}
 
 	sched_reap_current_cpu();
 

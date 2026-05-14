@@ -1,4 +1,5 @@
 #include <fs/devfs.h>
+#include <fs/procfs.h>
 #include <debug/log.h>
 #include <lib/string.h>
 #include <mm/heap.h>
@@ -439,8 +440,10 @@ int devfs_mount(const char *target)
 		return -EINVAL;
 
 	int r = vfs_mount(target, &devfs_root_node->vnode, &vfs_root_cred);
-	if (r == 0)
+	if (r == 0) {
+		(void)procfs_note_mount("dev", target, "devfs", "rw");
 		log_debug("devfs", "mounted on %s", target);
+	}
 	return r;
 }
 

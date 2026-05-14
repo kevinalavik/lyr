@@ -2,6 +2,7 @@
 #define _LYR_SCHED_SCHED_H
 
 #include <cpu/idt.h>
+#include <dev/time.h>
 #include <fs/vfs.h>
 #include <mm/paging.h>
 #include <mm/vmm.h>
@@ -48,6 +49,10 @@ typedef enum {
 
 typedef void (*thread_entry_t)(void *);
 
+typedef struct sched_waitq {
+	atomic_uint seq;
+} sched_waitq_t;
+
 typedef struct pcb {
 	pid_t pid;
 	pid_t ppid;
@@ -85,6 +90,7 @@ typedef struct pcb {
 	/* Bumped under sched_lock whenever the child's wait-state changes so
 	 * that a parent sleeping in waitpid() wakes on the next scheduler tick. */
 	atomic_uint child_event;
+	sched_waitq_t child_waitq;
 	struct pcb *next;
 } pcb_t;
 
@@ -116,6 +122,7 @@ typedef struct tcb {
 	tcb_state_t state;
 	tcb_mode_t mode;
 	bool is_idle;
+	bool sleep_hint;
 	bool reap_process;
 	uint64_t fs_base;
 	uint64_t user_entry_rsp;
@@ -183,6 +190,20 @@ int sched_process_setgid(pcb_t *process, vfs_gid_t gid);
 int sched_process_seteuid(pcb_t *process, vfs_uid_t uid);
 int sched_process_setegid(pcb_t *process, vfs_gid_t gid);
 bool sched_reap_pending(void);
+size_t sched_runnable_threads(void);
+void sched_loadavg_task_counts(size_t *runnable_out, size_t *total_out);
+void sched_loadavg_snapshot(uint64_t out[3]);
+pid_t sched_last_pid(void);
+void sched_waitq_init(sched_waitq_t *waitq);
+unsigned sched_waitq_prepare(const sched_waitq_t *waitq);
+void sched_waitq_wake_all(sched_waitq_t *waitq);
+int sched_waitq_wait(sched_waitq_t *waitq, unsigned seq,
+					 const time_timeout_t *timeout);
+unsigned sched_io_wait_prepare(void);
+int sched_io_wait(unsigned seq, const time_timeout_t *timeout);
+void sched_io_wake_all(void);
+void sched_sleep_hint_begin(void);
+void sched_sleep_hint_end(void);
 void sched_idle_loop(void) __attribute__((noreturn));
 void sched_prepare_user(tcb_t *thread, uint64_t rip, uint64_t user_rsp);
 void sched_enter_user(uint64_t rip, uint64_t user_rsp)

@@ -1,6 +1,7 @@
 #include <fs/ext2.h>
 #include <debug/log.h>
 #include <fs/devfs.h>
+#include <fs/procfs.h>
 #include <fs/vfs.h>
 #include <dev/block.h>
 #include <lib/nanoprintf.h>
@@ -1722,6 +1723,11 @@ int ext2_mount(block_device_t *dev, const char *path)
 	fs->next = mounts;
 	mounts = fs;
 	mount_count++;
+	{
+		char source[160];
+		npf_snprintf(source, sizeof(source), "/dev/%s", dev->name);
+		(void)procfs_note_mount(source, fs->mount_path, "ext2", "rw");
+	}
 	publish_mounts();
 	log_debug("ext2", "mounted %s on %s block_size=%u groups=%u", dev->name,
 			  fs->mount_path, fs->block_size, fs->group_count);

@@ -127,6 +127,13 @@ static inline uint64_t read_rflags(void)
 	return rflags;
 }
 
+static inline uint64_t rdtsc(void)
+{
+	uint32_t lo, hi;
+	__asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+	return ((uint64_t)hi << 32) | lo;
+}
+
 static inline int interrupts_enabled(void)
 {
 	/* IF = bit 9 */

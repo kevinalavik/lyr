@@ -1201,9 +1201,6 @@ static long sys_lseek_handler(interrupt_frame_t *frame)
 	if (!file)
 		return -EBADF;
 
-	if (VFS_S_ISFIFO(file->node->mode))
-		return -ESPIPE;
-
 	uint64_t new_off = 0;
 	int r = vfs_seek(file, (int)frame->rdx, (int64_t)frame->rsi, &new_off);
 
@@ -2004,6 +2001,13 @@ static long sys_execve_handler(interrupt_frame_t *frame)
 
 	vas_t *old_vas = thread->process->vas;
 
+	for (int fd = 0; fd < SCHED_FILE_MAX; fd++) {
+		if (!(thread->process->fd_flags[fd] & SYS_FD_CLOEXEC))
+			continue;
+		syscall_close_file_slot(&thread->process->files[fd]);
+		thread->process->fd_flags[fd] = 0;
+	}
+
 	thread->process->vas = new_vas;
 	thread->process->pml4 = new_vas->pml4;
 
@@ -2214,11 +2218,8 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 		pid_t waited = 0;
 		int status = 0;
 
-		/* Snapshot child_event before the poll so we can detect
-		 * new events that arrive between the poll returning -EAGAIN
-		 * and us going to sleep. */
-		unsigned ev_before =
-			atomic_load_explicit(&process->child_event, memory_order_acquire);
+		/* Snapshot the scheduler wait queue used for child state changes. */
+		unsigned wait_seq = sched_waitq_prepare(&process->child_waitq);
 
 		int r = sched_process_wait(process, pid, kern_opts, &waited, &status);
 
@@ -2250,25 +2251,9 @@ static long sys_waitpid_handler(interrupt_frame_t *frame)
 		if (syscall_interrupted())
 			return -EINTR;
 
-		/* Sleep until a child changes state.  We use a short finite
-		 * timeout so that events posted between the poll and sleep are
-		 * not missed; the child_event counter is the authoritative
-		 * wakeup source. */
-		time_timeout_t timeout;
-		time_timeout_after_ms(50, &timeout);
-		time_sleep_until_interrupt_or_timeout(&timeout);
-
-		/* Woken by timer or interrupt: check for a real signal first */
-		if (syscall_interrupted())
+		int wr = sched_waitq_wait(&process->child_waitq, wait_seq, NULL);
+		if (wr == -EINTR || syscall_interrupted())
 			return -EINTR;
-
-		/* If child_event didn't advance and timeout didn't fire yet,
-		 * keep waiting; otherwise loop back and re-poll. */
-		unsigned ev_after =
-			atomic_load_explicit(&process->child_event, memory_order_acquire);
-		(void)ev_before;
-		(void)ev_after;
-		/* Always loop: sched_process_wait is cheap */
 	}
 }
 
@@ -3040,31 +3025,21 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 		!syscall_user_range_ok(user_fds, nfds * sizeof(struct lyr_pollfd)))
 		return -EFAULT;
 
-	struct lyr_pollfd *fds = NULL;
+	struct lyr_pollfd fds[SCHED_FILE_MAX];
 
-	if (nfds) {
-		fds = kzalloc(nfds * sizeof(*fds));
-
-		if (!fds)
-			return -ENOMEM;
-
-		if (syscall_copy_from_user(fds, user_fds, nfds * sizeof(*fds)) != 0) {
-			kfree(fds);
-			return -EFAULT;
-		}
-	}
+	if (nfds &&
+		syscall_copy_from_user(fds, user_fds, nfds * sizeof(*fds)) != 0)
+		return -EFAULT;
 
 	time_timeout_t timeout;
 	int tr = time_timeout_after_ms(timeout_ms, &timeout);
-	if (tr != 0) {
-		if (fds)
-			kfree(fds);
+	if (tr != 0)
 		return tr;
-	}
 
 	long ret = 0;
 
 	for (;;) {
+		unsigned io_seq = sched_io_wait_prepare();
 		ret = nfds ? sys_poll_scan(fds, nfds) : 0;
 
 		if (ret < 0 || ret > 0)
@@ -3073,20 +3048,19 @@ static long sys_poll_handler(interrupt_frame_t *frame)
 		if (time_timeout_expired(&timeout))
 			break;
 
-		time_sleep_until_interrupt_or_timeout(&timeout);
-		if (syscall_interrupted() != 0) {
+		int wr = sched_io_wait(io_seq, &timeout);
+		if (wr == -EINTR || syscall_interrupted() != 0) {
 			ret = -EINTR;
 			break;
 		}
+		if (wr == -ETIMEDOUT)
+			break;
 	}
 
 	if (nfds && ret >= 0) {
 		if (syscall_copy_to_user(user_fds, fds, nfds * sizeof(*fds)) != 0)
 			ret = -EFAULT;
 	}
-
-	if (fds)
-		kfree(fds);
 
 	return ret;
 }
@@ -3101,6 +3075,22 @@ static void sys_pselect_set_add(uint8_t *set, int fd)
 	set[fd / 8] |= (uint8_t)(1u << (fd % 8));
 }
 
+static int syscall_copy_sigmask64(uint64_t user_mask, uint64_t *out)
+{
+	if (!out)
+		return -EINVAL;
+
+	if (!user_mask) {
+		*out = 0;
+		return 0;
+	}
+
+	if (!syscall_user_range_ok(user_mask, sizeof(uint64_t)))
+		return -EFAULT;
+
+	return syscall_copy_from_user(out, user_mask, sizeof(uint64_t));
+}
+
 static long sys_pselect_handler(interrupt_frame_t *frame)
 {
 	int nfds = (int)frame->rdi;
@@ -3109,8 +3099,6 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 	uint64_t exceptfds_ptr = frame->r10;
 	uint64_t timeout_ptr = frame->r8;
 	uint64_t sigmask_ptr = frame->r9;
-
-	(void)sigmask_ptr;
 
 	if (nfds < 0 || nfds > SYS_POLL_NFDS_MAX || nfds > SCHED_FILE_MAX)
 		return -EINVAL;
@@ -3137,88 +3125,85 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 	if (!thread || !thread->process)
 		return -EBADF;
 
-	struct lyr_pollfd *fds = NULL;
-	uint8_t *readfds = NULL;
-	uint8_t *writefds = NULL;
-	uint8_t *exceptfds = NULL;
+	uint64_t old_mask = 0;
+	uint64_t new_mask = 0;
+	int mask_changed = 0;
+	long ready = 0;
+	struct lyr_pollfd fds[SCHED_FILE_MAX];
+	uint8_t readfds[(SCHED_FILE_MAX + 7) / 8];
+	uint8_t writefds[(SCHED_FILE_MAX + 7) / 8];
+	uint8_t exceptfds[(SCHED_FILE_MAX + 7) / 8];
+	int have_readfds = 0;
+	int have_writefds = 0;
+	int have_exceptfds = 0;
+
+	if (sigmask_ptr) {
+		tr = syscall_copy_sigmask64(sigmask_ptr, &new_mask);
+		if (tr != 0)
+			return tr;
+		tr = sched_signal_procmask(thread, SCHED_SIG_SETMASK, &new_mask,
+								   &old_mask);
+		if (tr != 0)
+			return tr;
+		mask_changed = 1;
+	}
 
 	if (set_bytes) {
 		if (readfds_ptr) {
-			readfds = kzalloc(set_bytes);
-			if (!readfds)
-				return -ENOMEM;
+			memset(readfds, 0, sizeof(readfds));
+			have_readfds = 1;
 			if (syscall_copy_from_user(readfds, readfds_ptr, set_bytes) != 0) {
-				kfree(readfds);
-				return -EFAULT;
+				ready = -EFAULT;
+				goto out;
 			}
 		}
 
 		if (writefds_ptr) {
-			writefds = kzalloc(set_bytes);
-			if (!writefds) {
-				kfree(readfds);
-				return -ENOMEM;
-			}
+			memset(writefds, 0, sizeof(writefds));
+			have_writefds = 1;
 			if (syscall_copy_from_user(writefds, writefds_ptr, set_bytes) !=
 				0) {
-				kfree(writefds);
-				kfree(readfds);
-				return -EFAULT;
+				ready = -EFAULT;
+				goto out;
 			}
 		}
 
 		if (exceptfds_ptr) {
-			exceptfds = kzalloc(set_bytes);
-			if (!exceptfds) {
-				kfree(writefds);
-				kfree(readfds);
-				return -ENOMEM;
-			}
+			memset(exceptfds, 0, sizeof(exceptfds));
+			have_exceptfds = 1;
 			if (syscall_copy_from_user(exceptfds, exceptfds_ptr, set_bytes) !=
 				0) {
-				kfree(exceptfds);
-				kfree(writefds);
-				kfree(readfds);
-				return -EFAULT;
+				ready = -EFAULT;
+				goto out;
 			}
 		}
 	}
 
 	if (nfds > 0) {
-		fds = kzalloc((size_t)nfds * sizeof(*fds));
-
-		if (!fds) {
-			kfree(exceptfds);
-			kfree(writefds);
-			kfree(readfds);
-			return -ENOMEM;
-		}
-
 		for (int i = 0; i < nfds; i++) {
 			fds[i].fd = -1;
 			fds[i].events = 0;
 			fds[i].revents = 0;
 
-			if (readfds && sys_pselect_set_has(readfds, i)) {
+			if (have_readfds && sys_pselect_set_has(readfds, i)) {
 				fds[i].fd = i;
 				fds[i].events |= LYR_POLLIN | LYR_POLLRDNORM;
 			}
 
-			if (writefds && sys_pselect_set_has(writefds, i)) {
+			if (have_writefds && sys_pselect_set_has(writefds, i)) {
 				fds[i].fd = i;
 				fds[i].events |= LYR_POLLOUT | LYR_POLLWRNORM;
 			}
 
-			if (exceptfds && sys_pselect_set_has(exceptfds, i)) {
+			if (have_exceptfds && sys_pselect_set_has(exceptfds, i)) {
 				fds[i].fd = i;
 				fds[i].events |= LYR_POLLPRI | LYR_POLLRDBAND;
 			}
 		}
 	}
 
-	long ready = 0;
-
 	for (;;) {
+		unsigned io_seq = sched_io_wait_prepare();
 		ready = nfds ? sys_poll_scan(fds, (size_t)nfds) : 0;
 
 		if (ready < 0 || ready > 0)
@@ -3227,41 +3212,45 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 		if (time_timeout_expired(&timeout))
 			break;
 
-		time_sleep_until_interrupt_or_timeout(&timeout);
-		if (syscall_interrupted() != 0) {
+		int wr = sched_io_wait(io_seq, &timeout);
+		if (wr == -EINTR || syscall_interrupted() != 0) {
 			ready = -EINTR;
 			break;
 		}
+		if (wr == -ETIMEDOUT)
+			break;
 	}
 
 	if (ready >= 0) {
-		if (readfds)
+		if (have_readfds)
 			memset(readfds, 0, set_bytes);
 
-		if (writefds)
+		if (have_writefds)
 			memset(writefds, 0, set_bytes);
 
-		if (exceptfds)
+		if (have_exceptfds)
 			memset(exceptfds, 0, set_bytes);
 
-		if (fds) {
+		if (nfds > 0) {
 			for (int i = 0; i < nfds; i++) {
 				if (fds[i].fd < 0 || !fds[i].revents)
 					continue;
 
-				if (readfds && (fds[i].revents &
-								(LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLHUP |
-								 LYR_POLLERR | LYR_POLLNVAL))) {
+				if (have_readfds &&
+					(fds[i].revents &
+					 (LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLHUP |
+					  LYR_POLLERR | LYR_POLLNVAL))) {
 					sys_pselect_set_add(readfds, i);
 				}
 
-				if (writefds && (fds[i].revents &
-								 (LYR_POLLOUT | LYR_POLLWRNORM | LYR_POLLHUP |
-								  LYR_POLLERR | LYR_POLLNVAL))) {
+				if (have_writefds &&
+					(fds[i].revents &
+					 (LYR_POLLOUT | LYR_POLLWRNORM | LYR_POLLHUP |
+					  LYR_POLLERR | LYR_POLLNVAL))) {
 					sys_pselect_set_add(writefds, i);
 				}
 
-				if (exceptfds &&
+				if (have_exceptfds &&
 					(fds[i].revents & (LYR_POLLPRI | LYR_POLLRDBAND |
 									   LYR_POLLERR | LYR_POLLNVAL))) {
 					sys_pselect_set_add(exceptfds, i);
@@ -3280,14 +3269,9 @@ static long sys_pselect_handler(interrupt_frame_t *frame)
 			ready = -EFAULT;
 	}
 
-	if (fds)
-		kfree(fds);
-	if (exceptfds)
-		kfree(exceptfds);
-	if (writefds)
-		kfree(writefds);
-	if (readfds)
-		kfree(readfds);
+out:
+	if (mask_changed)
+		(void)sched_signal_procmask(thread, SCHED_SIG_SETMASK, &old_mask, NULL);
 
 	return ready;
 }

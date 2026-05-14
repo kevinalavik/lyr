@@ -1,4 +1,5 @@
 #include <fs/vfs.h>
+#include <fs/pipe.h>
 #include <debug/log.h>
 #include <mm/heap.h>
 #include <mm/vmm.h>
@@ -763,6 +764,10 @@ int vfs_seek(vfs_file_t *file, int whence, int64_t off, uint64_t *new_off)
 {
 	if (!file)
 		return -EBADF;
+	if (!file->node)
+		return -EBADF;
+	if (vfs_pipe_is(file))
+		return vfs_pipe_seek(file, whence, off, new_off);
 
 	uint64_t base;
 	switch (whence) {

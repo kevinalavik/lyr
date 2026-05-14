@@ -58,6 +58,9 @@ int fs_mount_spec(const char *source, const char *target, const char *fstype,
 			return -ENOMEM;
 		r = vfs_mount(target, root, &vfs_root_cred);
 		vfs_node_release(root);
+		if (r == 0)
+			(void)procfs_note_mount(source ? source : "tmpfs", target, "tmpfs",
+									"rw");
 		return r;
 	}
 

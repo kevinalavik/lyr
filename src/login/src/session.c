@@ -50,7 +50,7 @@ static void exec_shell(const user_entry_t *user)
 		uid_buf,
 		gid_buf,
 		"PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin",
-		"TERM=lyrtern",
+		"TERM=lyrterm",
 		NULL,
 	};
 

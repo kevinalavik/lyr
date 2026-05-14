@@ -74,6 +74,7 @@ typedef struct console_tty {
 	unsigned index;
 	char name[LYR_TTY_NAME_MAX];
 	console_input_ring_t input;
+	sched_waitq_t input_waitq;
 	lyr_termios_t termios;
 	pid_t foreground_pgrp;
 	volatile uint8_t input_interrupted;
@@ -177,6 +178,7 @@ static void console_tty_init(console_tty_t *tty, unsigned index)
 	tty->termios.c_cc[LYR_VSUSP] = 26; /* ^Z */
 
 	tty->foreground_pgrp = 0;
+	sched_waitq_init(&tty->input_waitq);
 
 	console_tty_name(index, tty->name, sizeof(tty->name));
 	lyrterm_capture_state(&tty->render);
@@ -188,6 +190,8 @@ static void console_input_flush(console_tty_t *tty)
 		return;
 
 	memset(&tty->input, 0, sizeof(tty->input));
+	sched_waitq_wake_all(&tty->input_waitq);
+	sched_io_wake_all();
 }
 
 static int console_wait_input(console_tty_t *tty)
@@ -196,6 +200,7 @@ static int console_wait_input(console_tty_t *tty)
 		lyrterm_flush();
 
 	for (;;) {
+		unsigned wait_seq = sched_waitq_prepare(&tty->input_waitq);
 		if (tty->input_interrupted) {
 			tty->input_interrupted = 0;
 			return -EINTR;
@@ -212,7 +217,9 @@ static int console_wait_input(console_tty_t *tty)
 			return 0;
 		}
 
-		__asm__ volatile("sti; hlt; cli" ::: "memory");
+		int r = sched_waitq_wait(&tty->input_waitq, wait_seq, NULL);
+		if (r != 0)
+			return r;
 	}
 }
 
@@ -229,6 +236,8 @@ static void console_input_push(console_tty_t *tty, uint8_t ch)
 
 	if (ch == '\n' || ch == '\r')
 		in->lines++;
+	sched_waitq_wake_all(&tty->input_waitq);
+	sched_io_wake_all();
 }
 
 static int console_input_pop(console_tty_t *tty, uint8_t *out)
@@ -363,6 +372,8 @@ void console_input_put(uint8_t ch)
 				console_write(tty, 0, "^C\r\n", 4, NULL);
 
 			tty->input_interrupted = 1;
+			sched_waitq_wake_all(&tty->input_waitq);
+			sched_io_wake_all();
 			console_raise_signal(tty, 2);
 			return;
 		}
@@ -372,6 +383,8 @@ void console_input_put(uint8_t ch)
 				console_write(tty, 0, "^\\\r\n", 5, NULL);
 
 			tty->input_interrupted = 1;
+			sched_waitq_wake_all(&tty->input_waitq);
+			sched_io_wake_all();
 			console_raise_signal(tty, 3);
 			return;
 		}
@@ -389,6 +402,8 @@ void console_input_put(uint8_t ch)
 	 */
 	if (canonical && ch == tty->termios.c_cc[LYR_VEOF]) {
 		tty->input.lines++;
+		sched_waitq_wake_all(&tty->input_waitq);
+		sched_io_wake_all();
 		return;
 	}
 
