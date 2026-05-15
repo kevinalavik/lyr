@@ -46,6 +46,9 @@ typedef struct tcp_conn {
 	int connected;
 	int closed;
 	int error;
+	int error_reported;
+	int read_shutdown;
+	int write_shutdown;
 	int heap_allocated;
 	struct tcp_conn *next;
 } tcp_conn_t;
@@ -229,6 +232,74 @@ static int tcp_send_conn_packet(tcp_conn_t *conn, uint8_t flags,
 static int tcp_send_ack(tcp_conn_t *conn)
 {
 	return tcp_send_conn_packet(conn, TCP_ACK, NULL, 0);
+}
+
+int net_tcp_conn_is_read_shutdown(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	return conn && conn->read_shutdown;
+}
+
+int net_tcp_conn_is_write_shutdown(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	return conn && conn->write_shutdown;
+}
+
+int net_tcp_conn_shutdown_read(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	if (!conn)
+		return -EINVAL;
+
+	conn->read_shutdown = 1;
+	sched_io_wake_all();
+	return 0;
+}
+
+int net_tcp_conn_shutdown_write(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	if (!conn)
+		return -EINVAL;
+
+	if (conn->write_shutdown)
+		return 0;
+
+	if (conn->connected && !conn->closed && !conn->error) {
+		uint32_t fin_seq = conn->seq;
+		conn->seq++;
+
+		if (net_send_ipv4_tcp_window(conn->dev, conn->peer_mac, conn->remote_ip,
+									 conn->local_port, conn->remote_port, fin_seq,
+									 conn->ack, TCP_FIN | TCP_ACK,
+									 tcp_recv_window(conn), NULL, 0) != 0) {
+			conn->seq = fin_seq;
+			return -EIO;
+		}
+	}
+
+	conn->write_shutdown = 1;
+	sched_io_wake_all();
+	return 0;
+}
+
+int net_tcp_conn_error_code(net_tcp_conn_t *conn_)
+{
+	tcp_conn_t *conn = conn_;
+
+	if (!conn || !conn->error)
+		return 0;
+
+	if (conn->error_reported)
+		return 0;
+
+	conn->error_reported = 1;
+	return ECONNRESET;
 }
 
 uint16_t net_tcp_conn_local_port(net_tcp_conn_t *conn_)
@@ -759,6 +830,8 @@ int net_tcp_send(net_tcp_conn_t *conn_, const void *buf, size_t len,
 
 	if (!conn->connected || conn->closed || conn->error)
 		return -ENOENT;
+	if (conn->write_shutdown)
+		return -EPIPE;
 
 	int r = tcp_send_payload(conn, buf, len);
 	if (r != 0)
@@ -775,6 +848,7 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 {
 	tcp_conn_t *conn = conn_;
 	int infinite_timeout = timeout_ms == UINT64_MAX;
+	int immediate_timeout = timeout_ms == 0;
 
 	if (!conn || !buf || !cap)
 		return -EINVAL;
@@ -784,6 +858,11 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 
 	if (!conn->connected)
 		return -ENOENT;
+	if (conn->read_shutdown) {
+		if (done)
+			*done = 0;
+		return 0;
+	}
 
 	uint64_t until = 0;
 	if (!infinite_timeout)
@@ -793,8 +872,12 @@ int net_tcp_recv(net_tcp_conn_t *conn_, void *buf, size_t cap, size_t *done,
 			  "recv wait: cap=%zu queued=%zu closed=%d error=%d timeout=%llu",
 			  cap, conn->rx_len, conn->closed, conn->error, timeout_ms);
 
+	if (immediate_timeout && !conn->rx_len && !conn->closed && !conn->error)
+		return -ETIMEDOUT;
+
 	net_poll_wait_begin();
 	while (!conn->rx_len && !conn->closed && !conn->error &&
+		   !immediate_timeout &&
 		   (infinite_timeout || pit_get_ticks() < until)) {
 		if (tcp_interrupted() != 0)
 			break;
@@ -870,7 +953,8 @@ void net_tcp_close(net_tcp_conn_t *conn_)
 	if (!conn)
 		return;
 
-	if (conn->connected && !conn->closed && !conn->error) {
+	if (conn->connected && !conn->closed && !conn->error &&
+		!conn->write_shutdown) {
 		uint32_t fin_seq = conn->seq;
 		conn->seq++;
 

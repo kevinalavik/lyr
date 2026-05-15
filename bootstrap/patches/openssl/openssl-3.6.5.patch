@@ -1,0 +1,36 @@
+--- a/Configurations/10-main.conf
++++ b/Configurations/10-main.conf
+@@ -1260,6 +1260,33 @@
+         perlasm_scheme   => "elf",
+     },
+
++### Lyr targets.
++#
++# Unix like
++    "lyr-x86_64" => {
++        inherit_from     => [ "BASE_unix" ],
++
++        CC               => "x86_64-lyr-gcc",
++        CXX              => "x86_64-lyr-g++",
++        AR               => "x86_64-lyr-ar",
++        RANLIB           => "x86_64-lyr-ranlib",
++
++        cflags           => add("-Wall"),
++        lib_cppflags     => add("-DL_ENDIAN"),
++
++        bn_ops           => "SIXTY_FOUR_BIT_LONG",
++        perlasm_scheme   => "elf",
++
++        thread_scheme    => "pthreads",
++
++        shared_target    => "gnu-shared",
++        shared_cflag     => "-fPIC",
++        shared_ldflag    => "-shared",
++        shared_extension => ".so.\$(SHLIB_VERSION_NUMBER)",
++
++        dso_scheme       => "none",
++    },
++
+ #### SCO/Caldera targets.
+ #
+ # Originally we had like unixware-*, unixware-*-pentium, unixware-*-p6, etc.

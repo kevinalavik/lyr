@@ -120,6 +120,20 @@ static int socket_interrupted(void)
 	return (thread && sched_signal_is_pending(thread)) ? -EINTR : 0;
 }
 
+static uint64_t socket_recv_timeout_ms(socket_t *sock, int flags)
+{
+	if (!sock)
+		return 0;
+
+	if ((flags & MSG_DONTWAIT) || (sock->flags & NET_SOCK_NONBLOCK))
+		return 0;
+
+	if (sock->domain == AF_INET && sock->inet_data)
+		return sock->inet_data->recv_timeout_ms;
+
+	return UINT64_MAX;
+}
+
 static const net_udp_handler_ops_t socket_udp_handler = {
 	.name = "socket",
 	.receive = socket_udp_receive,
@@ -916,8 +930,6 @@ int net_recv(socket_t *sock, void *buf, size_t len, int flags)
 int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 				 sockaddr_t *addr, socklen_t *addrlen)
 {
-	(void)flags;
-
 	if (!sock || !buf)
 		return NET_SOCK_ERR_INVAL;
 
@@ -949,9 +961,14 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 	} else if (sock->domain == AF_INET) {
 		if (sock->type == SOCK_DGRAM || sock->type == SOCK_RAW) {
 			inet_sock_t *is = sock->inet_data;
+			uint64_t timeout_ms = socket_recv_timeout_ms(sock, flags);
+
 			if (is->rx_len == 0) {
+				if (timeout_ms == 0)
+					return NET_SOCK_ERR_WOULDBLOCK;
+
 				time_timeout_t timeout;
-				time_timeout_after_ms((int)is->recv_timeout_ms, &timeout);
+				time_timeout_after_ms((int)timeout_ms, &timeout);
 				while (!is->readable && !time_timeout_expired(&timeout)) {
 					if (socket_interrupted() != 0)
 						return -EINTR;
@@ -995,8 +1012,9 @@ int net_recvfrom(socket_t *sock, void *buf, size_t len, int flags,
 			return NET_SOCK_ERR_WOULDBLOCK;
 
 		size_t done = 0;
+		uint64_t timeout_ms = socket_recv_timeout_ms(sock, flags);
 		int r = net_tcp_recv(sock->inet_data->tcp_conn, buf, len, &done,
-							 UINT64_MAX);
+							 timeout_ms);
 
 		if (r == -EINTR)
 			return r;
@@ -1054,10 +1072,15 @@ int net_shutdown(socket_t *sock, int how)
 
 	log_debug("socket", "shutdown how=%d", how);
 
+	if (how != SHUT_RD && how != SHUT_WR && how != SHUT_RDWR)
+		return NET_SOCK_ERR_INVAL;
+
 	if (sock->domain == AF_INET && sock->inet_data &&
 		sock->inet_data->tcp_conn) {
-		net_tcp_close(sock->inet_data->tcp_conn);
-		sock->inet_data->tcp_conn = NULL;
+		if (how == SHUT_RD || how == SHUT_RDWR)
+			(void)net_tcp_conn_shutdown_read(sock->inet_data->tcp_conn);
+		if (how == SHUT_WR || how == SHUT_RDWR)
+			return net_tcp_conn_shutdown_write(sock->inet_data->tcp_conn);
 	}
 
 	return NET_SOCK_OK;
@@ -1194,7 +1217,11 @@ int net_getsockopt(socket_t *sock, int level, int optname, void *optval,
 	if (level == SOL_SOCKET && optname == SO_ERROR) {
 		if (*optlen < sizeof(int))
 			return NET_SOCK_ERR_INVAL;
-		*(int *)optval = 0;
+		*(int *)optval =
+			(sock->domain == AF_INET && sock->inet_data &&
+			 sock->inet_data->tcp_conn)
+				? net_tcp_conn_error_code(sock->inet_data->tcp_conn)
+				: 0;
 		*optlen = sizeof(int);
 		return NET_SOCK_OK;
 	}
@@ -1224,18 +1251,21 @@ int net_poll_socket(socket_t *sock, int events)
 
 	if (sock->domain == AF_INET && sock->inet_data) {
 		inet_sock_t *is = sock->inet_data;
+		net_tcp_conn_t *conn = is->tcp_conn;
 
 		if ((events & LYR_POLL_READ_MASK) &&
-			(is->rx_len > 0 || (is->tcp_conn &&
-							 (net_tcp_conn_has_pending_rx(is->tcp_conn) ||
-							  net_tcp_conn_is_closed(is->tcp_conn) ||
-							  net_tcp_conn_has_error(is->tcp_conn)))))
+			(is->rx_len > 0 || (conn &&
+							 (net_tcp_conn_has_pending_rx(conn) ||
+							  net_tcp_conn_is_closed(conn) ||
+							  net_tcp_conn_has_error(conn) ||
+							  net_tcp_conn_is_read_shutdown(conn)))))
 			revents |= LYR_POLLIN | LYR_POLLRDNORM;
 
-		if (sock->type == SOCK_STREAM && is->tcp_conn) {
-			if (net_tcp_conn_has_error(is->tcp_conn))
+		if (sock->type == SOCK_STREAM && conn) {
+			if (net_tcp_conn_has_error(conn))
 				revents |= LYR_POLLERR;
-			else if (net_tcp_conn_is_closed(is->tcp_conn))
+			else if (net_tcp_conn_is_closed(conn) ||
+					 net_tcp_conn_is_read_shutdown(conn))
 				revents |= LYR_POLLHUP;
 			else if (!(sock->flags & NET_SOCK_CONNECTED))
 				revents |= LYR_POLLHUP;

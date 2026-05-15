@@ -223,6 +223,7 @@ void console_reset_tty(unsigned index)
 
 	console_tty_t *tty = &consoles[index];
 	console_set_default_termios(tty);
+	tty->foreground_pgrp = 0;
 	tty->input_interrupted = 0;
 	console_input_flush(tty);
 }

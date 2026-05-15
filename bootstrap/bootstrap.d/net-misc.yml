@@ -12,11 +12,12 @@ packages:
   - name: curl
     labels: [ x86_64 ]
     architecture: 'x86_64'
-    revision: 1
+    revision: 3
     from_source: curl
     pkgs_required:
       - mlibc
       - zlib
+      - openssl
       - pkg-config
     tools_required:
       - lyr-gcc
@@ -26,8 +27,10 @@ packages:
           - '@THIS_SOURCE_DIR@/configure'
           - '--host=x86_64-lyr'
           - '--prefix=/usr'
-          - '--without-ssl'
+          - '--with-openssl=/usr'
           - '--with-zlib=/usr'
+          - '--with-ca-bundle=/etc/ssl/cert.pem'
+          - '--with-ca-path=/etc/ssl/certs'
           - '--without-libpsl'
           - '--without-brotli'
           - '--without-zstd'
@@ -51,6 +54,9 @@ packages:
         environ:
           CC: 'x86_64-lyr-gcc'
           CFLAGS: '-O2 -Wno-error'
+          CPPFLAGS: '-I@SYSROOT_DIR@/usr/include'
+          LDFLAGS: '-L@SYSROOT_DIR@/usr/lib'
+          LIBS: '-lssl -lcrypto -lz'
           PKG_CONFIG: 'x86_64-lyr-pkg-config'
           PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
           PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
@@ -60,7 +66,37 @@ packages:
       - args:
           - 'make'
           - '-j@PARALLELISM@'
+
       - args:
           - 'make'
           - 'DESTDIR=@THIS_COLLECT_DIR@'
           - 'install'
+
+      - args:
+          - 'mkdir'
+          - '-p'
+          - '@THIS_BUILD_DIR@/ca'
+          - '@THIS_COLLECT_DIR@/etc/ssl/certs'
+          - '@THIS_COLLECT_DIR@/usr/share/ca-certificates'
+
+      - args:
+          - 'sh'
+          - '-c'
+          - |
+            curl -L https://curl.se/ca/cacert.pem -o @THIS_BUILD_DIR@/ca/cacert.pem
+            echo '86a1f3366afac7c6f8ae9f3c779ac221129328c43f0ab2b8817eb2f362a5025c  @THIS_BUILD_DIR@/ca/cacert.pem' | sha256sum -c -
+
+      - args:
+          - 'cp'
+          - '@THIS_BUILD_DIR@/ca/cacert.pem'
+          - '@THIS_COLLECT_DIR@/etc/ssl/cert.pem'
+
+      - args:
+          - 'cp'
+          - '@THIS_BUILD_DIR@/ca/cacert.pem'
+          - '@THIS_COLLECT_DIR@/etc/ssl/certs/ca-certificates.crt'
+
+      - args:
+          - 'cp'
+          - '@THIS_BUILD_DIR@/ca/cacert.pem'
+          - '@THIS_COLLECT_DIR@/usr/share/ca-certificates/ca-certificates.crt'

@@ -1,10 +1,10 @@
 #include <cpu/instr.h>
 #include <dev/console.h>
 #include <dev/device.h>
+#include <dev/input.h>
 #include <dev/kbd.h>
+#include <fs/evdev.h>
 #include <drv/driver.h>
-#include <fs/devfs.h>
-#include <fs/vfs.h>
 #include <ipc/ipc.h>
 #include <sys/poll.h>
 #include <lib/nanoprintf.h>
@@ -195,35 +195,7 @@ static const uint8_t sc2_extended[SC2_SIZE] = {
 	[0x7D] = LYR_KEY_PAGEUP,
 };
 
-#define MOUSEBUFFER_SIZE 256
-
-typedef struct {
-	volatile uint8_t head;
-	volatile uint8_t tail;
-	volatile uint16_t count;
-	uint8_t buffer[MOUSEBUFFER_SIZE];
-} mousebuffer_t;
-
-static mousebuffer_t mousebuf;
-
-static void mousebuffer_put(uint8_t b)
-{
-	if (mousebuf.count >= MOUSEBUFFER_SIZE)
-		return;
-	mousebuf.buffer[mousebuf.head++] = b;
-	mousebuf.head %= MOUSEBUFFER_SIZE;
-	mousebuf.count++;
-}
-
-static int mousebuffer_get(uint8_t *out)
-{
-	if (mousebuf.count == 0)
-		return 0;
-	*out = mousebuf.buffer[mousebuf.tail++];
-	mousebuf.tail %= MOUSEBUFFER_SIZE;
-	mousebuf.count--;
-	return 1;
-}
+static evdev_t *mouse_evdev;
 
 static int ps2_wait_input(void)
 {
@@ -366,14 +338,21 @@ static uint8_t mouse_buttons;
 
 static void mouse_emit_packet(const uint8_t packet[3])
 {
-	for (int i = 0; i < 3; i++)
-		mousebuffer_put(packet[i]);
-
 	int dx = (packet[0] & 0x10) ? ((int)packet[1] - 256) : packet[1];
 	int dy = (packet[0] & 0x20) ? ((int)packet[2] - 256) : packet[2];
 	mouse_x += dx;
 	mouse_y -= dy;
 	mouse_buttons = packet[0] & 0x07;
+
+	if (mouse_evdev) {
+		lyr_mouse_event_t ev = {
+			.dx = dx,
+			.dy = -dy,
+			.dz = 0,
+			.buttons = mouse_buttons,
+		};
+		(void)evdev_push(mouse_evdev, &ev);
+	}
 }
 
 static void mouse_handle(uint8_t b)
@@ -385,42 +364,6 @@ static void mouse_handle(uint8_t b)
 		mouse_emit_packet(mouse_packet);
 		mouse_packet_index = 0;
 	}
-}
-
-static int mouse_read(void *ctx, uint64_t off, void *buf, size_t len,
-					  size_t *done)
-{
-	(void)ctx;
-	(void)off;
-	if (done)
-		*done = 0;
-	if (!buf || len == 0)
-		return -EINVAL;
-
-	uint8_t *p = buf;
-	size_t count = 0;
-
-	while (count + 3 <= len && mousebuf.count >= 3) {
-		uint8_t packet[3];
-		for (int i = 0; i < 3; i++)
-			mousebuffer_get(&packet[i]);
-		memcpy(p + count, packet, 3);
-		count += 3;
-	}
-
-	if (done)
-		*done = count;
-	return 0;
-}
-
-static int mouse_poll(void *ctx, int events)
-{
-	(void)ctx;
-	int revents = 0;
-	if ((events & (LYR_POLLIN | LYR_POLLRDNORM | LYR_POLLRDBAND)) &&
-		mousebuf.count >= 3)
-		revents |= LYR_POLLIN | LYR_POLLRDNORM;
-	return revents;
 }
 
 static void ps2_poll(void *ctx)
@@ -443,6 +386,7 @@ static void ps2_poll(void *ctx)
 static int ps2_main(driver_t *driver)
 {
 	driver_log(driver, "info", "PS/2 driver initializing");
+	int r = 0;
 
 	ps2_cmd_write(PS2_CMD_DISABLE_PORT1);
 	ps2_cmd_write(PS2_CMD_DISABLE_PORT2);
@@ -503,29 +447,44 @@ static int ps2_main(driver_t *driver)
 		return -ENOSYS;
 	}
 
-	int r = devfs_mkdir("/dev/input", 0755);
-	if (r != 0 && r != -EEXIST) {
-		driver_log(driver, "err", "failed to create /dev/input");
-		return r;
-	}
-
 	if (have_mouse) {
-		r = devfs_register_chr_poll("/dev/input/mouse", 0444, mouse_read, NULL,
-									NULL, mouse_poll, NULL);
+		r = evdev_init();
 		if (r != 0) {
+			driver_log(driver, "err", "failed to initialize input devfs");
+			return r;
+		}
+
+		r = evdev_create(&mouse_evdev, EVDEV_KIND_MOUSE, NULL, NULL);
+		if (r != 0) {
+			driver_log(driver, "err", "failed to create mouse evdev");
+			return r;
+		}
+
+		r = evdev_bind_path(mouse_evdev, "/dev/input/event1", 0444);
+		if (r != 0) {
+			driver_log(driver, "err", "failed to register /dev/input/event1");
+			return r;
+		}
+
+		r = evdev_bind_path(mouse_evdev, "/dev/input/mouse0", 0444);
+		if (r != 0 && r != -EEXIST) {
+			driver_log(driver, "err", "failed to register /dev/input/mouse0");
+			return r;
+		}
+
+		r = evdev_bind_path(mouse_evdev, "/dev/input/mouse", 0444);
+		if (r != 0 && r != -EEXIST) {
 			driver_log(driver, "err", "failed to register /dev/input/mouse");
 			return r;
 		}
 
-		r = devfs_register_chr_poll("/dev/psaux", 0444, mouse_read, NULL, NULL,
-									mouse_poll, NULL);
+		r = evdev_bind_path(mouse_evdev, "/dev/psaux", 0444);
 		if (r != 0 && r != -EEXIST) {
 			driver_log(driver, "err", "failed to register /dev/psaux");
 			return r;
 		}
 
-		r = devfs_register_chr_poll("/dev/input/mice", 0444, mouse_read, NULL,
-									NULL, mouse_poll, NULL);
+		r = evdev_bind_path(mouse_evdev, "/dev/input/mice", 0444);
 		if (r != 0 && r != -EEXIST) {
 			driver_log(driver, "err", "failed to register /dev/input/mice");
 			return r;
@@ -543,9 +502,9 @@ static int ps2_main(driver_t *driver)
 }
 
 static const char *const ps2_imports[] = {
-	"kbd_submit_event", "devfs_mkdir",		   "devfs_register_chr_poll",
-	"driver_log",		"driver_spawn_thread", "kzalloc",
-	"memcpy",
+	"kbd_submit_event", "driver_log",		   "driver_spawn_thread",
+	"evdev_bind_path",	"evdev_create",		   "evdev_init",
+	"evdev_push",
 };
 
 const driver_metadata_t lyr_driver_metadata = {

@@ -4,6 +4,7 @@
 #include <dev/block.h>
 #include <dev/console.h>
 #include <dev/device.h>
+#include <fs/evdev.h>
 #include <fs/devfs.h>
 #include <fs/vfs.h>
 #include <ipc/ipc.h>
@@ -95,6 +96,13 @@ static const kernel_symbol_t kernel_symbols[] = {
 	{ "krealloc", (uint64_t)krealloc, true },
 	{ "kfree", (uint64_t)kfree, true },
 	{ "driver_spawn_thread", (uint64_t)driver_spawn_thread, true },
+	{ "evdev_bind_path", (uint64_t)evdev_bind_path, true },
+	{ "evdev_create", (uint64_t)evdev_create, true },
+	{ "evdev_flush", (uint64_t)evdev_flush, true },
+	{ "evdev_init", (uint64_t)evdev_init, true },
+	{ "evdev_push", (uint64_t)evdev_push, true },
+	{ "evdev_read_bytes", (uint64_t)evdev_read_bytes, true },
+	{ "evdev_read_record", (uint64_t)evdev_read_record, true },
 	{ "vfs_node_release", (uint64_t)vfs_node_release, true },
 	{ "vfs_readdir", (uint64_t)vfs_readdir, true },
 	{ "vfs_resolve", (uint64_t)vfs_resolve, true },

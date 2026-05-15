@@ -1060,6 +1060,9 @@ static void thread_finish_locked(cpu_local_t *cpu, tcb_t *thread,
 	process_exit_action_t action = process_remove_thread(thread, status);
 	if (action != PROCESS_EXIT_NONE)
 		process_reparent_children(exited_pid, new_parent);
+	if (action != PROCESS_EXIT_NONE && process &&
+		process->controlling_tty >= 0)
+		console_reset_tty((unsigned)process->controlling_tty);
 	if (action == PROCESS_EXIT_ZOMBIE) {
 		process_notify_parent_signal(parent_pid, SCHED_SIGCHLD);
 	}

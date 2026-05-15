@@ -1,32 +1,12 @@
 #include <dev/kbd.h>
 #include <dev/console.h>
-#include <fs/devfs.h>
+#include <fs/evdev.h>
 #include <fs/vfs.h>
 #include <lib/string.h>
 #include <mm/heap.h>
 #include <mm/vmm.h>
 #include <sched/sched.h>
-#include <sys/poll.h>
-
-#define KBD_EVENT_RING_SIZE 256u /* must be power of two */
-
-static lyr_key_event_t kbd_event_ring[KBD_EVENT_RING_SIZE];
-static volatile uint32_t kbd_event_head;
-static volatile uint32_t kbd_event_tail;
-
-static inline uint32_t ring_count(void)
-{
-	return kbd_event_head - kbd_event_tail;
-}
-
-static inline int ring_empty(void)
-{
-	return ring_count() == 0;
-}
-static inline int ring_full(void)
-{
-	return ring_count() >= KBD_EVENT_RING_SIZE;
-}
+#include <sync/spinlock.h>
 
 #define KBD_MAP_BYTES_MAX 4u
 
@@ -45,6 +25,103 @@ static layout_entry_t kbd_layout[LYR_KEY_MAX];
 
 static uint16_t kbd_mods;
 static char kbd_current_map[LYR_KBD_MAP_PATH_MAX];
+static evdev_t *kbd_evdev;
+
+#define KBD_EVENT_RING_SIZE 256u
+
+typedef struct {
+	lyr_key_event_t ring[KBD_EVENT_RING_SIZE];
+	volatile uint32_t head;
+	volatile uint32_t tail;
+	sched_waitq_t waitq;
+	spinlock_t lock;
+} kbd_event_queue_t;
+
+static kbd_event_queue_t kbd_queue;
+
+static void kbd_queue_init(kbd_event_queue_t *q)
+{
+	memset(q, 0, sizeof(*q));
+	sched_waitq_init(&q->waitq);
+	spinlock_init(&q->lock);
+}
+
+static void kbd_queue_flush(kbd_event_queue_t *q)
+{
+	spinlock_acquire(&q->lock);
+	q->tail = q->head;
+	spinlock_release(&q->lock);
+	sched_waitq_wake_all(&q->waitq);
+	sched_io_wake_all();
+}
+
+static int kbd_queue_push(kbd_event_queue_t *q, const lyr_key_event_t *ev)
+{
+	if (!q || !ev)
+		return -EINVAL;
+
+	spinlock_acquire(&q->lock);
+	if (q->head - q->tail >= KBD_EVENT_RING_SIZE) {
+		spinlock_release(&q->lock);
+		return -EAGAIN;
+	}
+
+	q->ring[q->head & (KBD_EVENT_RING_SIZE - 1)] = *ev;
+	__asm__ volatile("" ::: "memory");
+	q->head++;
+	spinlock_release(&q->lock);
+
+	sched_waitq_wake_all(&q->waitq);
+	sched_io_wake_all();
+	return 0;
+}
+
+static int kbd_queue_wait_for_event(kbd_event_queue_t *q)
+{
+	if (!q)
+		return -EINVAL;
+
+	for (;;) {
+		unsigned seq = sched_waitq_prepare(&q->waitq);
+
+		spinlock_acquire(&q->lock);
+		if (q->head != q->tail) {
+			spinlock_release(&q->lock);
+			return 0;
+		}
+		spinlock_release(&q->lock);
+
+		tcb_t *thread = sched_current();
+		if (thread && sched_signal_is_pending(thread))
+			return -EINTR;
+
+		int r = sched_waitq_wait(&q->waitq, seq, NULL);
+		if (r != 0)
+			return r;
+	}
+}
+
+static int kbd_queue_read(kbd_event_queue_t *q, lyr_key_event_t *ev)
+{
+	if (!q || !ev)
+		return -EINVAL;
+
+	for (;;) {
+		spinlock_acquire(&q->lock);
+		if (q->head != q->tail) {
+			*ev = q->ring[q->tail & (KBD_EVENT_RING_SIZE - 1)];
+			__asm__ volatile("" ::: "memory");
+			q->tail++;
+			spinlock_release(&q->lock);
+			return 0;
+		}
+		spinlock_release(&q->lock);
+
+		int r = kbd_queue_wait_for_event(q);
+		if (r != 0)
+			return r;
+	}
+}
 
 static void layout_symbol_clear(layout_symbol_t *out)
 {
@@ -326,12 +403,9 @@ void kbd_submit_event(const lyr_key_event_t *ev)
 	lyr_key_event_t e = *ev;
 	e.mods = kbd_mods;
 
-	if (!ring_full()) {
-		kbd_event_ring[kbd_event_head & (KBD_EVENT_RING_SIZE - 1)] = e;
-		/* barrier: ensure write completes before incrementing head */
-		__asm__ volatile("" ::: "memory");
-		kbd_event_head++;
-	}
+	(void)kbd_queue_push(&kbd_queue, &e);
+	if (kbd_evdev)
+		(void)evdev_push(kbd_evdev, &e);
 
 	if (ev->down && (kbd_mods & LYR_KBD_MOD_ALT)) {
 		switch (ev->keycode) {
@@ -381,16 +455,7 @@ void kbd_submit_event(const lyr_key_event_t *ev)
 
 int kbd_read_event(lyr_key_event_t *ev)
 {
-	if (!ev)
-		return -EINVAL;
-
-	while (ring_empty())
-		__asm__ volatile("sti; hlt; cli" ::: "memory");
-
-	*ev = kbd_event_ring[kbd_event_tail & (KBD_EVENT_RING_SIZE - 1)];
-	__asm__ volatile("" ::: "memory");
-	kbd_event_tail++;
-	return 0;
+	return kbd_queue_read(&kbd_queue, ev);
 }
 
 int kbd_read_byte(uint8_t *ch)
@@ -456,52 +521,6 @@ int kbd_read_byte(uint8_t *ch)
 	}
 }
 
-static int kbd_event_dev_read(void *ctx, uint64_t off, void *buf, size_t len,
-							  size_t *done)
-{
-	(void)ctx;
-	(void)off;
-
-	if (done)
-		*done = 0;
-	if (!buf || len < sizeof(lyr_key_event_t))
-		return -EINVAL;
-
-	while (ring_empty())
-		__asm__ volatile("sti; hlt; cli" ::: "memory");
-
-	lyr_key_event_t *out = buf;
-	size_t n = 0;
-
-	while ((n + 1) * sizeof(lyr_key_event_t) <= len && !ring_empty()) {
-		out[n] = kbd_event_ring[kbd_event_tail & (KBD_EVENT_RING_SIZE - 1)];
-		__asm__ volatile("" ::: "memory");
-		kbd_event_tail++;
-		n++;
-	}
-
-	if (done)
-		*done = n * sizeof(lyr_key_event_t);
-	return 0;
-}
-
-static int kbd_event_dev_poll(void *ctx, int events)
-{
-	(void)ctx;
-	int revents = 0;
-	if ((events & (LYR_POLLIN | LYR_POLLRDNORM)) && !ring_empty())
-		revents |= LYR_POLLIN | LYR_POLLRDNORM;
-	return revents;
-}
-
-static inline void ring_flush(void)
-{
-	__asm__ volatile("" ::: "memory");
-	kbd_event_tail = kbd_event_head;
-	kbd_mods = 0;
-	__asm__ volatile("" ::: "memory");
-}
-
 static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 {
 	(void)ctx;
@@ -538,7 +557,10 @@ static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 		return 0;
 
 	case LYR_KBDIOCFLUSH:
-		ring_flush();
+		kbd_queue_flush(&kbd_queue);
+		if (kbd_evdev)
+			evdev_flush(kbd_evdev);
+		kbd_mods = 0;
 		return 0;
 
 	default:
@@ -549,22 +571,28 @@ static int kbd_event_dev_ioctl(void *ctx, unsigned long request, void *arg)
 int kbd_init(void)
 {
 	memset(kbd_layout, 0, sizeof(kbd_layout));
-	kbd_event_head = 0;
-	kbd_event_tail = 0;
 	kbd_mods = 0;
 	kbd_current_map[0] = '\0';
+	kbd_queue_init(&kbd_queue);
+
+	int r = evdev_init();
+	if (r != 0)
+		return r;
+
+	r = evdev_create(&kbd_evdev, EVDEV_KIND_KEYBOARD, kbd_event_dev_ioctl,
+					 NULL);
+	if (r != 0)
+		return r;
+
+	r = evdev_bind_path(kbd_evdev, "/dev/input/event0", 0444);
+	if (r != 0)
+		return r;
+
+	r = evdev_bind_path(kbd_evdev, "/dev/input/kbd", 0444);
+	if (r != 0)
+		return r;
 
 	kbd_load_default_keymap();
-
-	int r = devfs_mkdir("/dev/input", 0755);
-	if (r != 0 && r != -EEXIST)
-		return r;
-
-	r = devfs_register_chr_poll("/dev/input/event0", 0444, kbd_event_dev_read,
-								NULL, kbd_event_dev_ioctl, kbd_event_dev_poll,
-								NULL);
-	if (r != 0 && r != -EEXIST)
-		return r;
 
 	return 0;
 }

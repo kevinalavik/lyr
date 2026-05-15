@@ -117,5 +117,10 @@ int net_tcp_send(net_tcp_conn_t *conn, const void *buf, size_t len,
 int net_tcp_recv(net_tcp_conn_t *conn, void *buf, size_t cap, size_t *done,
 				 uint64_t timeout_ms);
 void net_tcp_close(net_tcp_conn_t *conn);
+int net_tcp_conn_shutdown_read(net_tcp_conn_t *conn);
+int net_tcp_conn_shutdown_write(net_tcp_conn_t *conn);
+int net_tcp_conn_is_read_shutdown(net_tcp_conn_t *conn);
+int net_tcp_conn_is_write_shutdown(net_tcp_conn_t *conn);
+int net_tcp_conn_error_code(net_tcp_conn_t *conn);
 
 #endif /* _LYR_NET_NET_H */
