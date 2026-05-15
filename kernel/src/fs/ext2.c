@@ -122,6 +122,9 @@ static int ext2_mkdir(vfs_node_t *dir, const char *name, size_t len,
 					  vfs_node_t **out);
 static int ext2_unlink(vfs_node_t *dir, const char *name, size_t len);
 static int ext2_rmdir(vfs_node_t *dir, const char *name, size_t len);
+static int ext2_symlink(vfs_node_t *dir, const char *target, const char *name,
+						size_t len, const vfs_cred_t *cred);
+static int ext2_link(vfs_node_t *dir, const char *name, size_t len, vfs_node_t *target);
 static int ext2_rename(vfs_node_t *old_dir, const char *old_name, size_t old_len,
 					   vfs_node_t *new_dir, const char *new_name, size_t new_len);
 static int ext2_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
@@ -144,6 +147,8 @@ static const vfs_ops_t ext2_ops = {
 	.mkdir = ext2_mkdir,
 	.unlink = ext2_unlink,
 	.rmdir = ext2_rmdir,
+	.symlink = ext2_symlink,
+	.link = ext2_link,
 	.rename = ext2_rename,
 	.read = ext2_read,
 	.write = ext2_write,
@@ -1438,6 +1443,71 @@ static int ext2_rmdir(vfs_node_t *vdir, const char *name, size_t len)
 
 	vfs_node_release(target_vnode);
 	return r;
+}
+
+static int ext2_symlink(vfs_node_t *vdir, const char *target, const char *name,
+						size_t len, const vfs_cred_t *cred)
+{
+	if (!VFS_S_ISDIR(vdir->mode))
+		return -ENOTDIR;
+
+	ext2_node_t *dir = vdir->private_data;
+	ext2_fs_t *fs = dir->fs;
+
+	uint32_t ino = 0;
+	int r = alloc_inode(fs, &ino);
+	if (r != 0)
+		return r;
+
+	ext2_inode_t inode;
+	memset(&inode, 0, sizeof(inode));
+	inode.mode = (uint16_t)(VFS_S_IFLNK | 0777);
+	inode.uid = cred ? cred->uid : 0;
+	inode.gid = cred ? cred->gid : 0;
+	inode.size_lo = (uint32_t)strlen(target);
+	inode.links_count = 1;
+
+	size_t target_len = strlen(target);
+	if (target_len <= 60) {
+		memcpy(inode.block, target, target_len);
+	} else {
+		return -ENOSYS;
+	}
+
+	write_inode(fs, ino, &inode);
+
+	r = add_dirent(dir, name, len, ino, 7);
+	if (r != 0)
+		return r;
+
+	return 0;
+}
+
+static int ext2_link(vfs_node_t *vdir, const char *name, size_t len, vfs_node_t *target)
+{
+	if (!VFS_S_ISDIR(vdir->mode))
+		return -ENOTDIR;
+
+	ext2_node_t *dir = vdir->private_data;
+	ext2_node_t *target_node = target->private_data;
+
+	ext2_fs_t *fs = dir->fs;
+
+	target_node->inode.links_count++;
+	write_inode(fs, target_node->ino, &target_node->inode);
+	target->nlink = target_node->inode.links_count;
+
+	int r = add_dirent(dir, name, len, target_node->ino, 1);
+	if (r != 0) {
+		target_node->inode.links_count--;
+		write_inode(fs, target_node->ino, &target_node->inode);
+		return r;
+	}
+
+	dir->inode.links_count++;
+	write_inode(fs, dir->ino, &dir->inode);
+
+	return 0;
 }
 
 static int ext2_rename(vfs_node_t *old_dir_node, const char *old_name, size_t old_len,

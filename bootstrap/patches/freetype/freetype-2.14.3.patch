@@ -1,0 +1,10 @@
+--- a/builds/unix/config.sub
++++ b/builds/unix/config.sub
+@@ -2035,6 +2035,7 @@
+ 	| lites* \
+ 	| lnews* \
+ 	| luna* \
++	| lyr* \
+ 	| lynxos* \
+ 	| mach* \
+ 	| macos* \

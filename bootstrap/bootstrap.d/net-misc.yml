@@ -57,7 +57,6 @@ packages:
           CPPFLAGS: '-I@SYSROOT_DIR@/usr/include'
           LDFLAGS: '-L@SYSROOT_DIR@/usr/lib'
           LIBS: '-lssl -lcrypto -lz'
-          PKG_CONFIG: 'x86_64-lyr-pkg-config'
           PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
           PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
           ac_cv_func_malloc_0_nonnull: 'yes'

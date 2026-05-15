@@ -4,6 +4,9 @@
 #include <mm/heap.h>
 #include <mm/vmm.h>
 #include <lib/string.h>
+#include <sys/syscall.h>
+
+#define SYS_PATH_MAX 512
 
 #define VFS_FADV_NORMAL 0
 #define VFS_FADV_RANDOM 1
@@ -1124,6 +1127,135 @@ int vfs_readlink(const char *path, const vfs_cred_t *cred, char *buf,
 	return (int)done;
 }
 
+int vfs_symlink(const char *target, const char *linkpath, const vfs_cred_t *cred)
+{
+	if (!target || !linkpath)
+		return -EINVAL;
+
+	char link_buf[256];
+	if (strlen(linkpath) >= sizeof(link_buf))
+		return -ENAMETOOLONG;
+
+	strcpy(link_buf, linkpath);
+
+	char *name = link_buf;
+	char *dir_path = (char *)"/";
+
+	for (size_t i = strlen(link_buf); i > 0; i--) {
+		if (link_buf[i - 1] == '/') {
+			name = link_buf + i;
+			if (i > 1) {
+				link_buf[i - 1] = '\0';
+				dir_path = link_buf;
+			}
+			break;
+		}
+	}
+
+	if (name[0] == '\0')
+		return -EINVAL;
+
+	vfs_node_t *dir = NULL;
+	int r = vfs_resolve(dir_path, cred, &dir);
+	if (r != 0)
+		return r;
+
+	if (!VFS_S_ISDIR(dir->mode)) {
+		vfs_node_release(dir);
+		return -ENOTDIR;
+	}
+
+	if (!dir->ops || !dir->ops->symlink) {
+		vfs_node_release(dir);
+		return -ENOSYS;
+	}
+
+	r = dir->ops->symlink(dir, target, name, strlen(name), cred);
+	vfs_node_release(dir);
+
+	return r;
+}
+
+int vfs_link_at(vfs_node_t *old_base, const char *old_path,
+				vfs_node_t *new_base, const char *new_path,
+				const vfs_cred_t *cred)
+{
+	if (!old_path || !new_path || !cred)
+		return -EINVAL;
+
+	char old_buf[256];
+	char new_buf[256];
+
+	if (strlen(old_path) >= sizeof(old_buf) || strlen(new_path) >= sizeof(new_buf))
+		return -ENAMETOOLONG;
+
+	strcpy(old_buf, old_path);
+	strcpy(new_buf, new_path);
+
+	vfs_node_t *target = NULL;
+	int r;
+	if (old_base) {
+		r = vfs_resolve_at(old_base, old_buf, cred, &target);
+	} else {
+		r = vfs_resolve(old_buf, cred, &target);
+	}
+	if (r != 0)
+		return r;
+
+	if (VFS_S_ISDIR(target->mode)) {
+		vfs_node_release(target);
+		return -EISDIR;
+	}
+
+	char *name = new_buf;
+	char *dir_path = (char *)"/";
+
+	for (size_t i = strlen(new_buf); i > 0; i--) {
+		if (new_buf[i - 1] == '/') {
+			name = new_buf + i;
+			if (i > 1) {
+				new_buf[i - 1] = '\0';
+				dir_path = new_buf;
+			}
+			break;
+		}
+	}
+
+	if (name[0] == '\0') {
+		vfs_node_release(target);
+		return -EINVAL;
+	}
+
+	vfs_node_t *dir = NULL;
+	if (new_base) {
+		r = vfs_resolve_at(new_base, dir_path, cred, &dir);
+	} else {
+		r = vfs_resolve(dir_path, cred, &dir);
+	}
+	if (r != 0) {
+		vfs_node_release(target);
+		return r;
+	}
+
+	if (!VFS_S_ISDIR(dir->mode)) {
+		vfs_node_release(target);
+		vfs_node_release(dir);
+		return -ENOTDIR;
+	}
+
+	if (!dir->ops || !dir->ops->link) {
+		vfs_node_release(target);
+		vfs_node_release(dir);
+		return -ENOSYS;
+	}
+
+	r = dir->ops->link(dir, name, strlen(name), target);
+	vfs_node_release(target);
+	vfs_node_release(dir);
+
+	return r;
+}
+
 int vfs_node_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 					  page_t **out)
 {
@@ -1149,4 +1281,9 @@ uint64_t vfs_mmap(vfs_file_t *file, struct vas *vas, uint64_t hint,
 vfs_node_t *vfs_file_node(vfs_file_t *file)
 {
 	return file ? file->node : NULL;
+}
+
+int vfs_link(const char *old_path, const char *new_path, const vfs_cred_t *cred)
+{
+	return vfs_link_at(NULL, old_path, NULL, new_path, cred);
 }

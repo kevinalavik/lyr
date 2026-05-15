@@ -886,6 +886,7 @@ static pcb_t *process_alloc_id(const char *name, vas_t *vas, pid_t pid)
 	process->sgid = 0;
 	process->euid = 0;
 	process->egid = 0;
+	process->umask = 0022;
 	process->pgid = pid;
 	process->sid = pid;
 	process->controlling_tty = -1;

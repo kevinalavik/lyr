@@ -42,6 +42,24 @@ sources:
     checksum: 'sha256:deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736'
     patch-path-strip: 1
 
+  - name: freetype
+    subdir: sources
+    version: '2.14.3'
+    url: 'https://downloads.sourceforge.net/freetype/freetype-2.14.3.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'freetype-2.14.3'
+    checksum: 'sha256:36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f'
+    patch-path-strip: 1
+
+  - name: libevdev
+    subdir: sources
+    version: '1.13.4'
+    url: 'https://www.freedesktop.org/software/libevdev/libevdev-1.13.4.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libevdev-1.13.4'
+    checksum: 'sha256:f00ab8d42ad8b905296fab67e13b871f1a424839331516642100f82ad88127cd'
+    patch-path-strip: 1
+
 packages:
   - name: libiconv
     labels: [ x86_64 ]
@@ -194,3 +212,116 @@ packages:
           - 'make'
           - 'DESTDIR=@THIS_COLLECT_DIR@'
           - 'install_sw'
+
+  - name: freetype
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: freetype
+    pkgs_required:
+      - mlibc
+      - zlib
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--without-bzip2'
+          - '--without-png'
+          - '--without-harfbuzz'
+          - '--without-brotli'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libevdev
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libevdev
+    pkgs_required:
+      - mlibc
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - 'meson'
+          - 'setup'
+          - '@THIS_BUILD_DIR@'
+          - '@THIS_SOURCE_DIR@'
+          - '--prefix=/usr'
+          - '--buildtype=release'
+          - '--default-library=static'
+          - '-Dtests=disabled'
+          - '-Ddocumentation=disabled'
+
+    build:
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+          - 'install'
+        environ:
+          DESTDIR: '@THIS_COLLECT_DIR@'
+  - name: libgcc
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: gcc
+    pkgs_required:
+      - mlibc
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args: |
+          mkdir -p @THIS_BUILD_DIR@
+
+          libgcc_a="$(x86_64-lyr-gcc -print-libgcc-file-name)"
+          libgcc_dir="$(dirname "$libgcc_a")"
+          test -f "$libgcc_dir/libgcc.a"
+          test -f "$libgcc_dir/libgcc_eh.a" || true
+          test -f "$libgcc_dir/libgcc_s.so.1" || true
+    build:
+      - args: |
+          mkdir -p @THIS_COLLECT_DIR@/usr/lib
+
+          libgcc_a="$(x86_64-lyr-gcc -print-libgcc-file-name)"
+          libgcc_dir="$(dirname "$libgcc_a")"
+
+          install -m 0644 "$libgcc_dir/libgcc.a" @THIS_COLLECT_DIR@/usr/lib/libgcc.a
+
+          if [ -f "$libgcc_dir/libgcc_eh.a" ]; then
+              install -m 0644 "$libgcc_dir/libgcc_eh.a" @THIS_COLLECT_DIR@/usr/lib/libgcc_eh.a
+          fi
+
+          if [ -f "$libgcc_dir/libgcc_s.so.1" ]; then
+              install -m 0755 "$libgcc_dir/libgcc_s.so.1" @THIS_COLLECT_DIR@/usr/lib/libgcc_s.so.1
+              ln -sf libgcc_s.so.1 @THIS_COLLECT_DIR@/usr/lib/libgcc_s.so
+          fi

@@ -103,6 +103,9 @@ struct vfs_ops {
 				 const vfs_cred_t *cred, vfs_node_t **out);
 	int (*unlink)(vfs_node_t *dir, const char *name, size_t len);
 	int (*rmdir)(vfs_node_t *dir, const char *name, size_t len);
+	int (*symlink)(vfs_node_t *dir, const char *target, const char *name, size_t len,
+				   const vfs_cred_t *cred);
+	int (*link)(vfs_node_t *dir, const char *name, size_t len, vfs_node_t *target);
 	int (*rename)(vfs_node_t *old_dir, const char *old_name, size_t old_len,
 				  vfs_node_t *new_dir, const char *new_name, size_t new_len);
 	int (*read)(vfs_node_t *node, uint64_t off, void *buf, size_t len,
@@ -196,6 +199,11 @@ int vfs_chown_at(vfs_node_t *base, const char *path, vfs_uid_t uid,
 int vfs_stat(const char *path, const vfs_cred_t *cred, vfs_stat_t *st);
 int vfs_readlink_node(vfs_node_t *node, char *buf, size_t *size);
 int vfs_readlink(const char *path, const vfs_cred_t *cred, char *buf, size_t size);
+int vfs_symlink(const char *target, const char *linkpath, const vfs_cred_t *cred);
+int vfs_link_at(vfs_node_t *old_base, const char *old_path,
+				vfs_node_t *new_base, const char *new_path,
+				const vfs_cred_t *cred);
+int vfs_link(const char *old_path, const char *new_path, const vfs_cred_t *cred);
 int vfs_access(vfs_node_t *node, const vfs_cred_t *cred, int mask);
 int vfs_node_get_page(vfs_node_t *node, uint64_t page_index, int for_write,
 					  page_t **out);

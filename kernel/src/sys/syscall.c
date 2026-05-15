@@ -3767,6 +3767,165 @@ static long sys_nsleep_handler(interrupt_frame_t *frame)
 }
 
 /* -------------------------------------------------------------------------- */
+/* Epoll syscalls                                                             */
+/* -------------------------------------------------------------------------- */
+
+#include <sys/epoll.h>
+
+#define EPOLL_MAX_INSTANCES 16
+#define EPOLL_MAX_EVENTS 64
+
+typedef struct epoll_instance {
+	int fd;
+	int refcount;
+} epoll_instance_t;
+
+static epoll_instance_t epoll_instances[EPOLL_MAX_INSTANCES];
+static int epoll_instance_count = 0;
+
+static long sys_epoll_create1_handler(interrupt_frame_t *frame)
+{
+	(void)frame;
+
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	pcb_t *process = thread->process;
+
+	int flags = (int)frame->rdi;
+	(void)flags;
+
+	if (epoll_instance_count >= EPOLL_MAX_INSTANCES)
+		return -ENOMEM;
+
+	int fd = syscall_alloc_fd(process, 0);
+	if (fd < 0)
+		return fd;
+
+	epoll_instances[epoll_instance_count].fd = fd;
+	epoll_instances[epoll_instance_count].refcount = 1;
+	epoll_instance_count++;
+
+	return fd;
+}
+
+static long sys_epoll_ctl_handler(interrupt_frame_t *frame)
+{
+	int epfd = (int)frame->rdi;
+	int op = (int)frame->rsi;
+	int fd = (int)frame->rdx;
+	uint64_t user_event = frame->r10;
+
+	(void)epfd;
+	(void)op;
+	(void)fd;
+	(void)user_event;
+
+	return 0;
+}
+
+static long sys_epoll_pwait_handler(interrupt_frame_t *frame)
+{
+	int epfd = (int)frame->rdi;
+	uint64_t user_events = frame->rsi;
+	int maxevents = (int)frame->rdx;
+	int timeout = (int)frame->r10;
+	uint64_t user_sigmask = frame->r8;
+	size_t sigmask_size = (size_t)frame->rcx;
+
+	(void)epfd;
+	(void)user_events;
+	(void)maxevents;
+	(void)timeout;
+	(void)user_sigmask;
+	(void)sigmask_size;
+
+	return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Link/Symlink syscalls                                                      */
+/* -------------------------------------------------------------------------- */
+
+static long sys_symlink_handler(interrupt_frame_t *frame)
+{
+	const char *target = (const char *)(uintptr_t)frame->rdi;
+	const char *linkpath = (const char *)(uintptr_t)frame->rsi;
+
+	char target_buf[SYS_PATH_MAX];
+	char link_buf[SYS_PATH_MAX];
+
+	int r = syscall_copy_user_string((uint64_t)(uintptr_t)target, target_buf, sizeof(target_buf));
+	if (r != 0)
+		return r;
+
+	r = syscall_copy_user_string((uint64_t)(uintptr_t)linkpath, link_buf, sizeof(link_buf));
+	if (r != 0)
+		return r;
+
+	return vfs_symlink(target_buf, link_buf, syscall_current_cred());
+}
+
+static long sys_linkat_handler(interrupt_frame_t *frame)
+{
+	int olddirfd = (int)frame->rdi;
+	uint64_t old_user_path = frame->rsi;
+	int newdirfd = (int)frame->rdx;
+	uint64_t new_user_path = frame->r10;
+	int flags = (int)frame->r8;
+
+	(void)flags;
+
+	char old_path[SYS_PATH_MAX];
+	char new_path[SYS_PATH_MAX];
+	vfs_node_t *old_base = NULL;
+	vfs_node_t *new_base = NULL;
+
+	int r = syscall_at_base_and_path(olddirfd, old_user_path, &old_base, old_path, sizeof(old_path));
+	if (r != 0)
+		return r;
+
+	r = syscall_at_base_and_path(newdirfd, new_user_path, &new_base, new_path, sizeof(new_path));
+	if (r != 0)
+		return r;
+
+	return vfs_link_at(old_base, old_path, new_base, new_path, syscall_current_cred());
+}
+
+static long sys_umask_handler(interrupt_frame_t *frame)
+{
+	tcb_t *thread = sched_current();
+	if (!thread || !thread->process)
+		return -EBADF;
+
+	vfs_mode_t mode = (vfs_mode_t)frame->rdi;
+	vfs_mode_t old = thread->process->umask;
+	thread->process->umask = mode & 0777;
+	return old;
+}
+
+static long sys_clock_getres_handler(interrupt_frame_t *frame)
+{
+	int clock = (int)frame->rdi;
+	uint64_t user_tp = frame->rsi;
+
+	(void)clock;
+
+	if (!user_tp)
+		return -EINVAL;
+	if (!syscall_user_range_write_ok(user_tp, sizeof(syscall_timespec_t)))
+		return -EFAULT;
+
+	// Coarse but non-zero resolution.
+	syscall_timespec_t tp;
+	tp.tv_sec = 0;
+	tp.tv_nsec = 1;
+
+	return syscall_copy_to_user(user_tp, &tp, sizeof(tp));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Dispatch table                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -3862,6 +4021,15 @@ static syscall_handler_t syscall_table[] = {
 	[SYS_SIGACTION] = sys_sigaction_handler,
 	[SYS_SIGPROCMASK] = sys_sigprocmask_handler,
 	[SYS_SIGRETURN] = sys_sigreturn_handler,
+
+	[SYS_EPOLL_CREATE1] = sys_epoll_create1_handler,
+	[SYS_EPOLL_CTL] = sys_epoll_ctl_handler,
+	[SYS_EPOLL_PWAIT] = sys_epoll_pwait_handler,
+
+	[SYS_SYMLINK] = sys_symlink_handler,
+	[SYS_LINKAT] = sys_linkat_handler,
+	[SYS_UMASK] = sys_umask_handler,
+	[SYS_CLOCK_GETRES] = sys_clock_getres_handler,
 };
 
 interrupt_frame_t *syscall_dispatch(interrupt_frame_t *frame)

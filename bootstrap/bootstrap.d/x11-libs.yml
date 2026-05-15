@@ -1,0 +1,811 @@
+sources:
+  - name: libxau
+    subdir: sources
+    version: '1.0.12'
+    url: 'https://www.x.org/releases/individual/lib/libXau-1.0.12.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXau-1.0.12'
+    checksum: 'sha256:74d0e4dfa3d39ad8939e99bda37f5967aba528211076828464d2777d477fc0fb'
+    patch-path-strip: 1
+
+  - name: libxdmcp
+    subdir: sources
+    version: '1.1.5'
+    url: 'https://www.x.org/releases/individual/lib/libXdmcp-1.1.5.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXdmcp-1.1.5'
+    checksum: 'sha256:d8a5222828c3adab70adf69a5583f1d32eb5ece04304f7f8392b6a353aa2228c'
+    patch-path-strip: 1
+
+  - name: libxcb
+    subdir: sources
+    version: '1.17.0'
+    url: 'https://www.x.org/releases/individual/lib/libxcb-1.17.0.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libxcb-1.17.0'
+    checksum: 'sha256:599ebf9996710fea71622e6e184f3a8ad5b43d0e5fa8c4e407123c88a59a6d55'
+    patch-path-strip: 1
+
+  - name: libx11
+    subdir: sources
+    version: '1.8.12'
+    url: 'https://www.x.org/releases/individual/lib/libX11-1.8.12.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libX11-1.8.12'
+    checksum: 'sha256:fa026f9bb0124f4d6c808f9aef4057aad65e7b35d8ff43951cef0abe06bb9a9a'
+    patch-path-strip: 1
+
+  - name: libxext
+    subdir: sources
+    version: '1.3.6'
+    url: 'https://www.x.org/releases/individual/lib/libXext-1.3.6.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXext-1.3.6'
+    checksum: 'sha256:edb59fa23994e405fdc5b400afdf5820ae6160b94f35e3dc3da4457a16e89753'
+    patch-path-strip: 1
+
+  - name: libxrender
+    subdir: sources
+    version: '0.9.12'
+    url: 'https://www.x.org/releases/individual/lib/libXrender-0.9.12.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXrender-0.9.12'
+    checksum: 'sha256:b832128da48b39c8d608224481743403ad1691bf4e554e4be9c174df171d1b97'
+    patch-path-strip: 1
+
+  - name: libxfixes
+    subdir: sources
+    version: '6.0.2'
+    url: 'https://www.x.org/releases/individual/lib/libXfixes-6.0.2.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXfixes-6.0.2'
+    checksum: 'sha256:39f115d72d9c5f8111e4684164d3d68cc1fd21f9b27ff2401b08fddfc0f409ba'
+    patch-path-strip: 1
+  
+  - name: libice
+    subdir: sources
+    version: '1.1.2'
+    url: 'https://www.x.org/releases/individual/lib/libICE-1.1.2.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libICE-1.1.2'
+    checksum: 'sha256:974e4ed414225eb3c716985df9709f4da8d22a67a2890066bc6dfc89ad298625'
+    patch-path-strip: 1
+
+  - name: libsm
+    subdir: sources
+    version: '1.2.6'
+    url: 'https://www.x.org/releases/individual/lib/libSM-1.2.6.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libSM-1.2.6'
+    checksum: 'sha256:be7c0abdb15cbfd29ac62573c1c82e877f9d4047ad15321e7ea97d1e43d835be'
+    patch-path-strip: 1
+
+  - name: libxt
+    subdir: sources
+    version: '1.3.1'
+    url: 'https://www.x.org/releases/individual/lib/libXt-1.3.1.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXt-1.3.1'
+    checksum: 'sha256:e0a774b33324f4d4c05b199ea45050f87206586d81655f8bef4dba434d931288'
+    patch-path-strip: 1
+  
+  - name: libxmu
+    subdir: sources
+    version: '1.3.1'
+    url: 'https://www.x.org/releases/individual/lib/libXmu-1.3.1.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXmu-1.3.1'
+    checksum: 'sha256:81a99e94c4501e81c427cbaa4a11748b584933e94b7a156830c3621256857bc4'
+    patch-path-strip: 1
+
+  - name: libxi
+    subdir: sources
+    version: '1.8.2'
+    url: 'https://www.x.org/releases/individual/lib/libXi-1.8.2.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXi-1.8.2'
+    checksum: 'sha256:d0e0555e53d6e2114eabfa44226ba162d2708501a25e18d99cfb35c094c6c104'
+    patch-path-strip: 1
+
+  - name: libfontenc
+    subdir: sources
+    version: '1.1.8'
+    url: 'https://www.x.org/releases/individual/lib/libfontenc-1.1.8.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libfontenc-1.1.8'
+    checksum: 'sha256:7b02c3d405236e0d86806b1de9d6868fe60c313628b38350b032914aa4fd14c6'
+    patch-path-strip: 1
+
+  - name: libxfont2
+    subdir: sources
+    version: '2.0.7'
+    url: 'https://www.x.org/releases/individual/lib/libXfont2-2.0.7.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libXfont2-2.0.7'
+    checksum: 'sha256:8b7b82fdeba48769b69433e8e3fbb984a5f6bf368b0d5f47abeec49de3e58efb'
+    patch-path-strip: 1
+
+  - name: libxkbfile
+    subdir: sources
+    version: '1.2.0'
+    url: 'https://www.x.org/releases/individual/lib/libxkbfile-1.2.0.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libxkbfile-1.2.0'
+    checksum: 'sha256:7f71884e5faf56fb0e823f3848599cf9b5a9afce51c90982baeb64f635233ebf'
+    patch-path-strip: 1
+
+  - name: libxcvt
+    subdir: sources
+    version: '0.1.3'
+    url: 'https://www.x.org/releases/individual/lib/libxcvt-0.1.3.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libxcvt-0.1.3'
+    checksum: 'sha256:a929998a8767de7dfa36d6da4751cdbeef34ed630714f2f4a767b351f2442e01'
+    patch-path-strip: 1
+
+packages:
+  - name: libxau
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxau
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxdmcp
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxdmcp
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxcb
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxcb
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - xcb-proto
+      - pthread-stubs
+      - libxau
+      - libxdmcp
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-devel-docs'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+      - args: |
+          sed -i 's|^Libs:.*|Libs: -L${libdir} -lxcb -lXau -lXdmcp|' \
+            @THIS_COLLECT_DIR@/usr/lib/pkgconfig/xcb.pc
+
+  - name: libx11
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libx11
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - xtrans
+      - libxau
+      - libxdmcp
+      - xcb-proto
+      - libxcb
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxext
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxext
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxrender
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxrender
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxfixes
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxfixes
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+  
+  - name: libice
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libice
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - xtrans
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-docs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libsm
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libsm
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - xtrans
+      - libice
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxt
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxt
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - xtrans
+      - libx11
+      - libice
+      - libsm
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxmu
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxmu
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - libxext
+      - libxt
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxi
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxi
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - libxext
+      - libxfixes
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--disable-specs'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libfontenc
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libfontenc
+    pkgs_required:
+      - mlibc
+      - zlib
+      - xorg-util-macros
+      - xorgproto
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: libxfont2
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxfont2
+    pkgs_required:
+      - mlibc
+      - zlib
+      - freetype
+      - libfontenc
+      - xorg-util-macros
+      - xorgproto
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+          - '--enable-shared'
+          - '--enable-static'
+          - '--without-xmlto'
+          - '--without-fop'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+      - args: |
+          sed -i 's|^Libs:.*|Libs: -L${libdir} -lXfont2 -lfontenc -lfreetype -lz|' \
+            @THIS_COLLECT_DIR@/usr/lib/pkgconfig/xfont2.pc
+
+  - name: libxkbfile
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxkbfile
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args: |
+          cat > @THIS_BUILD_DIR@/lyr-cross.ini <<'EOF'
+          [binaries]
+          c = 'x86_64-lyr-gcc'
+          ar = 'x86_64-lyr-ar'
+          strip = 'x86_64-lyr-strip'
+          pkg-config = 'pkg-config'
+
+          [host_machine]
+          system = 'lyr'
+          cpu_family = 'x86_64'
+          cpu = 'x86_64'
+          endian = 'little'
+
+          [properties]
+          sys_root = '@SYSROOT_DIR@'
+          pkg_config_libdir = ['@SYSROOT_DIR@/usr/lib/pkgconfig', '@SYSROOT_DIR@/usr/share/pkgconfig']
+
+          [built-in options]
+          c_args = ['-O2', '-Wno-error', '--sysroot=@SYSROOT_DIR@']
+          c_link_args = ['--sysroot=@SYSROOT_DIR@', '-L@SYSROOT_DIR@/usr/lib']
+          EOF
+
+          meson setup @THIS_BUILD_DIR@ @THIS_SOURCE_DIR@ \
+            --cross-file @THIS_BUILD_DIR@/lyr-cross.ini \
+            --prefix=/usr \
+            --buildtype=release \
+            --default-library=static
+    build:
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+          - 'install'
+        environ:
+          DESTDIR: '@THIS_COLLECT_DIR@'
+
+  - name: libxcvt
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: libxcvt
+    pkgs_required:
+      - mlibc
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - 'meson'
+          - 'setup'
+          - '@THIS_BUILD_DIR@'
+          - '@THIS_SOURCE_DIR@'
+          - '--prefix=/usr'
+          - '--libdir=lib'
+          - '--buildtype=release'
+          - '--default-library=static'
+
+    build:
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+          - 'install'
+        environ:
+          DESTDIR: '@THIS_COLLECT_DIR@'

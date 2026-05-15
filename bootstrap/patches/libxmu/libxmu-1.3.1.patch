@@ -1,0 +1,10 @@
+--- a/config.sub
++++ b/config.sub
+@@ -2030,6 +2030,7 @@
+ 	| lites* \
+ 	| lnews* \
+ 	| luna* \
++	| lyr* \
+ 	| lynxos* \
+ 	| mach* \
+ 	| macos* \

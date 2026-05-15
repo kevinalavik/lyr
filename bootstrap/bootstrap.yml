@@ -10,6 +10,10 @@ imports:
   - file: bootstrap.d/apps-editors.yml
   - file: bootstrap.d/lua-libs.yml
   - file: bootstrap.d/net-misc.yml
+  - file: bootstrap.d/x11-base.yml
+  - file: bootstrap.d/x11-libs.yml
+  - file: bootstrap.d/x11-apps.yml
+  - file: bootstrap.d/x11-server.yml
 general:
   patch_author: Kevin Alavik and contributors
   patch_email: kevin@alavik.se

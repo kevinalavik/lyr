@@ -28,6 +28,9 @@ static int tmpfs_mkdir(vfs_node_t *dir, const char *name, size_t len,
 					   vfs_node_t **out);
 static int tmpfs_unlink(vfs_node_t *dir, const char *name, size_t len);
 static int tmpfs_rmdir(vfs_node_t *dir, const char *name, size_t len);
+static int tmpfs_symlink(vfs_node_t *dir, const char *target, const char *name,
+						 size_t len, const vfs_cred_t *cred);
+static int tmpfs_link(vfs_node_t *dir, const char *name, size_t len, vfs_node_t *target);
 static int tmpfs_rename(vfs_node_t *old_dir, const char *old_name, size_t old_len,
 						vfs_node_t *new_dir, const char *new_name, size_t new_len);
 static int tmpfs_read(vfs_node_t *node, uint64_t off, void *buf, size_t len,
@@ -46,6 +49,8 @@ static const vfs_ops_t tmpfs_ops = {
 	.mkdir = tmpfs_mkdir,
 	.unlink = tmpfs_unlink,
 	.rmdir = tmpfs_rmdir,
+	.symlink = tmpfs_symlink,
+	.link = tmpfs_link,
 	.rename = tmpfs_rename,
 	.read = tmpfs_read,
 	.write = tmpfs_write,
@@ -274,6 +279,57 @@ static int tmpfs_rmdir(vfs_node_t *dir_node, const char *name, size_t len)
 	_unlink_child(dir, child);
 	child->vnode.nlink = 0;
 	vfs_node_release(&child->vnode);
+	return 0;
+}
+
+static int tmpfs_symlink(vfs_node_t *dir_node, const char *target,
+						 const char *name, size_t len, const vfs_cred_t *cred)
+{
+	vfs_node_t *out = NULL;
+	int r = _create_child(dir_node, name, len, VFS_S_IFLNK | 0777, cred, &out);
+	if (r != 0)
+		return r;
+
+	tmpfs_node_t *node = _to_tmpfs(out);
+	node->vnode.size = strlen(target);
+
+	vfs_node_release(out);
+	return 0;
+}
+
+static int tmpfs_link(vfs_node_t *dir_node, const char *name, size_t len, vfs_node_t *target)
+{
+	tmpfs_node_t *dir = _to_tmpfs(dir_node);
+	tmpfs_node_t *target_node = _to_tmpfs(target);
+
+	if (_find_child(dir, name, len))
+		return -EEXIST;
+
+	if (len == 0 || len > VFS_NAME_MAX)
+		return len == 0 ? -EINVAL : -ENAMETOOLONG;
+
+	if (!VFS_S_ISDIR(dir_node->mode))
+		return -ENOTDIR;
+
+	tmpfs_node_t *child = kzalloc(sizeof(*child));
+	if (!child)
+		return -ENOMEM;
+
+	vfs_node_init(&child->vnode, &tmpfs_ops, target->mode, target->uid, target->gid);
+	memcpy(child->name, name, len);
+	child->name[len] = '\0';
+	child->vnode.private_data = child;
+	child->vnode.nlink = 1;
+
+	child->pages = target_node->pages;
+	child->page_count = target_node->page_count;
+	child->page_cap = target_node->page_cap;
+	child->vnode.size = target_node->vnode.size;
+
+	_insert_child(dir, child);
+
+	target_node->vnode.nlink++;
+
 	return 0;
 }
 

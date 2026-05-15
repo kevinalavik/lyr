@@ -73,6 +73,7 @@ typedef struct pcb {
 	vfs_gid_t sgid;
 	vfs_uid_t euid;
 	vfs_gid_t egid;
+	vfs_mode_t umask;
 	pid_t pgid;
 	pid_t sid;
 	int controlling_tty;

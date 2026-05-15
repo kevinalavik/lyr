@@ -1,0 +1,158 @@
+sources:
+  - name: xeyes
+    subdir: sources
+    version: '1.3.1'
+    url: 'https://www.x.org/releases/individual/app/xeyes-1.3.1.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'xeyes-1.3.1'
+    checksum: 'sha256:5608d76b7b1aac5ed7f22f1b6b5ad74ef98c8693220f32b4b87dccee4a956eaa'
+    patch-path-strip: 1
+  - name: xkbcomp
+    subdir: sources
+    version: '1.4.7'
+    url: 'https://www.x.org/releases/individual/app/xkbcomp-1.4.7.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'xkbcomp-1.4.7'
+    checksum: 'sha256:0a288114e5f44e31987042c79aecff1ffad53a8154b8ec971c24a69a80f81f77'
+    patch-path-strip: 1
+  - name: xkeyboard-config
+    subdir: sources
+    version: '2.45'
+    url: 'https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.45.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'xkeyboard-config-2.45'
+    checksum: 'sha256:169e075a92d957a57787c199e84e359df2931b7196c1c5b4a3d576ee6235a87c'
+    patch-path-strip: 1
+
+
+packages:
+  - name: xeyes
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xeyes
+    pkgs_required:
+      - mlibc
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - libxext
+      - libxrender
+      - libxfixes
+      - libxt
+      - libxmu
+      - libxi
+      - libsm
+      - libice
+      - libxau
+      - libxdmcp
+      - libxcb
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+          XEYES_CFLAGS: '-I@SYSROOT_DIR@/usr/include'
+          XEYES_LIBS: '-lXmu -lXt -lSM -lICE -lXi -lXrender -lXfixes -lXext -lX11 -lxcb -lXau -lXdmcp'
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: xkbcomp
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xkbcomp
+    pkgs_required:
+      - mlibc
+      - pkg-config
+      - xorg-util-macros
+      - xorgproto
+      - libx11
+      - libxkbfile
+      - libxau
+      - libxdmcp
+      - libxcb
+      - zlib
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          CFLAGS: '-O2 -Wno-error -Wno-redundant-decls'
+          LDFLAGS: '-static-libgcc'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+
+          XKBCOMP_CFLAGS: '-I@SYSROOT_DIR@/usr/include'
+          XKBCOMP_LIBS: '-Wl,--start-group -lxkbfile -lX11 -lxcb -lXau -lXdmcp -Wl,--end-group'
+
+          ac_cv_func_malloc_0_nonnull: 'yes'
+          ac_cv_func_realloc_0_nonnull: 'yes'
+          xorg_cv_malloc0_returns_null: 'no'
+
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: xkeyboard-config
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xkeyboard-config
+    pkgs_required:
+      - mlibc
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+
+    configure:
+      - args:
+          - 'meson'
+          - 'setup'
+          - '@THIS_BUILD_DIR@'
+          - '@THIS_SOURCE_DIR@'
+          - '--prefix=/usr'
+          - '--buildtype=release'
+
+    build:
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+      - args:
+          - 'ninja'
+          - '-C'
+          - '@THIS_BUILD_DIR@'
+          - 'install'
+        environ:
+          DESTDIR: '@THIS_COLLECT_DIR@'

@@ -1,0 +1,165 @@
+sources:
+  - name: xorg-util-macros
+    subdir: sources
+    version: '1.20.2'
+    url: 'https://www.x.org/releases/individual/util/util-macros-1.20.2.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'util-macros-1.20.2'
+    checksum: 'sha256:9ac269eba24f672d7d7b3574e4be5f333d13f04a7712303b1821b2a51ac82e8e'
+    patch-path-strip: 1
+
+  - name: xorgproto
+    subdir: sources
+    version: '2025.1'
+    url: 'https://www.x.org/releases/individual/proto/xorgproto-2025.1.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'xorgproto-2025.1'
+    checksum: 'sha256:56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8'
+    patch-path-strip: 1
+
+  - name: xtrans
+    subdir: sources
+    version: '1.6.0'
+    url: 'https://www.x.org/releases/individual/lib/xtrans-1.6.0.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'xtrans-1.6.0'
+    checksum: 'sha256:faafea166bf2451a173d9d593352940ec6404145c5d1da5c213423ce4d359e92'
+    patch-path-strip: 1
+  
+  - name: xcb-proto
+    subdir: sources
+    version: '1.17.0'
+    url: 'https://www.x.org/releases/individual/proto/xcb-proto-1.17.0.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'xcb-proto-1.17.0'
+    checksum: 'sha256:2c1bacd2110f4799f74de6ebb714b94cf6f80fb112316b1219480fd22562148c'
+    patch-path-strip: 1
+
+  - name: pthread-stubs
+    subdir: sources
+    version: '0.5'
+    url: 'https://www.x.org/releases/individual/lib/libpthread-stubs-0.5.tar.xz'
+    format: 'tar.xz'
+    extract_path: 'libpthread-stubs-0.5'
+    checksum: 'sha256:59da566decceba7c2a7970a4a03b48d9905f1262ff94410a649224e33d2442bc'
+    patch-path-strip: 1
+
+packages:
+  - name: xorg-util-macros
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xorg-util-macros
+    pkgs_required: []
+    tools_required: []
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--prefix=/usr'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: xorgproto
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xorgproto
+    pkgs_required:
+      - xorg-util-macros
+    tools_required: []
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--prefix=/usr'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: xtrans
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xtrans
+    pkgs_required:
+      - xorg-util-macros
+      - xorgproto
+      - pkg-config
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+        environ:
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: xcb-proto
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: xcb-proto
+    pkgs_required:
+      - xorg-util-macros
+      - xorgproto
+      - pkg-config
+    tools_required: []
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--prefix=/usr'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
+
+  - name: pthread-stubs
+    labels: [ x86_64 ]
+    architecture: 'x86_64'
+    revision: 1
+    from_source: pthread-stubs
+    pkgs_required:
+      - mlibc
+      - pkg-config
+    tools_required:
+      - lyr-gcc
+      - lyr-binutils
+    configure:
+      - args:
+          - '@THIS_SOURCE_DIR@/configure'
+          - '--host=x86_64-lyr'
+          - '--prefix=/usr'
+        environ:
+          CC: 'x86_64-lyr-gcc'
+          PKG_CONFIG_SYSROOT_DIR: '@SYSROOT_DIR@'
+          PKG_CONFIG_LIBDIR: '@SYSROOT_DIR@/usr/lib/pkgconfig:@SYSROOT_DIR@/usr/share/pkgconfig'
+    build:
+      - args:
+          - 'make'
+          - '-j@PARALLELISM@'
+      - args:
+          - 'make'
+          - 'DESTDIR=@THIS_COLLECT_DIR@'
+          - 'install'
