@@ -27,7 +27,7 @@ sources:
     patch-path-strip: 1
 
   - name: zlib
-    subdir: 'ports'
+    subdir: sources
     git: 'https://github.com/madler/zlib.git'
     tag: 'v1.3.2'
     version: '1.3.2'

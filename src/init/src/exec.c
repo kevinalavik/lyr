@@ -8,7 +8,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#include <lyr/mount.h>
+#include <sys/mount.h>
 
 #include "script.h"
 

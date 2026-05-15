@@ -8,7 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <lyr/mount.h>
+#include <linux/mount.h>
 #include <sh.h>
 #include <builtin.h>
 
@@ -473,7 +473,6 @@ int sh_builtin_ls(int argc, char **argv)
 	return status;
 }
 
-
 static int parse_mount_flags(const char *s, unsigned long *out)
 {
 	char *end = NULL;
@@ -543,7 +542,9 @@ int sh_builtin_mount(int argc, char **argv)
 
 	int remain = argc - i;
 	if (remain != 2 && remain != 3) {
-		fprintf(stderr, "usage: mount [-t fstype] [-o data] [-f flags] source target\n");
+		fprintf(
+			stderr,
+			"usage: mount [-t fstype] [-o data] [-f flags] source target\n");
 		fprintf(stderr, "       mount source target fstype\n");
 		return 2;
 	}
@@ -555,8 +556,8 @@ int sh_builtin_mount(int argc, char **argv)
 		fstype = argv[i + 2];
 
 	if (mount(source, target, fstype, flags, data) < 0) {
-		fprintf(stderr, "mount: %s on %s type %s: %s\n", source, target,
-				fstype, strerror(errno));
+		fprintf(stderr, "mount: %s on %s type %s: %s\n", source, target, fstype,
+				strerror(errno));
 		return 1;
 	}
 

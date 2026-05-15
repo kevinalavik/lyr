@@ -6,7 +6,31 @@ sources:
     rolling_version: true
     version: '0.0pl@ROLLING_ID@'
 
+  - name: linux
+    version: '7.0.7'
+    url: 'https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.0.7.tar.xz'
+    format: 'tar.xz'
+    subdir: sources
+    extract_path: 'linux-7.0.7'
+    checksum: 'sha256:c8e1fe86a3aaff2de6f7401383f959283510c389ff84c15ab711c8fbceb25df4'
+    patch-path-strip: 1
+
 packages:
+- name: linux-headers
+  labels: [ x86_64 ]
+  architecture: 'x86_64'
+  revision: 1
+  from_source: linux
+  configure: []
+  build:
+    - args:
+      - 'make'
+      - '-C'
+      - '@THIS_SOURCE_DIR@'
+      - 'ARCH=x86'
+      - 'headers_install'
+      - 'INSTALL_HDR_PATH=@SYSROOT_DIR@/usr'
+
 - name: mlibc-headers
   labels: [ x86_64 ]
   architecture: 'x86_64'
@@ -33,6 +57,7 @@ packages:
   revision: 5
   from_source: mlibc
   pkgs_required:
+    - linux-headers
     - mlibc-headers
   tools_required:
     - lyr-gcc
@@ -46,6 +71,7 @@ packages:
       - '--prefix=/usr'
       - '-Ddefault_library=both'
       - '-Dno_headers=true'
+      - '-Dlinux_kernel_headers=@SYSROOT_DIR@/usr/include'
       - '@THIS_SOURCE_DIR@'
   build:
     - args: ['ninja', '-j@PARALLELISM@']
